@@ -12,6 +12,7 @@ import type { ArchiveStore } from './store.ts';
 import type { WorldConfig } from './types.ts';
 import { worldNames } from './worldPrompt.ts';
 import { DEFAULT_MEMORY_TURNS } from './worldSwitch.ts';
+import { estimateTokens } from './tokenEstimate.ts';
 
 export type { WorldPromptSource } from './promptSection.ts';
 const memorySource = 'dsh-world-history';
@@ -29,7 +30,7 @@ interface MemoryState { reload: boolean; injected: Map<string, SessionSeq>; pend
  * goes to every world session. With a world prompt source, the world prompt joins every world session.
  * `memoryTurns` is read each time a block is built (default 200).
  */
-export function createWorldRuntime(ctx: Context, config: WorldConfig, store: ArchiveStore, world?: WorldPromptSource, memoryTurns: () => number = () => DEFAULT_MEMORY_TURNS) {
+export function createWorldRuntime(ctx: Context, config: WorldConfig, store: ArchiveStore, world?: WorldPromptSource, memoryTurns: () => number = () => DEFAULT_MEMORY_TURNS, memoryTokenBudget: () => number | undefined = () => undefined) {
   if (config.archiveScope === 'workspace' && !world?.archiveSession) throw new Error('Workspace archive requires the host workspace selection');
   const archivedByScope = world?.archiveSession ?? ((sessionId: string) => config.archiveScope !== 'home' || !!world?.isHome(sessionId));
   /** False while some session's workspace was unknown (the host's workspace service was not up yet); `retryCatchUp` reads those later. */
@@ -79,8 +80,19 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
   /** Retires the blocks still on the surface (they must be found, or the session would carry two) and builds a fresh one without the messages already present. */
   async function freshBlock(session: Session, state: MemoryState): Promise<UserMessage | undefined> {
     const messages = session.deriveMessages();
-    const turns = await history.loadRecentTurns(config.worldId, memoryTurns(), archivedByScope);
+    let turns = await history.loadRecentTurns(config.worldId, memoryTurns(), archivedByScope);
     const present = new Set(messages.filter(message => message.role === 'assistant' || message.source.kind === 'user').map(message => message.id));
+    const tokenBudget = memoryTokenBudget();
+    if (tokenBudget !== undefined && turns.length) {
+      let accepted: typeof turns = [];
+      for (let count = 1; count <= turns.length; count++) {
+        const candidate = turns.slice(0, count);
+        const rendered = renderHistory(excludePresentMessages(candidate, present), config.timeZone, names, config.archiveScope === 'home');
+        if (estimateTokens(rendered) > tokenBudget) break;
+        accepted = candidate;
+      }
+      turns = accepted;
+    }
     const text = renderHistory(excludePresentMessages(turns, present), config.timeZone, names, config.archiveScope === 'home');
     const oldBlocks = messages.filter(message => message.source.kind === memorySource);
     for (const [index, message] of oldBlocks.entries()) {

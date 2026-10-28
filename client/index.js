@@ -184,6 +184,12 @@ window.__ModuleLoader__.load({
     }
 
     /** 她的相册：keep_photo 留下的照片，和她当时写的话。照片点开才去取字节。 */
+    function PhotoAlbum(props) {
+      var photos = list(props.photos)
+      return h(Card, { title: '她收藏的照片' }, photos.length ? photos.map(function (item) {
+        return h('div', { key: item.id, className: 'dw-setting' }, h('span', { style: { flex: '1 1 180px' } }, item.description || '未写说明', ' · ', item.width + '×' + item.height, ' · ', Math.ceil(Number(item.bytes || 0) / 1024) + ' KB'), item.tags && item.tags.length ? h('span', { className: 'dw-muted' }, item.tags.join('、')) : null)
+      }) : h('div', { className: 'dw-muted' }, '她还没有明确收藏照片。'))
+    }
     /** 分层人设：每层一张卡，右边是她实际读到的样子。 */
     function PersonaEditor(props) {
       var state = useState(null), persona = state[0], setPersona = state[1]
@@ -258,6 +264,28 @@ window.__ModuleLoader__.load({
           h('button', { className: 'dw-btn', onClick: save }, '保存')),
         msg ? h('div', { className: msg.indexOf('失败') >= 0 || msg.indexOf('请填') >= 0 ? 'dw-bad' : 'dw-muted' }, msg) : null)
     }
+    /** 成本 JSONL 的本地估算；不会写入她的上下文。 */
+    function CostSummary(props) {
+      var costs = props.costs
+      var today = costs && costs.today || {}
+      var models = list(costs && costs.byModel)
+      var sessions = list(costs && costs.bySession)
+      return h(Card, { title: '成本拆账' },
+        h('div', null, h('span', { className: 'dw-big' }, '¥' + Number(today.yuan || 0).toFixed(4)), h('span', { className: 'dw-muted' }, ' · ' + Number(today.records || 0) + ' 次 home 调用')),
+        h('div', { className: 'dw-muted', style: { marginTop: 4 } }, costs && costs.note || '本地估算，不是供应商账单原值'),
+        models.length ? h('div', { className: 'dw-trail' }, models.map(function (item) { return h('span', { key: item.key }, item.key + ' ¥' + Number(item.yuan || 0).toFixed(4)) })) : h('div', { className: 'dw-muted', style: { marginTop: 6 } }, '今天还没有可拆分的成本记录'),
+        sessions.length ? h('div', { className: 'dw-muted', style: { marginTop: 6 } }, '按会话：' + sessions.map(function (item) { return String(item.key).replace(/^session-/, '').slice(0, 8) + ' ¥' + Number(item.yuan || 0).toFixed(4) }).join(' · ')) : null)
+    }
+    /** 只管理她自己已经创建的习惯；开关关闭时数据仍保留。 */
+    function RoutineAdmin(props) {
+      var msgState = useState(''), msg = msgState[0], setMsg = msgState[1]
+      var routines = props.routines || { enabled: true, routines: [] }
+      function postRoutine(path, body, done) { post(path, body).then(function () { setMsg(done); if (props.onSaved) props.onSaved() }, function (e) { setMsg('保存失败：' + (e.message || e)) }) }
+      return h(Card, { title: '习惯', delay: 260 },
+        h('label', { className: 'dw-muted' }, h('input', { type: 'checkbox', checked: routines.enabled !== false, onChange: function (e) { postRoutine('routines', { enabled: e.target.checked }, e.target.checked ? '已开启习惯到期记录。' : '已暂停到期处理，习惯数据仍保留。') } }), ' 启用本地到期记录（不会自动叫醒模型）'),
+        list(routines.routines).length ? list(routines.routines).map(function (item) { return h('div', { key: item.id, className: 'dw-setting' }, h('span', { style: { flex: '1 1 160px' } }, item.title, item.dueAt ? ' · 待处理' : ''), h('button', { className: 'dw-btn', onClick: function () { postRoutine('routines/pause', { id: item.id, paused: item.enabled }, item.enabled ? '已暂停。' : '已恢复。') } }, item.enabled ? '暂停' : '恢复'), h('button', { className: 'dw-btn', onClick: function () { postRoutine('routines/remove', { id: item.id }, '已删除。') } }, '删除')) }) : h('div', { className: 'dw-muted', style: { marginTop: 6 } }, '还没有由她创建的习惯；她可以在家会话里用 routine_add 自己添加。'),
+        msg ? h('div', { className: 'dw-muted' }, msg) : null)
+    }
     /** 记忆块带最近几轮：默认 200，下次开始对话或压缩之后生效。 */
     function Memory(props) {
       var mem = props.mem, window_ = mem && mem.windowTurns || 200
@@ -265,6 +293,7 @@ window.__ModuleLoader__.load({
       var scopeNames = { home: '仅家会话', workspace: '家所在工作区' }
       var scopeState = useState(mem && mem.selectedArchiveScope || activeScope), scope = scopeState[0], setScope = scopeState[1]
       var draftState = useState(String(window_)), draft = draftState[0], setDraft = draftState[1]
+      var tokenDraftState = useState(mem && mem.tokenBudget != null ? String(mem.tokenBudget) : ''), tokenDraft = tokenDraftState[0], setTokenDraft = tokenDraftState[1]
       var msgState = useState(''), msg = msgState[0], setMsg = msgState[1]
       function save() {
         var text = String(draft).trim(), value = text === '' ? null : Number(text)
@@ -276,6 +305,11 @@ window.__ModuleLoader__.load({
           setMsg(result.restartRequired ? '已保存。请重启 DSH，启动后按新范围和消息时间重建记忆块。' : '归档范围已保存。')
           if (props.onSaved) props.onSaved()
         }, function (e) { setMsg('保存失败：' + (e.message || e)) })
+      }
+      function saveTokenBudget() {
+        var text = String(tokenDraft).trim(), value = text === '' ? null : Number(text)
+        if (value !== null && !(Number.isInteger(value) && value >= 1 && value <= 200000)) { setMsg('请填 1–200000 的整数，留空关闭限制'); return }
+        post('memory', { tokenBudget: value }).then(function () { setMsg(value === null ? '已关闭 token 限制。下次开始对话或压缩重建记忆后生效。' : '已保存。下次开始对话或压缩重建记忆后生效。'); if (props.onSaved) props.onSaved() }, function (e) { setMsg('保存失败：' + (e.message || e)) })
       }
       return h(Card, { title: '记忆', delay: 180 }, mem ? [
         h('div', { key: 'm' }, h('span', { className: 'dw-big' }, mem.turns), h('span', { className: 'dw-muted' }, ' / ' + window_ + ' 轮')),
@@ -290,6 +324,10 @@ window.__ModuleLoader__.load({
         h('div', { key: 's', className: 'dw-setting' },
           h('input', { type: 'text', inputMode: 'numeric', 'aria-label': '记忆带最近几轮', placeholder: '最近几轮，留空为 200', value: draft, onChange: function (e) { setDraft(e.target.value); setMsg('') } }),
           h('button', { className: 'dw-btn', onClick: save }, '保存')),
+        h('div', { key: 'tokens', className: 'dw-setting' },
+          h('input', { type: 'text', inputMode: 'numeric', 'aria-label': '记忆 token 预算', placeholder: 'token 预算，留空关闭限制', value: tokenDraft, onChange: function (e) { setTokenDraft(e.target.value); setMsg('') } }),
+          h('button', { className: 'dw-btn', onClick: saveTokenBudget }, '保存 token 预算')),
+        h('div', { key: 'token-hint', className: 'dw-muted' }, '预算按完整轮次保留最近记忆；单轮过长时会整体略过。下次开始对话或压缩重建记忆后生效。'),
         msg ? h('div', { key: 'x', className: msg.indexOf('失败') >= 0 || msg.indexOf('请填') >= 0 ? 'dw-bad' : 'dw-muted' }, msg) : null,
       ] : h('div', { className: 'dw-muted' }, '—'))
     }
@@ -489,6 +527,9 @@ window.__ModuleLoader__.load({
           h(Card, { title: '健康', delay: 120 }, health.length ? health.map(function (f, i) { return h('div', { key: i, className: 'dw-bad' }, '● ' + f) }) : h('div', { className: 'dw-ok' }, '● 一切正常')),
           h(Memory, { mem: mem, onSaved: props.refresh }),
           h(Budget, { budget: snap.budget, onSaved: props.refresh }),
+          snap.costs ? h(CostSummary, { costs: snap.costs }) : null,
+          h(RoutineAdmin, { routines: snap.routines, onSaved: props.refresh }),
+          h(PhotoAlbum, { photos: snap.photos }),
           snap.modules && (snap.modules.wechat.available || snap.modules.qq.available) ? h(Modules, { modules: snap.modules, running: snap.running, onSaved: props.refresh }) : null,
           snap.wechat ? h(Wechat, { wechat: snap.wechat, zone: zone, onSaved: props.refresh }) : null,
           snap.qq ? h(Qq, { qq: snap.qq, onSaved: props.refresh, onNeedPassword: props.onNeedPassword }) : null))
@@ -689,7 +730,7 @@ window.__ModuleLoader__.load({
         return ctx.slots.register({ name: 'settings.section', id: 'world-console', order: 28, label: '世界控制台' }, function () { return h(Console) })
       })
     }
-    Object.defineProperty(exports, '__test', { value: { Modules: Modules, Wechat: Wechat, Activity: Activity, Diary: Diary, Qq: Qq, Panel: Panel, View: View, Overview: Overview, PersonaEditor: PersonaEditor, PromptEditor: PromptEditor, loadSnapshot: loadSnapshot, renderPersona: renderPersona, Proactive: Proactive }, enumerable: false })
+    Object.defineProperty(exports, '__test', { value: { Modules: Modules, Wechat: Wechat, Activity: Activity, Diary: Diary, Qq: Qq, Panel: Panel, View: View, Overview: Overview, PersonaEditor: PersonaEditor, PromptEditor: PromptEditor, Proactive: Proactive, Memory: Memory, CostSummary: CostSummary, RoutineAdmin: RoutineAdmin, PhotoAlbum: PhotoAlbum, loadSnapshot: loadSnapshot, renderPersona: renderPersona }, enumerable: false })
     return exports
   },
 })

@@ -5,7 +5,7 @@ import type { lifeTools } from './tools.ts';
 
 type Registration = (() => void)[];
 const ALARM_TOOLS = ['plan_next', 'check_alarm', 'cancel_alarm'];
-const HOME_TOOLS = ['reach_out'];
+const HOME_TOOLS = ['reach_out', 'search_diary', 'read_diary', 'search_self', 'compare_self', 'routine_add', 'routine_list', 'routine_update', 'routine_pause', 'routine_remove', 'routine_handle', 'keep_photo', 'list_photos', 'forget_photo'];
 
 /** Disposes in reverse; a disposer whose agent scope is already gone may throw and is skipped. */
 function undo(list: Registration): void {

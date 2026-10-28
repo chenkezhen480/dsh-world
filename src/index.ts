@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Context } from '@deepseek-ai/cordis';
+import type { AttachmentStore } from '@deepseek-ai/dsh-attachment';
 import z from '@deepseek-ai/schemastery';
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths';
 import { createBridge, type Bridge } from './ecosystem/bridge/bridge.ts';
@@ -10,6 +11,8 @@ import { consoleSources } from './console/snapshot.ts';
 import { errorText, Faults } from './faults.ts';
 import { hostLife } from './life/host.ts';
 import { createLifeStore, durableWrite } from './life/lifeStore.ts';
+import { createRoutineStore } from './life/routines.ts';
+import { createPhotoStore } from './life/photos.ts';
 import { toastSupported, windowsToast, type Notifier } from './life/notify.ts';
 import { createLifeRuntime, type LifeRuntime } from './life/runtime.ts';
 import type { LifeOptions } from './life/types.ts';
@@ -77,6 +80,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   const power = createWorldSwitch(worldDir, config.archiveScope ?? 'workspace');
   const memoryConfig = { ...config, archiveScope: power.archiveScope() };
   const faults = new Faults();
+  const attachments = (() => { try { return ctx.get('attachments') as AttachmentStore | undefined; } catch { return undefined; } })();
   // Her self-description lives in her room whether or not the life line runs; she writes it with her file tools.
   const selfFile = config.selfFile || join(worldDir, 'room', '我是谁.md');
   const personaFile = config.personaFile || join(worldDir, 'persona.md');
@@ -89,6 +93,8 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     try { const current = createLifeStore(worldDir, config.timeZone); current.read(); return current; }
     catch (error) { faults.set('life', `生活线没能启动：${errorText(error)}`); ctx.logger.error(error); return undefined; }
   })();
+  const routineStore = (() => { try { return createRoutineStore(worldDir, config.timeZone); } catch (error) { faults.set('routines', `习惯数据不可用：${errorText(error)}`); ctx.logger.error(error); return undefined; } })();
+  const photoStore = (() => { if (!attachments) return undefined; try { return createPhotoStore(worldDir, attachments); } catch (error) { faults.set('photos', `照片索引不可用：${errorText(error)}`); ctx.logger.error(error); return undefined; } })();
   const storedHome = () => lifeStore?.read().homeSessionId;
   let isHome: (sessionId: string) => boolean = id => id === storedHome();
   const includesSession = createArchiveSelection(ctx, power.archiveScope(), id => isHome(id), options.roomDir);
@@ -98,7 +104,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   async function startMemory(fresh: boolean): Promise<void> {
     if (memory) return;
     const prompt = { file: worldPromptFile, persona: personaFile, conversationsDir: join(worldDir, 'conversations'), names: names(), ...(config.life ? { life: options } : {}) };
-    memory = createWorldRuntime(ctx, { ...memoryConfig, selfFile }, store, { prompt, isHome: id => isHome(id), archiveSession: includesSession }, power.memoryTurns);
+    memory = createWorldRuntime(ctx, { ...memoryConfig, selfFile }, store, { prompt, isHome: id => isHome(id), archiveSession: includesSession }, power.memoryTurns, power.memoryTokenBudget);
     await memory.start({ fresh });
   }
   async function stopMemory(): Promise<void> {
@@ -180,7 +186,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
         await lifeStop;
         const outlets = config.outlets.map(outlet => createOutlet(outlet, () => host.origin()));
         const notifier: Notifier = { ...(config.toast && toastSupported() ? { toast: windowsToast() } : {}), outlets };
-        const current = createLifeRuntime({ ctx: lifeCtx, config: { ...config, companionName: names().companion }, options, store: lifeStore, host, notifier, dailyBudget: power.dailyBudget });
+        const current = createLifeRuntime({ ctx: lifeCtx, config: { ...config, companionName: names().companion }, options, store: lifeStore, host, notifier, dailyBudget: power.dailyBudget, ...(routineStore ? { routines: routineStore } : {}), ...(photoStore ? { photos: photoStore } : {}), ...(attachments ? { attachments } : {}) });
         life = current; isHome = current.isHome;
         if (config.bridge) { bridge = createBridge({ ctx: lifeCtx, home: () => current.home(), outlets, origin: () => host.origin(), file: join(worldDir, 'bridge.json'), name: names().companion }); bridge.start(); }
         if (config.wechat && power.wechatEnabled()) await startWechat(current);
@@ -205,7 +211,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     if (config.bridge) lifeCtx.effect(() => webServer.register(bridgeRoute(() => bridge, config.allowedHosts)), 'dsh-world bridge route');
 
     // Her album lives in her room, so the console shows it whether or not the life line is running.
-    const sources = consoleSources({ ctx: lifeCtx, config: memoryConfig, archive: store, names, ...(lifeStore ? { lifeStore } : {}), life: () => life, diaryDir: options.diaryDir, running: power.running, dailyBudget: power.dailyBudget, memoryTurns: power.memoryTurns, selectedArchiveScope: power.selectedArchiveScope, wechat: () => wechat ? { ...wechat.status(), adapter: adapter?.status() ?? null } : undefined, includesSession, ...(config.qqBridgeDir ? { qq: async () => qq ? { ...(await qq.status()), ...(qqSupervisor ? { supervisor: qqSupervisor.snapshot() } : {}) } : null } : {}),
+    const sources = consoleSources({ ctx: lifeCtx, config: memoryConfig, archive: store, names, ...(lifeStore ? { lifeStore } : {}), ...(routineStore ? { routines: routineStore } : {}), ...(photoStore ? { photos: photoStore } : {}), life: () => life, diaryDir: options.diaryDir, running: power.running, dailyBudget: power.dailyBudget, memoryTurns: power.memoryTurns, memoryTokenBudget: power.memoryTokenBudget, selectedArchiveScope: power.selectedArchiveScope, wechat: () => wechat ? { ...wechat.status(), adapter: adapter?.status() ?? null } : undefined, includesSession, ...(config.qqBridgeDir ? { qq: async () => qq ? { ...(await qq.status()), ...(qqSupervisor ? { supervisor: qqSupervisor.snapshot() } : {}) } : null } : {}),
       modules: () => ({ wechat: { available: config.wechat, enabled: power.wechatEnabled(), running: wechat !== undefined }, qq: { available: Boolean(config.qqBridgeDir), enabled: power.qqEnabled(), running: qq !== undefined } }), faults: () => [...faults.list(), ...(memory?.faults() ?? []), ...(bridge?.faults() ?? []), ...(qq?.faults() ?? [])] });
     const actions: ConsoleActions = {
       async start() {
@@ -226,6 +232,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       savePersona: persona => { writePersona(personaFile, { ...readPersona(personaFile), ...persona }); sources.invalidate(); },
       setDailyBudget: yuan => { power.setDailyBudget(yuan); sources.invalidate(); },
       setMemoryTurns: turns => { power.setMemoryTurns(turns); sources.invalidate(); },
+      setMemoryTokenBudget: tokens => { power.setMemoryTokenBudget(tokens); sources.invalidate(); },
       async setModules(patch) {
         if (patch.wechat !== undefined && !config.wechat) return '没有配置微信模块（配置里 wechat: true）';
         if (patch.qq !== undefined && !config.qqBridgeDir) return '没有配置 QQ 桥目录（配置里 qqBridgeDir）';
@@ -242,6 +249,9 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       },
       restartWechatAdapter: async () => { if (!adapter) return false; try { await adapter.restart(); } finally { sources.invalidate(); } return true; },
       setWechatSettings: next => { power.setWechat(next); sources.invalidate(); },
+      setRoutineEnabled: enabled => { routineStore?.setEnabled(enabled); life?.refreshRoutineTimer(); sources.invalidate(); },
+      setRoutinePaused: (id, paused) => { routineStore?.pause(id, paused); life?.refreshRoutineTimer(); sources.invalidate(); },
+      removeRoutine: id => { routineStore?.remove(id); life?.refreshRoutineTimer(); sources.invalidate(); },
       setArchiveScope: scope => { power.setArchiveScope(scope); sources.invalidate(); return power.restartRequired(); },
       saveWorldPrompt: text => { if (text.trim()) durableWrite(worldPromptFile, text); else rmSync(worldPromptFile, { force: true }); },
     };

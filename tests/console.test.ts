@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Readable } from 'node:stream';
-import { consoleSources, estimateTokens } from '../src/console/snapshot.ts';
+import { consoleSources, estimateTokens, summarizeCosts } from '../src/console/snapshot.ts';
 import { consoleRoute, handleConsole, type ConsoleActions, type ConsoleSources } from '../src/console/routes.ts';
 import { PERSONA_LAYERS, type Persona } from '../src/persona.ts';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
@@ -24,10 +24,14 @@ function fakeActions() {
     saveWorldPrompt: text => { calls.push(`world:${text}`); },
     setDailyBudget: yuan => { calls.push(`budget:${yuan}`); },
     setMemoryTurns: turns => { calls.push(`memory:${turns}`); },
+    setMemoryTokenBudget: tokens => { calls.push(`memoryTokens:${tokens}`); },
     setArchiveScope: scope => { calls.push(`scope:${scope}`); return scope === 'workspace'; },
     setModules: async modules => { calls.push(`modules:${JSON.stringify(modules)}`); return undefined; },
     restartWechatAdapter: async () => { calls.push('adapter-restart'); return true; },
     setWechatSettings: next => { calls.push(`wechat:${JSON.stringify(next)}`); },
+    setRoutineEnabled: enabled => { calls.push(`routine-enabled:${enabled}`); },
+    setRoutinePaused: (id, paused) => { calls.push(`routine-paused:${id}:${paused}`); },
+    removeRoutine: id => { calls.push(`routine-remove:${id}`); },
   };
   return { actions, calls };
 }
@@ -118,9 +122,14 @@ test('console writes need the write mark, and change only what they name', async
   for (const daily of [-1, '5', undefined]) assert.equal((await post('/dsh-world/console/budget', { daily })).status, 400, String(daily));
   assert.equal((await post('/dsh-world/console/memory', { turns: 60 })).status, 200);
   assert.equal((await post('/dsh-world/console/memory', { turns: null })).status, 200);
-  for (const turns of [0, 1.5, '60', undefined]) assert.equal((await post('/dsh-world/console/memory', { turns })).status, 400, String(turns));
+  assert.equal((await post('/dsh-world/console/memory', { tokenBudget: 12000 })).status, 200);
+  assert.equal((await post('/dsh-world/console/memory', { tokenBudget: null })).status, 200);
+  assert.equal((await post('/dsh-world/console/memory', { turns: 80, tokenBudget: 9000 })).status, 200);
+  for (const turns of [0, 1.5, '60']) assert.equal((await post('/dsh-world/console/memory', { turns })).status, 400, String(turns));
+  for (const tokenBudget of [0, 1.5, '6000', 200001]) assert.equal((await post('/dsh-world/console/memory', { tokenBudget })).status, 400, String(tokenBudget));
+  assert.equal((await post('/dsh-world/console/memory', {})).status, 400);
   assert.equal((await post('/dsh-world/console/nope', {})).status, 404);
-  assert.deepEqual(calls, ['start', 'stop', 'persona:{"名字":"小鱼","性格":"嘴硬"}', 'world:我的模板', 'budget:5', 'budget:undefined', 'memory:60', 'memory:undefined']);
+  assert.deepEqual(calls, ['start', 'stop', 'persona:{"名字":"小鱼","性格":"嘴硬"}', 'world:我的模板', 'budget:5', 'budget:undefined', 'memory:60', 'memory:undefined', 'memoryTokens:12000', 'memoryTokens:undefined', 'memory:80', 'memoryTokens:9000']);
   const del = await handleConsole(sources, actions, { method: 'DELETE', url: '/dsh-world/console/snapshot', write: false });
   assert.equal(del.status, 405); assert.equal(del.headers?.allow, 'GET, POST');
 });
@@ -128,6 +137,19 @@ test('token estimate weights CJK characters and fullwidth forms separately', () 
   assert.equal(estimateTokens('鲸鲸鲸鲸鲸'), 3);
   assert.equal(estimateTokens('abcdefg'), 2);
   assert.equal(estimateTokens('，。'), estimateTokens('鲸鲸'));
+});
+test('cost summary is a local estimate for today, grouped by model and session', () => {
+  const base = { occurredAt: '2026-10-23T01:00:00.000Z', day: '2026-10-23', worldId: 'fish', inputTokens: 10, cacheReadTokens: 2, outputTokens: 3, yuan: 0.001, source: 'home' };
+  const summary = summarizeCosts([
+    { ...base, sessionId: 'home-a', model: 'deepseek-flash' },
+    { ...base, occurredAt: '2026-10-23T02:00:00.000Z', sessionId: 'home-b', model: 'deepseek-flash', yuan: 0.002 },
+    { ...base, day: '2026-10-22', sessionId: 'home-a', model: 'deepseek-v4-pro', yuan: 9 },
+  ], '2026-10-23');
+  assert.equal(summary.estimated, true);
+  assert.equal(summary.note, '本地估算，不是供应商账单原值');
+  assert.deepEqual(summary.today, { yuan: 0.003, records: 2, inputTokens: 20, cacheReadTokens: 4, outputTokens: 6 });
+  assert.deepEqual(summary.byModel.map(item => [item.key, item.yuan]), [['deepseek-flash', 0.003]]);
+  assert.deepEqual(summary.bySession.map(item => [item.key, item.yuan]), [['home-b', 0.002], ['home-a', 0.001]]);
 });
 
 function fakeRes() {
@@ -199,4 +221,13 @@ test('the memory window is kept in world.json, defaults to 200 and survives a re
   power.setMemoryTurns(undefined);
   assert.equal(createWorldSwitch(dir).memoryTurns(), 200);
   assert.equal('memoryTurns' in JSON.parse(readFileSync(join(dir, 'world.json'), 'utf8')), false, 'the default is not written out');
+});
+test('memory token budget is opt-in, persists, and can be removed', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'dw-memory-budget-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const power = createWorldSwitch(dir);
+  assert.equal(power.memoryTokenBudget(), undefined);
+  power.setMemoryTokenBudget(12000);
+  assert.equal(createWorldSwitch(dir).memoryTokenBudget(), 12000);
+  power.setMemoryTokenBudget(undefined);
+  assert.equal(createWorldSwitch(dir).memoryTokenBudget(), undefined);
 });

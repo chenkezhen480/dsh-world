@@ -7,6 +7,18 @@ export interface Review { at: string; day: string }
 export interface Greeting { at: string; kind: 'arrival' | 'return' }
 /** What her home spent on the local `day`, in CNY, and whether she was told she went past her budget. */
 export interface Spend { day: string; yuan: number; reminded?: true }
+export interface CostRecord {
+  occurredAt: string;
+  day: string;
+  worldId: string;
+  sessionId: string;
+  model: string;
+  inputTokens: number;
+  cacheReadTokens: number;
+  outputTokens: number;
+  yuan: number;
+  source: string;
+}
 export interface LifeState { version: 1; homeSessionId?: string; alarm?: Alarm; greeting?: Greeting; review?: Review; spend?: Spend }
 /** `first` is a new home's first wake, `return` the word when her world starts again, `review` the daily look back. */
 export interface WakeRecord { scheduledAt: string; deliveredAt: string; source: AlarmSource | 'first' | 'return' | 'review'; lateMs: number }

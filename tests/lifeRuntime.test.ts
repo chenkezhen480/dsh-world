@@ -4,6 +4,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Context } from '@deepseek-ai/cordis';
 import { createUserMessage, ToolCallId, type GenerateOptions, type StreamChunk } from '@deepseek-ai/dsh-llm';
+import { AttachmentId, type AttachmentStore, type ImageAttachmentRef } from '@deepseek-ai/dsh-attachment';
 import { SessionId } from '@deepseek-ai/dsh-session';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import TokenMeter from '@deepseek-ai/dsh-token-meter';
@@ -41,7 +42,7 @@ function fakeTimers(clock: { now: Date }) {
     jump(ms: number) { clock.now = new Date(clock.now.getTime() + ms); for (const entry of pending) entry.at += ms; },
   };
 }
-interface SetupOptions { before?: (worldDir: string) => Promise<void>; host?: (host: LifeHost) => LifeHost; store?: (store: LifeStore) => LifeStore; notifier?: Notifier; dailyBudget?: () => number | undefined }
+interface SetupOptions { before?: (worldDir: string) => Promise<void>; host?: (host: LifeHost) => LifeHost; store?: (store: LifeStore) => LifeStore; notifier?: Notifier; dailyBudget?: () => number | undefined; attachments?: AttachmentStore }
 async function setup(t: test.TestContext, model: (request: GenerateOptions, index: number) => AsyncIterable<StreamChunk>, setupOptions: SetupOptions = {}) {
   const requests: GenerateOptions[] = [];
   const { ctx, root, cleanup, errors } = await hostFixture(t, request => { if (request.purpose !== 'compaction') requests.push(request); return model(request, requests.length - 1); });
@@ -68,7 +69,7 @@ async function setup(t: test.TestContext, model: (request: GenerateOptions, inde
   const baseStore = createLifeStore(worldDir, config.timeZone);
   const store = setupOptions.store?.(baseStore) ?? baseStore;
   const options = { worldDir, roomDir: join(worldDir, 'room'), diaryDir: join(worldDir, 'diary'), selfFile: join(worldDir, 'room', 'self.md'), fallbackWakeTime: '09:00', timeZone: config.timeZone, alarmFile: join(worldDir, 'alarm.md') };
-  const make = () => createLifeRuntime({ ctx, config, options, store, host, notifier: setupOptions.notifier ?? { toast: async () => {}, outlets: [] }, clock: () => clock.now, timers, ...(setupOptions.dailyBudget ? { dailyBudget: setupOptions.dailyBudget } : {}) });
+  const make = () => createLifeRuntime({ ctx, config, options, store, host, notifier: setupOptions.notifier ?? { toast: async () => {}, outlets: [] }, clock: () => clock.now, timers, ...(setupOptions.dailyBudget ? { dailyBudget: setupOptions.dailyBudget } : {}), ...(setupOptions.attachments ? { attachments: setupOptions.attachments } : {}) });
   let life = make();
   cleanup.push(() => life.stop());
   /** Waits out deliveries and the home turns they start, a few rounds deep. */
@@ -117,13 +118,49 @@ test('first start builds the home with full access, a title and reach_out at hom
   assert.equal(s.renamed.get(home), '鲸鲸的家'); assert.ok(s.fullAccess.has(home));
   assert.equal(s.requests.length, 1);
   assert.match(textOf(s.requests[0]), /这是我的家/);
-  assert.deepEqual(toolNames(s.requests[0]).filter(name => ['plan_next', 'reach_out', 'read_diary'].includes(name)).sort(), ['plan_next', 'reach_out']);
+  assert.deepEqual(toolNames(s.requests[0]).filter(name => ['plan_next', 'reach_out', 'search_diary', 'read_diary', 'search_self', 'routine_add', 'routine_list', 'routine_update', 'routine_pause', 'routine_remove', 'routine_handle'].includes(name)).sort(), ['plan_next', 'reach_out', 'read_diary', 'search_diary', 'search_self', 'routine_add', 'routine_list', 'routine_update', 'routine_pause', 'routine_remove', 'routine_handle'].sort());
   const chat = await createAgent(s.ctx, 'chat');
   chat.followup(userMessage('hi')); await chat.whenIdle();
   const names = toolNames(s.requests[1]);
-  assert.ok(!names.includes('read_diary') && !names.includes('reach_out'), 'reach_out stays home');
+  assert.ok(!names.includes('search_diary') && !names.includes('read_diary') && !names.includes('search_self') && !names.includes('reach_out') && !names.some(name => name.startsWith('routine_')), 'home retrieval and routine tools stay home');
   assert.ok(['plan_next', 'check_alarm', 'cancel_alarm'].every(name => count(names, name) === 1), 'the alarm can be set from any of her sessions');
   assert.equal(s.store.wakes().length, 1); assert.equal(s.store.wakes()[0].source, 'first');
+});
+test('a routine due timer persists locally without starting a model call', async t => {
+  const s = await setup(t, () => textResponse('嗯'), { before: async worldDir => writeFile(join(worldDir, 'routines.json'), JSON.stringify({ version: 1, enabled: true, routines: [{ id: 'r1', title: '喝水', note: '', schedule: { kind: 'daily', time: '03:01', timeZone: 'UTC' }, enabled: true, nextDueAt: '2026-10-23T03:01:00.000Z', dueAt: null, deferUntil: null, lastHandledAt: null, surfacedAt: null }] })) });
+  await s.start();
+  const afterStart = s.requests.length;
+  s.timers.advance(60_000); await tick();
+  assert.equal(s.requests.length, afterStart, 'routine timer does not start a model turn');
+  assert.equal(s.life.routines.list().routines[0]!.dueAt, '2026-10-23T03:01:00.000Z');
+});
+test('the next natural home turn receives one bounded routine summary in its admitted input', async t => {
+  const s = await setup(t, () => textResponse('嗯'), { before: async worldDir => writeFile(join(worldDir, 'routines.json'), JSON.stringify({ version: 1, enabled: true, routines: [{ id: 'r1', title: '喝水', note: '', schedule: { kind: 'daily', time: '03:01', timeZone: 'UTC' }, enabled: true, nextDueAt: '2026-10-23T03:01:00.000Z', dueAt: null, deferUntil: null, lastHandledAt: null, surfacedAt: null }] })) });
+  await s.start();
+  const afterStart = s.requests.length;
+  s.timers.advance(60_000); await tick();
+  assert.equal(s.requests.length, afterStart, 'routine due does not itself start a model turn');
+  const home = await s.life.home();
+  home.followup(userMessage('早上好'));
+  await home.whenIdle();
+  assert.match(textOf(s.requests.at(-1)!), /本地习惯到期摘要/);
+  assert.match(textOf(s.requests.at(-1)!), /喝水/);
+  assert.equal(s.requests.length, afterStart + 1, 'summary joins the natural turn instead of creating another model call');
+  assert.deepEqual(s.life.routines.takePendingSummary(), [], 'the same due occurrence is not summarized twice');
+});
+test('keep_photo can only save an image from the current home user turn', async t => {
+  const imageData = new Uint8Array([9, 8, 7]);
+  const imageRef: ImageAttachmentRef = { attachmentId: AttachmentId('current-image'), mediaType: 'image/png', bytes: imageData.length, width: 1, height: 1 };
+  const attachmentStore = { readImage: async (ref: ImageAttachmentRef) => ({ ref, data: imageData }) } as unknown as AttachmentStore;
+  const s = await setup(t, (_request, index) => index === 1 ? toolCall('keep_photo', { description: '今天的照片', tags: ['今天'] }) : textResponse('收到'), { attachments: attachmentStore });
+  await s.start();
+  const home = await s.life.home();
+  home.followup(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'image', attachment: imageRef }] }));
+  await s.idle();
+  assert.ok(toolNames(s.requests[1]!).includes('keep_photo'));
+  assert.equal(s.life.photos?.list()[0]?.description, '今天的照片');
+  assert.equal(s.life.photos?.list()[0]?.attachmentId, 'current-image');
+  assert.ok(!s.life.photos?.list()[0]?.attachmentId.includes('old'));
 });
 test('her room is a workspace of the host, named for her, and a new home is built in it', async t => {
   const s = await setup(t, () => textResponse('嗯'));
@@ -377,6 +414,8 @@ test('her home\'s spending is counted per local day, and past the daily budget s
   const spend = () => s.store.read().spend;
   assert.equal(spend()?.day, '2026-10-23');
   assert.ok(Math.abs(spend()!.yuan - step * s.requests.length) < 1e-9, String(spend()?.yuan));
+  assert.ok(s.store.costs().length >= 1);
+  assert.deepEqual(s.store.costs()[0], { occurredAt: '2026-10-23T03:00:00.000Z', day: '2026-10-23', worldId: 'fish', sessionId: 'home-0', model: 'test', inputTokens: 4000, cacheReadTokens: 0, outputTokens: 1000, yuan: step, source: 'home' });
   const home = s.ctx.agents.get(SessionId('home-0'))!;
   home.followup(userMessage('再聊一句')); await s.idle();
   const told = s.requests.filter(request => /过了伙伴给我定的每天 0\.01 元/.test(textOf(request)));
@@ -385,6 +424,19 @@ test('her home\'s spending is counted per local day, and past the daily budget s
   home.followup(userMessage('又一句')); await s.idle();
   assert.equal(textOf(s.requests.at(-1)!).split('过了伙伴给我定的每天').length - 1, 1, 'not told again that day');
   budget = undefined;
+});
+test('a cost record failure does not fail the home reply', async t => {
+  const usage = { inputTokens: 10, outputTokens: 2 };
+  const s = await setup(t, request => (async function* () {
+    yield { type: 'text-delta', index: 0, text: '回复仍然成功' } as StreamChunk;
+    yield { type: 'usage', usage } as StreamChunk;
+    yield { type: 'finish', reason: { kind: 'stop' } } as StreamChunk;
+    void request;
+  })(), { store: store => ({ ...store, appendCost: () => { throw new Error('disk full'); } }) });
+  await s.start();
+  assert.equal(s.requests.length, 1, 'the home turn still ran');
+  assert.deepEqual(s.errors, []);
+  assert.ok(s.faults().some(fault => fault.includes('成本记录写入失败：disk full')));
 });
 test('a home rebuilt while her own alarm is pending greets her at once, is not asked about, and the alarm still rings', async t => {
   const s = await setup(t, () => textResponse('新家'), { before: async worldDir => { await writeFile(join(worldDir, 'life.json'), JSON.stringify({
@@ -547,9 +599,9 @@ test('a reloaded runtime replaces the old registrations instead of stacking them
   const second = s.restart(); await second.start();
   await s.untilMorning();
   const home = toolNames(s.requests.at(-1)!);
-  assert.equal(count(home, 'plan_next'), 1); assert.equal(count(home, 'reach_out'), 1); assert.equal(count(home, 'read_diary'), 0);
+  assert.equal(count(home, 'plan_next'), 1); assert.equal(count(home, 'reach_out'), 1); assert.equal(count(home, 'read_diary'), 1); assert.equal(count(home, 'search_diary'), 1); assert.equal(count(home, 'search_self'), 1);
   chat.followup(userMessage('hi')); await chat.whenIdle();
-  assert.equal(count(toolNames(s.requests.at(-1)!), 'plan_next'), 1); assert.equal(count(toolNames(s.requests.at(-1)!), 'reach_out'), 0); assert.equal(count(toolNames(s.requests.at(-1)!), 'read_diary'), 0);
+  assert.equal(count(toolNames(s.requests.at(-1)!), 'plan_next'), 1); assert.equal(count(toolNames(s.requests.at(-1)!), 'reach_out'), 0); assert.equal(count(toolNames(s.requests.at(-1)!), 'read_diary'), 0); assert.equal(count(toolNames(s.requests.at(-1)!), 'search_diary'), 0); assert.equal(count(toolNames(s.requests.at(-1)!), 'search_self'), 0);
   assert.deepEqual(s.errors, []);
 });
 test('stop ends the life line: no delivery after it, and plan_next refuses', async t => {

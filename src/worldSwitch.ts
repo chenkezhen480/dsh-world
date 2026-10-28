@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { durableWrite } from './life/lifeStore.ts';
 import { validArchiveScope, type MemoryArchiveScope } from './archiveSelection.ts';
 
-interface WorldSettings { running: boolean; dailyBudget?: number; memoryTurns?: number; archiveScope?: MemoryArchiveScope; wechatContext?: number; wechatBufferSeconds?: number; wechatEnabled?: boolean; qqEnabled?: boolean }
+interface WorldSettings { running: boolean; dailyBudget?: number; memoryTurns?: number; memoryTokenBudget?: number; archiveScope?: MemoryArchiveScope; wechatContext?: number; wechatBufferSeconds?: number; wechatEnabled?: boolean; qqEnabled?: boolean }
 /** How many of the newest turns the memory block carries when nothing else is set. */
 export const DEFAULT_MEMORY_TURNS = 200;
 /** WeChat group messages read before a mention, and seconds a private image waits for its companions. */
@@ -23,6 +23,7 @@ export function createWorldSwitch(worldDir: string, configuredScope: MemoryArchi
     running: stored ? stored.running === true : existsSync(join(worldDir, 'life.json')),
     ...(typeof stored?.dailyBudget === 'number' ? { dailyBudget: stored.dailyBudget } : {}),
     ...(validTurns(stored?.memoryTurns) ? { memoryTurns: stored.memoryTurns } : {}),
+    ...(validMemoryTokenBudget(stored?.memoryTokenBudget) ? { memoryTokenBudget: stored.memoryTokenBudget } : {}),
     ...(validArchiveScope(stored?.archiveScope) ? { archiveScope: stored.archiveScope } : {}),
     ...(validWechatContext(stored?.wechatContext) ? { wechatContext: stored.wechatContext } : {}),
     ...(validWechatBuffer(stored?.wechatBufferSeconds) ? { wechatBufferSeconds: stored.wechatBufferSeconds } : {}),
@@ -56,6 +57,12 @@ export function createWorldSwitch(worldDir: string, configuredScope: MemoryArchi
       const { memoryTurns: _old, ...rest } = settings;
       save(turns === undefined || turns === DEFAULT_MEMORY_TURNS ? rest : { ...rest, memoryTurns: turns });
     },
+    /** Optional estimated token cap for each rebuilt memory block; absent leaves the historical behavior intact. */
+    memoryTokenBudget: () => settings.memoryTokenBudget,
+    setMemoryTokenBudget(tokens: number | undefined): void {
+      const { memoryTokenBudget: _old, ...rest } = settings;
+      save(tokens === undefined ? rest : { ...rest, memoryTokenBudget: tokens });
+    },
     /** The console's switches for the WeChat and QQ modules; on unless turned off, and only an off switch is written out. */
     wechatEnabled: () => settings.wechatEnabled !== false,
     qqEnabled: () => settings.qqEnabled !== false,
@@ -77,6 +84,7 @@ export function createWorldSwitch(worldDir: string, configuredScope: MemoryArchi
 }
 export type WorldSwitch = ReturnType<typeof createWorldSwitch>;
 export const validTurns = (value: unknown): value is number => typeof value === 'number' && Number.isInteger(value) && value >= 1;
+export const validMemoryTokenBudget = (value: unknown): value is number => typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 200_000;
 
 export const validWechatContext = (value: unknown): value is number => typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= MAX_WECHAT_CONTEXT;
 export const validWechatBuffer = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= MAX_WECHAT_BUFFER_SECONDS;
