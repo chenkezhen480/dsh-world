@@ -42,6 +42,15 @@ test('wake and compaction logs append and skip a half-written tail', async t => 
   store.appendCompaction({ time: 't', sessionId: 's', ok: true, shadowedTokens: 10 });
   assert.deepEqual(store.compactions(), [{ time: 't', sessionId: 's', ok: true, shadowedTokens: 10 }]);
 });
+test('cost records are independent JSONL entries and survive a torn tail', async t => {
+  const root = await dir(t); const store = createLifeStore(root, 'UTC');
+  const record = { occurredAt: '2026-10-23T01:00:00.000Z', day: '2026-10-23', worldId: 'fish', sessionId: 'home', model: 'deepseek-flash', inputTokens: 10, cacheReadTokens: 2, outputTokens: 3, yuan: 0.001, source: 'home' };
+  store.appendCost(record);
+  await writeFile(join(root, 'life', 'costs.jsonl'), (await readFile(join(root, 'life', 'costs.jsonl'), 'utf8')) + '{broken');
+  assert.deepEqual(store.costs(), [record]);
+  store.appendCost({ ...record, occurredAt: '2026-10-23T02:00:00.000Z' });
+  assert.equal(store.costs().length, 2);
+});
 test('a half-written tail does not swallow the next record', async t => {
   const root = await dir(t); const store = createLifeStore(root, 'UTC'); const file = join(root, 'life', 'wakes.jsonl');
   store.appendWake({ scheduledAt: 'a', deliveredAt: 'b', source: 'first', lateMs: 0 });

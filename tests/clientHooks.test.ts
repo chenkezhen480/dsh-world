@@ -19,7 +19,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const source = readFileSync(join(here, '..', 'client', 'index.js'), 'utf8');
 
 /** 假 React：只记 hook 调用顺序，值从 values 里按位取，取不到就用初始值。 */
-function runtime(values: readonly unknown[]): { run(name: string): { hooks: string[]; tree: unknown } } {
+function runtime(values: readonly unknown[], requests: Array<{ path: string; init: any }> = []): { run(name: string, props?: any): { hooks: string[]; tree: any } } {
   const hooks: string[] = [];
   let at = 0;
   const react = {
@@ -38,7 +38,7 @@ function runtime(values: readonly unknown[]): { run(name: string): { hooks: stri
   vm.runInNewContext(source, {
     window: { __ModuleLoader__: { load: (opts: never) => { loaded.push(opts) } } },
     document: { visibilityState: 'visible' },
-    fetch: () => Promise.resolve({ ok: true, json: () => Promise.resolve({}) }),
+    fetch: (path: string, init: any) => { requests.push({ path, init }); return Promise.resolve({ ok: true, json: () => Promise.resolve({}) }) },
     console,
   });
   assert.equal(loaded.length, 1, '客户端应该只注册一次模块');
@@ -47,12 +47,12 @@ function runtime(values: readonly unknown[]): { run(name: string): { hooks: stri
     throw new Error(`组件不该依赖 ${name}`);
   });
   return {
-    run(name: string) {
+    run(name: string, props?: any) {
       at = 0;
       hooks.length = 0;
       const component = exports.__test[name];
       assert.equal(typeof component, 'function', `${name} 应该在 __test 里`);
-      const tree = component({ ...filled, snapshot: filled, snap: filled });
+      const tree = component(props || { ...filled, snapshot: filled, snap: filled });
       return { hooks: [...hooks], tree };
     },
   };
@@ -77,15 +77,19 @@ const filled = {
   diary: '',
   records: [],
   memory: { rounds: 3 },
+  mem: { turns: 3, windowTurns: 200, tokenBudget: 6000, approxTokens: 900, records: 4, sessions: 1 },
+  costs: { today: { yuan: 0.0123, records: 2 }, byModel: [{ key: 'deepseek-chat', yuan: 0.0123 }], bySession: [{ key: 'session-12345678', yuan: 0.0123 }], note: '本地估算，不是供应商账单原值' },
   health: [],
   stats: {},
   alarm: null,
   dates: ['2026-10-26'],
   modules: { wechat: { available: true, enabled: true, running: true }, qq: { available: true, enabled: true, running: true } },
   wechat: { accountId: 'wxid_bot', chats: 2, pending: 0, uncertain: 0, lastContactAt: '2026-10-26T10:00:00.000Z', account: 'online', contextMessages: 8, bufferSeconds: 3, adapter: { running: true, pid: 1, restarts: 0, lastExit: null, error: null, needsHuman: false } },
+  routines: { version: 1, enabled: true, routines: [{ id: 'r-1', title: '喝水', enabled: true, dueAt: null }] },
+  photos: [{ id: 'photo-1', description: '窗边', width: 2, height: 2, bytes: 4, tags: ['家'] }],
 };
 
-const components = ['Activity', 'Diary', 'Qq', 'Panel', 'View', 'Overview', 'PersonaEditor', 'PromptEditor', 'Proactive', 'Modules', 'Wechat'] as const;
+const components = ['Activity', 'Diary', 'Qq', 'Panel', 'View', 'Overview', 'PersonaEditor', 'PromptEditor', 'Proactive', 'Modules', 'Wechat', 'Memory', 'CostSummary', 'RoutineAdmin', 'PhotoAlbum'] as const;
 
 for (const name of components) {
   test(`${name} 在两帧之间不会换 hook 顺序`, () => {
@@ -101,3 +105,65 @@ for (const name of components) {
     );
   });
 }
+
+test('Memory 展示并保存 token 预算到现有 memory 路由', async () => {
+  const requests: Array<{ path: string; init: any }> = [];
+  const { tree } = runtime(['workspace', '200', '6000', ''], requests).run('Memory', { mem: filled.mem });
+  const nodes: any[] = [];
+  function visit(node: any): void {
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node)) { node.forEach(visit); return; }
+    nodes.push(node);
+    visit(node.children);
+  }
+  visit(tree);
+  const input = nodes.find(node => node.props?.['aria-label'] === '记忆 token 预算');
+  assert.equal(input?.props.value, '6000');
+  const button = nodes.find(node => node.type === 'button' && node.children?.includes('保存 token 预算'));
+  assert.ok(button);
+  button.props.onClick();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(requests[0]?.path, '/dsh-world/console/memory');
+  assert.deepEqual(JSON.parse(requests[0].init.body), { tokenBudget: 6000 });
+});
+
+test('Overview 展示今日成本及本地估算说明', () => {
+  const { tree } = runtime([]).run('Overview');
+  const nodes: any[] = [];
+  function visit(node: any): void {
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node)) { node.forEach(visit); return; }
+    nodes.push(node);
+    visit(node.children);
+  }
+  visit(tree);
+  const costComponent = nodes.find(node => node.type?.name === 'CostSummary');
+  assert.ok(costComponent);
+  assert.equal(costComponent.props.costs, filled.costs);
+  const { tree: card } = runtime([]).run('CostSummary', { costs: filled.costs });
+  assert.match(JSON.stringify(card), /本地估算/);
+  assert.match(JSON.stringify(card), /deepseek-chat/);
+});
+
+test('RoutineAdmin 的总开关、暂停和删除请求指向习惯控制台路由', async () => {
+  const requests: Array<{ path: string; init: any }> = [];
+  const { tree } = runtime([], requests).run('RoutineAdmin', { routines: filled.routines });
+  const nodes: any[] = [];
+  function visit(node: any): void {
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node)) { node.forEach(visit); return; }
+    nodes.push(node);
+    visit(node.children);
+  }
+  visit(tree);
+  nodes.find(node => node.type === 'input')!.props.onChange({ target: { checked: false } });
+  const buttons = nodes.filter(node => node.type === 'button');
+  buttons[0].props.onClick();
+  buttons[1].props.onClick();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(requests.map(({ path, init }) => [path, JSON.parse(init.body)]), [
+    ['/dsh-world/console/routines', { enabled: false }],
+    ['/dsh-world/console/routines/pause', { id: 'r-1', paused: true }],
+    ['/dsh-world/console/routines/remove', { id: 'r-1' }],
+  ]);
+});

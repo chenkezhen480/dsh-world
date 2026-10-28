@@ -15,6 +15,8 @@ import { createWorldRuntime } from '../src/index.ts';
 import * as worldPlugin from '../src/index.ts';
 import { createArchiveStore } from '../src/store.ts';
 import { record } from './fixtures.ts';
+import { renderHistory } from '../src/history.ts';
+import { estimateTokens } from '../src/tokenEstimate.ts';
 import TokenMeter from '@deepseek-ai/dsh-token-meter';
 import ToolFreeCompaction from '../src/compaction.ts';
 declare module '@deepseek-ai/dsh-llm' { interface MessageSourceMap { 'test-schedule': { kind: 'test-schedule' } } }
@@ -74,6 +76,24 @@ test('the memory block carries as many recent turns as the console window says, 
   const second = await ctx.agents.create({ sessionId: SessionId('w2'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } });
   second.agent.followup(user('hi')); await second.agent.whenIdle();
   assert.ok(textOf(requests.at(-1)!).includes('older turn'), 'a new session reads the new window');
+});
+test('the optional memory token budget keeps a newest prefix of complete turns and omits an oversized single turn', async t => {
+  const requests: GenerateOptions[] = [];
+  const { ctx, root, cleanup } = await hostFixture(t, async function* (request) { requests.push(request); yield* textResponse('ok'); });
+  const store = createArchiveStore({ ...config, root });
+  const newest = record('budget-new', { content: '最近的内容'.repeat(30), occurredAt: '2026-10-23T12:00:00.000Z' });
+  const older = record('budget-old', { content: '较早的内容'.repeat(30), occurredAt: '2026-10-22T12:00:00.000Z' });
+  await store.commitRecords([older, newest]);
+  let budget = estimateTokens(renderHistory([{ turnId: newest.turnId, occurredAt: newest.occurredAt, messages: [newest] }], config.timeZone, { companion: 'TA', partner: '伙伴' }));
+  const world = createWorldRuntime(ctx, config, store, undefined, () => 200, () => budget);
+  await world.start(); cleanup.push(() => world.stop().finally(() => store.close()));
+  const first = await ctx.agents.create({ sessionId: SessionId('budget-fit'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } });
+  first.agent.followup(user('hi')); await first.agent.whenIdle();
+  assert.match(textOf(requests[0]!), /最近的内容/); assert.doesNotMatch(textOf(requests[0]!), /较早的内容/);
+  budget = 1;
+  const second = await ctx.agents.create({ sessionId: SessionId('budget-small'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } });
+  second.agent.followup(user('hi')); await second.agent.whenIdle();
+  assert.equal(kinds(requests.at(-1)!).includes('dsh-world-history'), false, 'an oversized complete turn is omitted without slicing it');
 });
 test('tool continuation keeps call/result pairing and does not re-admit the frozen memory block', async t => {
   const requests: GenerateOptions[] = [];

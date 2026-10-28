@@ -3,11 +3,13 @@ import { join } from 'node:path';
 import type { Context } from '@deepseek-ai/cordis';
 import type { Agent } from '@deepseek-ai/dsh-agent';
 import type {} from '@deepseek-ai/dsh-agent-loop';
+import type { AttachmentStore, ImageAttachmentRef } from '@deepseek-ai/dsh-attachment';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import type {} from '@deepseek-ai/dsh-system-prompt';
 import '../hostContract.ts';
 import { errorText, Faults } from '../faults.ts';
-import { keepSelfCopy } from '../self.ts';
+import { compareSelf, keepSelfCopy, searchSelf } from '../self.ts';
+import { createDiaryReader } from './diary.ts';
 import { formatLocalTime } from '../timeContext.ts';
 import { belongsToWorld } from '../sourceArchive.ts';
 import type { WorldConfig } from '../types.ts';
@@ -20,6 +22,8 @@ import { createHome } from './home.ts';
 import type { LifeHost } from './host.ts';
 import { createJournal } from './journal.ts';
 import { stepCost } from './pricing.ts';
+import { createRoutineStore, type RoutineStore } from './routines.ts';
+import { createPhotoStore, type PhotoStore } from './photos.ts';
 import type { LifeStore } from './lifeStore.ts';
 import { exampleTime, readAlarmMessages } from './messages.ts';
 import type { Notifier } from './notify.ts';
@@ -32,6 +36,9 @@ export interface LifeDeps {
   ctx: Context; config: WorldConfig; options: LifeOptions; store: LifeStore; host: LifeHost; notifier: Notifier; clock?: () => Date; timers?: LifeTimers;
   /** CNY her home may spend a day; undefined or absent is no limit. */
   dailyBudget?: () => number | undefined;
+  routines?: RoutineStore;
+  attachments?: AttachmentStore;
+  photos?: PhotoStore;
 }
 
 /**
@@ -43,12 +50,15 @@ export function createLifeRuntime(deps: LifeDeps) {
   const { ctx, config, options, store, host } = deps;
   const { timeZone } = options;
   const names = worldNames(config);
+  const diary = createDiaryReader(options.diaryDir);
   const clock = deps.clock ?? (() => new Date());
   const faults = new Faults();
   const disposers: (() => void)[] = [];
   const state = store.read();
   let stopped = false;
   let delivery: Promise<void> | undefined;
+  const photos = deps.photos ?? (deps.attachments ? createPhotoStore(options.worldDir, deps.attachments, clock) : undefined);
+  let currentImages: ImageAttachmentRef[] = [];
 
   /** Bookkeeping after the fact: a failure is a fault, never a broken turn. */
   function record(work: () => void): void {
@@ -79,6 +89,14 @@ export function createLifeRuntime(deps: LifeDeps) {
     agent.steer(createUserMessage({ source: { kind: 'dsh-world-life' }, content: [{ type: 'text', text }] }));
     return ctx.sessions.flush(agent.session);
   };
+  const routineSummaryMessage = (): ReturnType<typeof createUserMessage> | undefined => {
+    const pending = routines.takePendingSummary(clock());
+    if (!pending.length) return undefined;
+    const lines = pending.map(item => `- ${item.title}（${item.dueAt}）`);
+    const more = routines.list().routines.some(item => item.enabled && item.dueAt && !item.surfacedAt && (!item.deferUntil || Date.parse(item.deferUntil) <= clock().getTime()));
+    const summary = `本地习惯到期摘要（最多 5 条；只供你自行决定完成、延后、跳过或删除，不代表已经执行）：\n${lines.join('\n')}${more ? '\n- 还有更多待处理项，可用 routine_list 查看。' : ''}`;
+    return createUserMessage({ source: { kind: 'dsh-world-life' }, content: [{ type: 'text', text: summary }] });
+  };
 
   // Her alarm.
   // What is delivered next: a new home's greeting first, then whichever of the look back and her alarm is due sooner.
@@ -90,6 +108,13 @@ export function createLifeRuntime(deps: LifeDeps) {
     return alarm && { kind: 'alarm', at: alarm.at, alarm };
   }
   const timer = createAlarmTimer({ clock, timers: deps.timers ?? realTimers, dueAlarm: () => nextJob()?.at, fire: () => void deliver() });
+  const routines = deps.routines ?? createRoutineStore(options.worldDir, timeZone, clock);
+  const routineTimer = createAlarmTimer({
+    clock, timers: deps.timers ?? realTimers,
+    dueAlarm: () => { const file = routines.list(); return file.enabled ? file.routines.filter(item => item.enabled).flatMap(item => [item.nextDueAt, item.deferUntil].filter((at): at is string => Boolean(at))).sort()[0] : undefined; },
+    fire: () => { try { routines.collectDue(clock()); } catch (error) { ctx.logger.error(error); routineTimer.failed(); } finally { routineTimer.arm(); } },
+  });
+  const refreshRoutineTimer = () => routineTimer.reset();
   const morning = (now: Date): Alarm => ({ at: nextLocalTime(now, options.fallbackWakeTime, timeZone).toISOString(), note: '', setAt: now.toISOString(), source: 'fallback' });
   /** A new alarm replaces a failing one, so its backoff and fault go with it. Saved or not, it is armed. */
   function setAlarm(alarm: Alarm): void {
@@ -218,10 +243,14 @@ export function createLifeRuntime(deps: LifeDeps) {
   }
 
   // What her home spends: each model step priced as it lands; past the daily budget she is told once that day.
-  function spent(usage: Parameters<typeof stepCost>[0], model: string): void {
+  function spent(usage: Parameters<typeof stepCost>[0], model: string, sessionId: string): void {
     const now = clock(); const day = formatLocalTime(now, timeZone).slice(0, 10);
     const spend = state.spend?.day === day ? state.spend : (state.spend = { day, yuan: 0 });
-    spend.yuan += stepCost(usage, model, now);
+    const yuan = stepCost(usage, model, now); spend.yuan += yuan;
+    try {
+      store.appendCost({ occurredAt: now.toISOString(), day, worldId: config.worldId, sessionId, model, inputTokens: usage.inputTokens, cacheReadTokens: usage.cacheReadTokens ?? 0, outputTokens: usage.outputTokens, yuan, source: 'home' });
+      faults.clear('cost');
+    } catch (error) { faults.set('cost', `成本记录写入失败：${errorText(error)}`); ctx.logger.error(error); }
     const budget = deps.dailyBudget?.();
     const remind = budget !== undefined && spend.yuan >= budget && !spend.reminded;
     if (remind) spend.reminded = true;
@@ -244,7 +273,19 @@ export function createLifeRuntime(deps: LifeDeps) {
   const tools = createToolRegistry({
     faults, logger: ctx.logger,
     isHome: agent => agent.id === state.homeSessionId,
-    tools: () => lifeTools({ planNext, checkAlarm, cancelAlarm, notifier, names, origin: () => { try { return host.origin(); } catch { return undefined; } }, descriptions: alarmDescriptions(alarmMessages(), templateValues()) }),
+    tools: () => lifeTools({ planNext, checkAlarm, cancelAlarm, notifier, names, origin: () => { try { return host.origin(); } catch { return undefined; } }, descriptions: alarmDescriptions(alarmMessages(), templateValues()), searchDiary: diary.search, readDiary: diary.read, searchSelf: (query, limit) => searchSelf(options.selfFile, query, limit), compareSelf: (older, newer) => compareSelf(options.selfFile, older, newer), routines: {
+      list: () => { const value = routines.list(); const now = clock().getTime(); return { ...value, routines: value.routines.slice(0, 100), pending: value.routines.filter(item => item.dueAt && (!item.deferUntil || Date.parse(item.deferUntil) <= now)).slice(0, 5).map(({ id, title, dueAt, note }) => ({ id, title, dueAt, note })) }; },
+      add: input => { const value = routines.add(input); refreshRoutineTimer(); return value; },
+      update: (id, patch) => { const value = routines.update(id, patch); refreshRoutineTimer(); return value; },
+      pause: (id, paused) => { const value = routines.pause(id, paused); refreshRoutineTimer(); return value; },
+      remove: id => { routines.remove(id); refreshRoutineTimer(); },
+      handle: (id, decision, minutes) => { const value = routines.handle(id, decision, minutes); refreshRoutineTimer(); return value; },
+    }, ...(photos ? { photos: {
+      keep: async (index: number, description?: string, tags?: string[]) => {
+        if (!Number.isSafeInteger(index) || index < 0 || index >= currentImages.length) throw new Error('index 必须指向当前消息中的图片');
+        return photos.keep(currentImages[index]!, description, tags);
+      }, list: photos.list, forget: photos.forget,
+    } } : {}) }),
   });
   const attach = (agent: Agent) => { if (!stopped && belongsToWorld(agent.session, config)) tools.attach(agent); };
   const home = createHome({
@@ -273,21 +314,30 @@ export function createLifeRuntime(deps: LifeDeps) {
         if (!agent.inbox.nextTurn.some(queued => queued.id === inserted.id)) return;
         agent.inbox.remove(inserted.id); agent.steer(inserted);
       }),
+      ctx.on('agent/pre-step', async ({ agent, signal }, next) => {
+        const decision = await next();
+        if (decision.kind !== 'enter' || signal.aborted || agent.id !== state.homeSessionId || !decision.messages.some(message => message.source.kind === 'user')) return decision;
+        const summary = routineSummaryMessage();
+        return summary ? { ...decision, messages: [summary, ...decision.messages] } : decision;
+      }),
       ctx.on('session/event', (session, event) => {
         if (!belongsToWorld(session, config)) return;
         journal.world(session, event);
         if (session.id !== state.homeSessionId) return;
         journal.home(session, event);
-        if (event.type === 'assistant/message' && event.data.usage) spent(event.data.usage, event.data.message.source.model);
+        if (event.type === 'assistant/message' && event.data.usage) spent(event.data.usage, event.data.message.source.model, session.id);
         if (event.type === 'user/message' && event.data.source.kind === 'user') earlyStop.partnerSpoke();
+        if (event.type === 'user/message' && event.data.source.kind === 'user') currentImages = event.data.content.flatMap(block => block.type === 'image' ? [block.attachment] : []);
         if (event.type !== 'turn/end') return;
         home.turnEnded(session.id);
         fallbackAlarm();
         // A stopped or failed turn is not her deciding she is done.
         askIfDoneEarly(event.data.reason.kind === 'completed');
+        currentImages = [];
       }),
     );
     for (const agent of ctx.agents.list()) attach(agent);
+    routines.collectDue(clock()); routineTimer.arm();
     if (!state.review) { state.review = nextReview(clock(), timeZone); record(() => store.write(state)); }
     try {
       const agent = await home.open(); faults.clear('home');
@@ -302,17 +352,21 @@ export function createLifeRuntime(deps: LifeDeps) {
     if (stopped) return;
     stopped = true;
     timer.stop();
+    routineTimer.stop();
     for (const dispose of disposers.splice(0).reverse()) dispose();
     tools.clear();
   }
   return {
     start, stop, planNext, checkAlarm, cancelAlarm, deliver,
-    snapshot: () => ({ homeSessionId: state.homeSessionId, alarm: state.alarm, review: state.review, spend: state.spend, faults: faults.list() }),
+    snapshot: () => ({ homeSessionId: state.homeSessionId, alarm: state.alarm, review: state.review, spend: state.spend, routines: routines.list(), photos: photos?.list() ?? [], faults: faults.list() }),
     /** Resolves once no alarm delivery is in flight (its durability flush can outlast the turn it starts). */
     settled: async () => { while (delivery) await delivery; },
     home: () => home.open(),
     /** Whether this session is her home now; the world prompt gives the home its world line. */
     isHome: (sessionId: string) => !stopped && sessionId === state.homeSessionId,
+    routines,
+    photos,
+    refreshRoutineTimer,
   };
 }
 export type LifeRuntime = ReturnType<typeof createLifeRuntime>;

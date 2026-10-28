@@ -10,7 +10,7 @@ import TokenMeter from '@deepseek-ai/dsh-token-meter';
 import { hostFixture, textResponse } from './hostFixture.ts';
 import { createWorldRuntime } from '../src/runtime.ts';
 import { createArchiveStore } from '../src/store.ts';
-import { renderSelf, SELF_CAP } from '../src/self.ts';
+import { compareSelf, renderSelf, searchSelf, SELF_CAP } from '../src/self.ts';
 import { readTemplate, renderTemplate, renderWorldPrompt, worldNames } from '../src/worldPrompt.ts';
 import ToolFreeCompaction from '../src/compaction.ts';
 import { readPersona, renderPersona, writePersona } from '../src/persona.ts';
@@ -43,6 +43,33 @@ test('renderSelf is only what she wrote: empty when missing or blank, BOM stripp
 test('an unreadable self file becomes a note, never a failed render', async t => {
   const file = join(await tempDir(t), '我是谁.md'); await mkdir(file);
   assert.match(renderSelf(file), /^（这次没能读到我是谁\.md：.*它还在，下次会再试。）$/);
+});
+test('self search marks the current file separately from dated history', async t => {
+  const dir = await tempDir(t); const file = join(dir, '我是谁.md');
+  await writeFile(file, '我喜欢现在的生活，也喜欢看书。');
+  const history = join(dir, '我是谁.history'); await mkdir(history);
+  await writeFile(join(history, '2026-10-21.md'), '我以前喜欢看书。');
+  await writeFile(join(history, '2026-10-22.md'), '我以前喜欢散步。');
+  await writeFile(join(history, '2026-10-23-extra.md'), '不应被当成历史版本。');
+  await writeFile(join(history, '2026-02-30.md'), '不是真实日期。');
+  const hits = searchSelf(file, '喜欢');
+  assert.deepEqual(hits.map(hit => [hit.version, hit.date]), [['current', undefined], ['history', '2026-10-22'], ['history', '2026-10-21']]);
+  assert.ok(hits.every(hit => Array.from(hit.text).length <= 800));
+  assert.deepEqual(searchSelf(file, ''), []);
+});
+
+test('self comparison validates dates and returns bounded added and removed lines', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-self-diff-')); t.after(() => rm(root, { recursive: true, force: true }));
+  const file = join(root, '我是谁.md'), history = join(root, '我是谁.history');
+  await mkdir(history);
+  await writeFile(join(history, '2026-10-22.md'), '我是鲸鲸。\n我喜欢看海。');
+  await writeFile(file, '我是鲸鲸。\n我喜欢看星星。');
+  assert.deepEqual(compareSelf(file, '2026-10-22', 'current'), {
+    older: '2026-10-22', newer: 'current', truncated: false,
+    changes: [{ kind: 'removed', text: '我喜欢看海。' }, { kind: 'added', text: '我喜欢看星星。' }],
+  });
+  assert.throws(() => compareSelf(file, '../secret', 'current'), /current 或有效的 YYYY-MM-DD/);
+  assert.throws(() => compareSelf(file, '2026-10-22', '2026-10-23'), /找不到可读取的版本/);
 });
 test('the template engine keeps or drops flag sections, nests different flags, and never scans values for tags', () => {
   const template = '开头 {{name}}\n{{#life}}\n生活 {{#home}}在家{{/home}}{{^home}}在外{{/home}}\n{{/life}}\n\n\n{{self}}\n{{unknown}}';

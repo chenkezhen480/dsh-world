@@ -1,7 +1,7 @@
 import { closeSync, existsSync, fstatSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { formatLocalTime } from '../timeContext.ts';
-import type { ActivityRecord, CompactionRecord, LifeState, WakeRecord } from './types.ts';
+import type { ActivityRecord, CompactionRecord, CostRecord, LifeState, WakeRecord } from './types.ts';
 
 const dayPattern = /^\d{4}-\d{2}-\d{2}$/;
 const dayFile = /^\d{4}-\d{2}-\d{2}\.jsonl$/;
@@ -55,6 +55,7 @@ export function createLifeStore(worldDir: string, timeZone: string) {
     read,
     write: (state: LifeState) => durableWrite(stateFile, JSON.stringify(state, null, 2)),
     appendWake: (record: WakeRecord) => append(join(lifeDir, 'wakes.jsonl'), record),
+    appendCost: (record: CostRecord) => append(join(lifeDir, 'costs.jsonl'), record),
     appendCompaction: (record: CompactionRecord) => append(join(worldDir, 'compactions.jsonl'), record),
     /** Never throws: a failed write is reported to the caller and marks the next record. The gap flag is in-memory and marks the next successful write, which may land in a later day's file. */
     appendActivity(record: ActivityRecord): boolean {
@@ -62,6 +63,7 @@ export function createLifeStore(worldDir: string, timeZone: string) {
       catch { activityGap = true; return false; }
     },
     wakes: () => readJsonl<WakeRecord>(join(lifeDir, 'wakes.jsonl')),
+    costs: () => readJsonl<CostRecord>(join(lifeDir, 'costs.jsonl')),
     compactions: () => readJsonl<CompactionRecord>(join(worldDir, 'compactions.jsonl')),
     activity: (day: string) => dayPattern.test(day) ? readJsonl<ActivityRecord>(join(activityDir, `${day}.jsonl`)) : [],
     activityDays: () => existsSync(activityDir) ? readdirSync(activityDir).filter(name => dayFile.test(name)).map(name => name.slice(0, 10)).sort().reverse() : [],

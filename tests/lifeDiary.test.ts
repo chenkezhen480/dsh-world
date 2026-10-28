@@ -30,4 +30,18 @@ test('the reader returns a file whole, including CRLF and a BOM, and skips non-d
   await mkdir(join(dir, '2026-10-24.md'));
   assert.equal(createDiaryReader(dir).read('2026-10-20'), raw);
   assert.equal(createDiaryReader(dir).read('2026-01-01'), undefined);
+  await writeFile(join(dir, '2026-99-99.md'), 'not a date');
+  assert.deepEqual(createDiaryReader(dir).dates(), ['2026-10-23', '2026-10-22', '2026-10-20']);
+});
+test('the reader searches bounded snippets, skips unreadable entries, and keeps dates safe', async t => {
+  const dir = await diaryDir(t);
+  await writeFile(join(dir, '2026-10-25.md'), `开头 ${'很长的文字'.repeat(300)} 关键词 在后面`);
+  await mkdir(join(dir, '2026-10-26.md'));
+  const reader = createDiaryReader(dir);
+  const hits = reader.search('关键词', 99);
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0]!.date, '2026-10-25');
+  assert.ok(Array.from(hits[0]!.text).length <= 800);
+  assert.deepEqual(reader.search(''), []);
+  assert.equal(reader.read('../secret'), undefined);
 });

@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { jsonObject, knownHost, readBody, sendJson, type JsonResult } from '../http.ts';
 import { PERSONA_LAYERS, type Persona } from '../persona.ts';
-import { validTurns, validWechatBuffer, validWechatContext, MAX_WECHAT_BUFFER_SECONDS, MAX_WECHAT_CONTEXT } from '../worldSwitch.ts';
+import { validMemoryTokenBudget, validTurns, validWechatBuffer, validWechatContext, MAX_WECHAT_BUFFER_SECONDS, MAX_WECHAT_CONTEXT } from '../worldSwitch.ts';
 import { validArchiveScope, type MemoryArchiveScope } from '../archiveSelection.ts';
 
 export const CONSOLE_PREFIX = '/dsh-world';
@@ -26,6 +26,7 @@ export interface ConsoleActions {
   setDailyBudget(yuan: number | undefined): void;
   /** Turns in her memory block; undefined goes back to the default. */
   setMemoryTurns(turns: number | undefined): void;
+  setMemoryTokenBudget(tokens: number | undefined): void;
   setArchiveScope(scope: MemoryArchiveScope): boolean;
   /** A field left out stays as it is; null goes back to its default. */
   /** Turns the WeChat and QQ modules on or off now (their tools and routes come and go with the switch). Returns why it cannot, or nothing. */
@@ -33,6 +34,9 @@ export interface ConsoleActions {
   /** Restarts the adapter the plugin manages; false when it does not manage one. */
   restartWechatAdapter(): Promise<boolean>;
   setWechatSettings(settings: { context?: number | null; bufferSeconds?: number | null }): void;
+  setRoutineEnabled(enabled: boolean): void;
+  setRoutinePaused(id: string, paused: boolean): void;
+  removeRoutine(id: string): void;
 }
 export interface ConsoleRequest { method: string; url: string; write: boolean; body?: Record<string, unknown> | undefined }
 const ok = (body: unknown = { ok: true }): JsonResult => ({ status: 200, body });
@@ -55,9 +59,13 @@ async function write(actions: ConsoleActions, path: string, body: Record<string,
       actions.setDailyBudget(daily === null ? undefined : daily); return ok();
     }
     case '/console/memory': {
-      const turns = body?.turns;
-      if (turns !== null && !validTurns(turns)) return bad('turns must be a whole number of at least 1, or null');
-      actions.setMemoryTurns(turns === null ? undefined : turns); return ok();
+      const turns = body?.turns, tokens = body?.tokenBudget;
+      if (turns === undefined && tokens === undefined) return bad('nothing to change');
+      if (turns !== undefined && turns !== null && !validTurns(turns)) return bad('turns must be a whole number of at least 1, or null');
+      if (tokens !== undefined && tokens !== null && !validMemoryTokenBudget(tokens)) return bad('tokenBudget must be a whole number from 1 to 200000, or null');
+      if (turns !== undefined) actions.setMemoryTurns(turns === null ? undefined : turns);
+      if (tokens !== undefined) actions.setMemoryTokenBudget(tokens === null ? undefined : tokens);
+      return ok();
     }
     case '/console/wechat': {
       const context = body?.contextMessages, bufferSeconds = body?.bufferSeconds;
@@ -77,6 +85,18 @@ async function write(actions: ConsoleActions, path: string, body: Record<string,
     case '/console/archive-scope': {
       if (!validArchiveScope(body?.scope)) return bad('scope must be home or workspace');
       return ok({ ok: true, restartRequired: actions.setArchiveScope(body.scope) });
+    }
+    case '/console/routines': {
+      if (typeof body?.enabled !== 'boolean') return bad('enabled must be boolean');
+      actions.setRoutineEnabled(body.enabled); return ok();
+    }
+    case '/console/routines/pause': {
+      if (typeof body?.id !== 'string' || !body.id || typeof body.paused !== 'boolean') return bad('id and paused are required');
+      actions.setRoutinePaused(body.id, body.paused); return ok();
+    }
+    case '/console/routines/remove': {
+      if (typeof body?.id !== 'string' || !body.id) return bad('id is required');
+      actions.removeRoutine(body.id); return ok();
     }
     case '/console/world-prompt': { if (typeof body?.text !== 'string') return bad('text must be a string'); actions.saveWorldPrompt(body.text); return ok(); }
     default: return { status: 404, body: { error: 'not found' } };
