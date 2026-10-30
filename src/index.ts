@@ -156,7 +156,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   ctx.inject(['workspaceRegistry'], injected => { void memory?.retryCatchUp().catch(error => injected.logger.error(error)); });
 
   // The console and the life line need the desktop host.
-  ctx.inject(['sessionController', 'permissionPresets', 'webServer'], async lifeCtx => {
+  ctx.inject(['sessionController', 'permissionPresets', 'webServer', 'llm', 'tokenMeter', 'sessions'], async lifeCtx => {
     const webServer = (lifeCtx as unknown as { webServer: WebServer }).webServer;
     const host = hostLife(lifeCtx);
     const permissions = createWorkspacePermissions(lifeCtx, options.roomDir, power);

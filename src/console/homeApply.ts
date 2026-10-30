@@ -4,6 +4,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent';
 import type {} from '@deepseek-ai/dsh-llm';
 import { ManualCompactionError, type CompactionEngine } from '@deepseek-ai/dsh-compaction';
 import type { Session } from '@deepseek-ai/dsh-session';
+import { ToolFreeCompaction } from '../compaction.ts';
 import { errorText } from '../faults.ts';
 
 export interface HomeApplyState {
@@ -16,6 +17,7 @@ interface HomeApplyDeps {
   home(): Promise<Agent>;
   isHome(agent: Agent): boolean;
   compaction(): Pick<CompactionEngine, 'compactNow'> | undefined;
+  timeZone?: string;
   refresh(session: Session): void;
   changed(): void;
 }
@@ -33,6 +35,44 @@ export function createHomeApply(deps: HomeApplyDeps) {
   let controller: AbortController | undefined;
   let pending: Promise<void> | undefined;
   const stopped = new Error('世界已停止');
+  let fallbackEngine: Pick<CompactionEngine, 'compactNow'> | undefined;
+  // Fallback: when the host does not expose a 'compaction' service to plugin
+  // contexts (observed on desktop 0.2.1-rc.3), build dsh-world's own tool-free
+  // engine so 「应用并压缩家会话」 keeps working.
+  // The engine needs llm/tokenMeter/sessions; manually constructed cordis
+  // plugins get no inject, so walk up to the outermost ctx where those
+  // services resolve without the inject guard.
+  function serviceCtx(): Context {
+    let ctx = deps.ctx;
+    for (let depth = 0; depth < 8; depth++) {
+      try {
+        void ctx.llm;
+        void ctx.tokenMeter;
+        void ctx.sessions;
+        return ctx;
+      } catch {
+        const parent = ctx.parent;
+        if (!parent || parent === ctx) return ctx;
+        ctx = parent;
+      }
+    }
+    return ctx;
+  }
+  function resolveEngine(): Pick<CompactionEngine, 'compactNow'> {
+    const hosted = deps.compaction();
+    if (hosted) return hosted;
+    fallbackEngine ??= new ToolFreeCompaction(serviceCtx(), {
+      timeZone: deps.timeZone ?? 'Asia/Shanghai',
+      auto: true,
+      thresholdRatio: 0.8,
+      headroomTokens: 65536,
+      summarizationProvider: '',
+      summarizationModel: '',
+      maxTokens: 65536,
+      modelPolicies: [],
+    });
+    return fallbackEngine;
+  }
   function update(next: HomeApplyState): void { state = next; deps.changed(); }
   async function run(engine: Pick<CompactionEngine, 'compactNow'>, operation: AbortController): Promise<void> {
     const { signal } = operation;
@@ -79,7 +119,14 @@ export function createHomeApply(deps: HomeApplyDeps) {
     snapshot: () => state,
     request(): string | undefined {
       if (pending) return;
-      const engine = deps.compaction();
+      let engine: Pick<CompactionEngine, 'compactNow'> | undefined;
+      try {
+        engine = resolveEngine();
+      } catch (error) {
+        // Surface construction errors in the panel instead of a bare 500.
+        update({ status: 'failed', message: `应用并压缩失败：${errorText(error)}` });
+        return;
+      }
       if (!engine) return '未加载压缩服务，请先启用 DSH 压缩插件';
       controller = new AbortController();
       const { signal } = controller;
