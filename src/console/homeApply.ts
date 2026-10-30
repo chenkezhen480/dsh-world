@@ -39,10 +39,29 @@ export function createHomeApply(deps: HomeApplyDeps) {
   // Fallback: when the host does not expose a 'compaction' service to plugin
   // contexts (observed on desktop 0.2.1-rc.3), build dsh-world's own tool-free
   // engine so 「应用并压缩家会话」 keeps working.
+  // The engine needs llm/tokenMeter/sessions; manually constructed cordis
+  // plugins get no inject, so walk up to the outermost ctx where those
+  // services resolve without the inject guard.
+  function serviceCtx(): Context {
+    let ctx = deps.ctx;
+    for (let depth = 0; depth < 8; depth++) {
+      try {
+        void ctx.llm;
+        void ctx.tokenMeter;
+        void ctx.sessions;
+        return ctx;
+      } catch {
+        const parent = ctx.parent;
+        if (!parent || parent === ctx) return ctx;
+        ctx = parent;
+      }
+    }
+    return ctx;
+  }
   function resolveEngine(): Pick<CompactionEngine, 'compactNow'> {
     const hosted = deps.compaction();
     if (hosted) return hosted;
-    fallbackEngine ??= new ToolFreeCompaction(deps.ctx, {
+    fallbackEngine ??= new ToolFreeCompaction(serviceCtx(), {
       timeZone: deps.timeZone ?? 'Asia/Shanghai',
       auto: true,
       thresholdRatio: 0.8,
@@ -50,7 +69,6 @@ export function createHomeApply(deps: HomeApplyDeps) {
       summarizationProvider: '',
       summarizationModel: '',
       maxTokens: 65536,
-      maxOverflowRetries: 2,
       modelPolicies: [],
     });
     return fallbackEngine;
