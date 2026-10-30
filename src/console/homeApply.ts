@@ -119,7 +119,14 @@ export function createHomeApply(deps: HomeApplyDeps) {
     snapshot: () => state,
     request(): string | undefined {
       if (pending) return;
-      const engine = resolveEngine();
+      let engine: Pick<CompactionEngine, 'compactNow'> | undefined;
+      try {
+        engine = resolveEngine();
+      } catch (error) {
+        // Surface construction errors in the panel instead of a bare 500.
+        update({ status: 'failed', message: `应用并压缩失败：${errorText(error)}` });
+        return;
+      }
       if (!engine) return '未加载压缩服务，请先启用 DSH 压缩插件';
       controller = new AbortController();
       const { signal } = controller;
