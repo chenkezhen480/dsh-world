@@ -40,7 +40,7 @@ function allowed(req: IncomingMessage, allowedHosts: readonly string[]): boolean
  * What the panel may change about her own channel: replying, the balcony's port, staying quiet until a time
  * (`null` speaks again at once), who may talk to her, and starting SnowLuma once by hand.
  */
-export interface NativePatch { autoReply?: boolean; bridge?: { port: number }; mutedUntil?: string | null; allowPrivate?: string[]; allowGroups?: string[]; startSnowluma?: true }
+export interface NativePatch { autoReply?: boolean; bridge?: { port: number }; mutedUntil?: string | null; allowPrivate?: string[]; allowGroups?: string[]; batchQuietMs?: number; startSnowluma?: true }
 type SetNative = (patch: NativePatch) => unknown;
 
 /** A whitelist from the panel: QQ numbers as strings or numbers, blanks dropped; an empty list lets nobody in. */
@@ -74,6 +74,12 @@ async function write(doors: ConsoleDoors | undefined, path: string, body: Record
         if (until !== null && (typeof until !== 'string' || (until.trim() && Number.isNaN(Date.parse(until))))) return bad('mutedUntil 要是能解析的 ISO 时间，或者 null');
         patch.mutedUntil = until === null || !until.trim() ? null : until.trim();
       }
+      // 合批窗口：同一个人在这么多毫秒内连发几句，合成一次问。给 0 就是每句单独回。
+      if (body?.batchQuietMs !== undefined) {
+        const ms = body.batchQuietMs;
+        if (typeof ms !== 'number' || !Number.isInteger(ms) || ms < 0 || ms > 120000) return bad('batchQuietMs 要是 0 到 120000 之间的整数（毫秒）');
+        patch.batchQuietMs = ms;
+      }
       if (body?.startSnowluma === true) patch.startSnowluma = true;
       // 阳台：外面那条线开在哪个端口。换端口会打断已经连上的线，所以只认一个整数，别的一律拒。
       const rawBridge = body?.bridge;
@@ -84,7 +90,7 @@ async function write(doors: ConsoleDoors | undefined, path: string, body: Record
         if (typeof port !== 'number' || !Number.isInteger(port) || port < 0 || port > 65535) return bad('bridge.port 要是 0 到 65535 之间的整数');
         patch.bridge = { port };
       }
-      if (!Object.keys(patch).length) return bad('autoReply、bridge、mutedUntil、allowPrivate、allowGroups、startSnowluma 至少要给一个');
+      if (!Object.keys(patch).length) return bad('autoReply、bridge、mutedUntil、allowPrivate、allowGroups、batchQuietMs、startSnowluma 至少要给一个');
       return ok(setNative(patch));
     }
     case '/open': {

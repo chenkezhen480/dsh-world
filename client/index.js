@@ -467,6 +467,17 @@ window.__ModuleLoader__.load({
         if (isNaN(at.getTime())) { setMsg('这个时间看不懂，重挑一下'); return }
         change({ mutedUntil: at.toISOString() })
       }
+      // 合批窗口：同一个人在这么多秒内连发几句，合成一次问。填 0 就是每句单独回。
+      var quietState = useState(''), quiet = quietState[0], setQuiet = quietState[1]
+      useEffect(function () {
+        var ms = props.native && typeof props.native.batchQuietMs === 'number' ? String(Math.round(props.native.batchQuietMs / 1000)) : ''
+        setQuiet(function (cur) { return cur === '' ? ms : cur })
+      }, [props.native && props.native.batchQuietMs])
+      function saveQuiet() {
+        var sec = Number(String(quiet).trim())
+        if (!isFinite(sec) || sec < 0 || sec > 120) { setMsg('填 0 到 120 之间的秒数'); return }
+        change({ batchQuietMs: Math.round(sec * 1000) })
+      }
       // 白名单：谁的话能进来。打开时填上现有的名单，之后不覆盖正在改的字。
       var ids = props.native ? [(props.native.allowPrivateIds || []).join(', '), (props.native.allowGroupsIds || []).join(', ')] : ['', '']
       var allowState = useState({ from: '', people: '', groups: '' }), allow = allowState[0], setAllow = allowState[1]
@@ -507,6 +518,15 @@ window.__ModuleLoader__.load({
             h('input', { key: 'c', type: 'checkbox', checked: n.autoReply === true, disabled: busy,
               onChange: function (e) { flipNative(e.target.checked) } }),
             h('span', { key: 't' }, n.autoReply === true ? ' 会自己回话' : ' 只看不回'),
+          ])
+        })(props.native),
+        (function (n) {
+          if (!n) return null
+          var ms = typeof n.batchQuietMs === 'number' ? n.batchQuietMs : 10000
+          return h('div', { key: 'quiet', className: 'dw-setting' }, [
+            h('span', { key: 's', className: 'dw-muted' }, ms ? '连着发几句：' + (ms / 1000) + ' 秒内合成一次问' : '连着发几句：每句单独回'),
+            h('input', { key: 'i', type: 'number', min: 0, max: 120, step: 1, 'aria-label': '合批窗口（秒）', style: { width: 64 }, disabled: busy, value: quiet, onChange: function (e) { setQuiet(e.target.value) } }),
+            h('button', { key: 'b', className: 'dw-btn', disabled: busy, onClick: saveQuiet }, '存'),
           ])
         })(props.native),
         (function (n) {
