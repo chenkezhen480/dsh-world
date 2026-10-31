@@ -5,8 +5,14 @@ import { exampleTime, fillMessage, readAlarmMessages } from './messages.ts';
 import { pushOf } from '../ecosystem/shared/outlets.ts';
 
 export interface AlarmDescriptions { plan: string; check: string; cancel: string }
+export interface RecallCall { query: string; from?: string; to?: string; sources?: readonly string[]; limit?: number; offset?: number }
+export interface StatusCall { mood?: string; energy?: number; chips?: readonly string[]; note?: string }
 export interface LifeToolHost {
   planNext(input: { at?: string; after_minutes?: number }, note: string): string;
+  /** Searches the archive, the diary and the activity log; absent when the world has no memory to search. */
+  recall?(input: RecallCall): string;
+  /** Rewrites the status strip in the console; absent when the world has no place to keep it. */
+  setStatus?(input: StatusCall): string;
   /** With both, check_alarm and cancel_alarm are offered too. */
   checkAlarm?(): string;
   cancelAlarm?(): string;
@@ -54,8 +60,28 @@ export function lifeTools(host: LifeToolHost) {
     },
   });
   const { checkAlarm, cancelAlarm } = host;
-  if (!checkAlarm || !cancelAlarm) return [planNext, reachOut] as const;
+  const recall = host.recall ? defineTool({
+    name: 'recall',
+    description: `想不起以前的事时用：翻${companion}的长期记忆——聊天归档、日记、活动记录，返回原话片段和出处行号。只搜关键词，不认语义：给一个词或几个人名地名，比一整句问话更容易搜到。sources 可选 chat / diary / activity；from、to 是 YYYY-MM-DD。搜不到就是没记过，别编。`,
+    parameters: {
+      query: { type: 'string', required: true },
+      from: { type: 'string' }, to: { type: 'string' },
+      sources: { type: 'array', items: { type: 'string' } },
+      limit: { type: 'number' }, offset: { type: 'number' },
+    },
+    output: text,
+    execute: async (args: RecallCall) => host.recall!(args),
+  }) : undefined;
+  const setStatus = host.setStatus ? defineTool({
+    name: 'set_status',
+    description: `更新状态卡：心情、精力、几个小标签，再加一句想让人看到的话。小标签写什么都行——今天几碗饭、窗外天气、尾巴酸不酸，最多 4 个，这次给的整组替换。状态卡在世界控制台「概览」的最上面，${partner}一打开就看得到。这次没写的项保持原样；心情一两个词，精力 0–100。`,
+    parameters: { mood: { type: 'string' }, energy: { type: 'number' }, chips: { type: 'array', items: { type: 'string' } }, note: { type: 'string' } },
+    output: text,
+    execute: async (args: StatusCall) => host.setStatus!(args),
+  }) : undefined;
+  const base = [planNext, ...(recall ? [recall] : []), ...(setStatus ? [setStatus] : []), reachOut] as const;
+  if (!checkAlarm || !cancelAlarm) return base;
   const check = defineTool({ name: 'check_alarm', description: descriptions.check, parameters: {}, output: text, execute: async () => checkAlarm.call(host) });
   const cancel = defineTool({ name: 'cancel_alarm', description: descriptions.cancel, parameters: {}, output: text, execute: async () => cancelAlarm.call(host) });
-  return [planNext, reachOut, check, cancel] as const;
+  return [...base, check, cancel] as const;
 }

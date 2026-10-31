@@ -52,6 +52,15 @@ test('the client registers the world console settings section under the bundle i
   assert.match(fresh, /她的世界/); assert.match(fresh, /她还没有住进来/); assert.match(fresh, /开始/);
   const running = text(react.createElement(tested.View, { snap: { ...degraded, health: [], running: true, name: '小鱼', life: { homeSessionId: 'session-abcdef12', status: 'idle', alarm: { at: '2026-10-23T01:00:00.000Z', source: 'plan', note: '看书' }, recentWakes: [] } }, error: null, tick: 0, refresh: () => {} }));
   assert.match(running, /小鱼的世界/); assert.match(running, /运行中/); assert.match(running, /停止/); assert.match(running, /看书/); assert.doesNotMatch(running, /还没有住进来/);
+  // 状态卡片：她自己写的那张卡；健康不再用“一切正常”占一张卡，只在真出故障时出现。
+  const view = (snap: Record<string, unknown>) => text(react.createElement(tested.View, { snap: { ...degraded, health: [], ...snap }, error: null, tick: 0, refresh: () => {} }));
+  const status = view({ running: true, herStatus: { at: new Date(Date.now() - 300000).toISOString(), mood: '满足', energy: 60, chips: ['今天 2 碗饭', '月亮很圆'], note: '今天游了三圈' } });
+  assert.match(status, /状态/); assert.match(status, /满足/); assert.match(status, /60/); assert.match(status, /今天 2 碗饭/); assert.match(status, /月亮很圆/); assert.match(status, /今天游了三圈/); assert.match(status, /5 分钟前写的/);
+  assert.match(view({ running: true, herStatus: null }), /还没写过/, 'a running world with nothing written says whose card it is');
+  assert.match(view({ running: true, herStatus: { at: '2026-10-20T04:00:00.000Z', mood: '困', chips: ['尾巴有点酸'] } }), /尾巴有点酸/, 'a chip is whatever she wrote');
+  assert.doesNotMatch(fresh, /还没写过/, 'a stopped world without a card stays quiet');
+  assert.doesNotMatch(view({ running: true }), /一切正常/, 'the empty health card is gone');
+  assert.match(view({ running: true, health: ['QQ 没连上'] }), /QQ 没连上/);
   const pendingScope = text(react.createElement(tested.View, { snap: { ...degraded, memory: { ...degraded.memory, archiveScope: 'home', selectedArchiveScope: 'workspace', restartRequired: true } }, error: null, tick: 0, refresh: () => {} }));
   assert.match(pendingScope, /当前归档：仅家会话/);
   assert.match(pendingScope, /家所在工作区/);

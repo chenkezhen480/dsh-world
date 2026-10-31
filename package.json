@@ -1,6 +1,6 @@
 {
   "name": "dsh-world",
-  "version": "0.6.6",
+  "version": "0.7.0",
   "description": "Cross-session memory, persona and life routines for DSH, with a world console, tool-free compaction, native QQ and Windows WeChat messaging, group history and quoted replies",
   "license": "MIT",
   "publishConfig": {
