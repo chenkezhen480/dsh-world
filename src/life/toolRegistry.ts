@@ -5,7 +5,7 @@ import { scopedTool } from '../worldScope.ts';
 import type { ToolDefinition } from '@deepseek-ai/dsh-tools';
 
 type Registration = (() => void)[];
-const ALARM_TOOLS = ['plan_next', 'check_alarm', 'cancel_alarm'];
+const ALARM_TOOLS = ['plan_next', 'check_alarm', 'cancel_alarm', 'recall', 'set_status'];
 const HOME_TOOLS = ['reach_out', 'keep_photo', 'list_photos', 'forget_photo'];
 
 /** Disposes in reverse; a disposer whose agent scope is already gone may throw and is skipped. */
@@ -14,7 +14,8 @@ function undo(list: Registration): void {
 }
 
 /**
- * The alarm tools are held by every world session (she can set her alarm anywhere; it rings at home);
+ * The alarm tools are held by every world session (she can set her alarm anywhere; it rings at home), and so
+ * are recall and the status strip, because both describe her rather than the room she is standing in;
  * reach_out only by the current home. A registration that fails (a name clash) is a fault and never breaks
  * agent creation; it registers all of a group or none. Each tool refuses to run once its session leaves her world.
  */

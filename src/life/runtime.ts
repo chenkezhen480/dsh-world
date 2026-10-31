@@ -28,6 +28,8 @@ import { exampleTime, readAlarmMessages } from './messages.ts';
 import type { Notifier } from './notify.ts';
 import { createToolRegistry } from './toolRegistry.ts';
 import { alarmDescriptions, lifeTools } from './tools.ts';
+import { createRecallIndex } from './recall.ts';
+import { createStatusBoard } from './status.ts';
 import type { PhotoStore } from './photos.ts';
 import { photoTools } from './photoTools.ts';
 import type { Alarm, Greeting, LifeOptions, PendingWake, Review, WakeRecord } from './types.ts';
@@ -60,6 +62,10 @@ export function createLifeRuntime(deps: LifeDeps) {
   const clock = deps.clock ?? (() => new Date());
   const timers = deps.timers ?? realTimers;
   const faults = new Faults();
+  /** Her long-term memory, searched rather than copied: the index points at the archive, the diary and the activity log. */
+  const recall = createRecallIndex({ worldDir: options.worldDir, diaryDir: options.diaryDir, timeZone, selfName: names.companion, partnerName: names.partner });
+  /** The strip in the console: her mood, her energy, today's rice. Written by her, read by everyone. */
+  const status = createStatusBoard({ worldDir: options.worldDir, now: clock });
   const includes = (session: Agent['session']) => inWorld(session, config, deps.inWorkspace);
   const disposers: (() => void)[] = [];
   const state = store.read();
@@ -329,7 +335,7 @@ export function createLifeRuntime(deps: LifeDeps) {
     inWorld: agent => !stopped && includes(agent.session),
     isHome: agent => agent.id === state.homeSessionId,
     tools: agent => [
-      ...lifeTools({ planNext, checkAlarm, cancelAlarm, notifier, names, origin: () => { try { return host.origin(); } catch { return undefined; } }, descriptions: alarmDescriptions(alarmMessages(), templateValues()) }),
+      ...lifeTools({ planNext, checkAlarm, cancelAlarm, notifier, names, recall: input => recall.search(input), setStatus: input => status.write(input), origin: () => { try { return host.origin(); } catch { return undefined; } }, descriptions: alarmDescriptions(alarmMessages(), templateValues()) }),
       ...deps.photos ? photoTools({ agent, store: deps.photos, attachments: () => ctx.get('attachments') as AttachmentStore | undefined, inside: () => !stopped && agent.id === state.homeSessionId && includes(agent.session) }) : [],
     ],
   });
@@ -406,10 +412,11 @@ export function createLifeRuntime(deps: LifeDeps) {
     if (stallTimer !== undefined) { timers.clear(stallTimer); stallTimer = undefined; }
     for (const dispose of disposers.splice(0).reverse()) dispose();
     tools.clear();
+    recall.close();
   }
   return {
     start, stop, planNext, checkAlarm, cancelAlarm, deliver,
-    snapshot: () => ({ homeSessionId: state.homeSessionId, alarm: state.alarm, review: state.review, spend: state.spend, faults: faults.list() }),
+    snapshot: () => ({ homeSessionId: state.homeSessionId, alarm: state.alarm, review: state.review, spend: state.spend, faults: faults.list(), herStatus: status.read() ?? null }),
     /** Resolves once no alarm delivery is in flight (its durability flush can outlast the turn it starts). */
     settled: async () => { while (delivery) await delivery; },
     home: () => home.open(),

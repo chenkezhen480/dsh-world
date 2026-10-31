@@ -72,6 +72,8 @@ export function consoleSources(deps: SnapshotDeps): ConsoleSources & { invalidat
       workspace: deps.workspacePermissions?.() ?? null,
       compactAfterReview: deps.compactAfterReview?.() ?? null,
       life: life ? { homeSessionId: life.homeSessionId, status: home ? home.status : 'cold', alarm: life.alarm, review: life.review, recentWakes: lifeStore?.wakes().slice(-5).reverse() ?? [] } : null,
+      /** What she says about herself right now; null before she ever wrote one. */
+      herStatus: life?.herStatus ?? null,
       homeApply: deps.homeApply?.() ?? null,
       health: [...(life?.faults ?? []), ...deps.faults()],
       memory: { turns: turns.length, windowTurns: window, archiveScope, selectedArchiveScope, restartRequired: archiveScope !== selectedArchiveScope, approxTokens: estimateTokens(renderHistory(turns, config.timeZone, deps.names(), archiveScope === 'home')), oldest: turns.at(-1)?.messages[0]?.occurredAt, ...archive.stats() },

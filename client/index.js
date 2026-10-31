@@ -53,6 +53,16 @@ window.__ModuleLoader__.load({
       return (d ? d + ' 天 ' : '') + (hr ? hr + ' 小时 ' : '') + mi + ' 分'
     }
     function list(value) { return Array.isArray(value) ? value : [] }
+    /** How long ago she wrote the strip; past a day the date itself is clearer than "37 小时前". */
+    function ago(iso, zone) {
+      var ms = Date.now() - Date.parse(iso)
+      if (!(ms >= 60000)) return '刚刚'
+      var minutes = Math.floor(ms / 60000)
+      if (minutes < 60) return minutes + ' 分钟前'
+      var hours = Math.floor(minutes / 60)
+      if (hours < 24) return hours + ' 小时前'
+      return local(iso, zone)
+    }
     var sourceLabel = { first: '新家', return: '回来', plan: '闹钟', fallback: '早上兜底', review: '回顾' }
     var statusLabel = { running: '正在做事', idle: '空闲', cold: '休息中' }
 
@@ -123,6 +133,13 @@ window.__ModuleLoader__.load({
       '.dw-btn:hover{border-color:var(--gold)}.dw-btn.primary{background:var(--gold);border-color:var(--gold);color:#fffaf0}.dw-btn:disabled{opacity:.45;cursor:default}',
       '.dw-preview{white-space:pre-wrap;font-family:var(--serif);font-size:12.5px;margin:0;max-height:260px;overflow:auto}',
       '.dw-chip{display:inline-block;font-size:11px;padding:1px 8px;border-radius:999px;border:1px solid var(--line);color:var(--soft)}',
+      '.dw-status-head{display:flex;flex-wrap:wrap;align-items:center;gap:12px 24px}',
+      '.dw-status-mood{font-size:26px;letter-spacing:.04em}',
+      '.dw-status-energy{display:flex;align-items:center;gap:10px;flex:1 1 180px;min-width:160px}',
+      '.dw-status-energy .dw-meter{flex:1;height:6px;margin:0}',
+      '.dw-status-energy b{font:600 15px var(--serif)}',
+      '.dw-status-age{margin-top:10px;color:var(--soft);font-size:11.5px}',
+      '.dw-status.dw-stale{opacity:.62}',
       '.dw table{width:100%;border-collapse:collapse}.dw td{padding:3px 6px;vertical-align:top;border-bottom:1px solid color-mix(in srgb,currentColor 6%,transparent)}',
       '.dw-activity{table-layout:fixed}.dw-activity td{overflow:hidden;overflow-wrap:anywhere}.dw-activity td:first-child{white-space:nowrap}',
       '.dw-clamp{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;font-family:ui-monospace,"Cascadia Mono",Consolas,monospace;font-size:12px}',
@@ -611,6 +628,27 @@ window.__ModuleLoader__.load({
         row('qq', 'QQ', m.qq, '插件自己直连 OneBot：状态和设置在 QQ 页面。关闭就断开这条通道。', '开启时检查 SDK；缺少时按需安装并提示重启 DSH。'),
         msg ? h('div', { className: msg.indexOf('失败') >= 0 ? 'dw-bad' : 'dw-muted', role: 'status' }, msg) : null)
     }
+    /** Her own card: one place that says how she is right now, wide enough to be seen before anything else. */
+    function StatusCard(props) {
+      var s = props.status, zone = props.zone
+      if (!s && !props.running) return null
+      var title = (props.name && props.name !== 'TA' ? props.name : '她') + '的状态'
+      if (!s) return h(Card, { title: title, delay: 0 },
+        h('div', { className: 'dw-muted' }, '还没写过。心情、精力、今天几碗饭都由她自己写——跟她说一声，或者等她自己想起来。'))
+      var old = !(Date.now() - Date.parse(s.at) < 12 * 3600000)
+      var head = []
+      if (s.mood) head.push(h('div', { key: 'mood', className: 'dw-big dw-status-mood' }, s.mood))
+      if (typeof s.energy === 'number') head.push(h('div', { key: 'energy', className: 'dw-status-energy' },
+        h('span', { className: 'dw-muted' }, '精力'),
+        h('div', { className: 'dw-meter' }, h('i', { style: { width: Math.max(2, Math.min(100, s.energy)) + '%' } })),
+        h('b', null, String(s.energy))))
+      list(s.chips).forEach(function (chip, i) { head.push(h('span', { key: 'chip' + i, className: 'dw-chip' }, chip)) })
+      return h(Card, { title: title, delay: 0 },
+        h('div', { className: 'dw-status' + (old ? ' dw-stale' : '') },
+          h('div', { className: 'dw-status-head' }, head),
+          s.note ? h('blockquote', { className: 'dw-quote' }, s.note) : null,
+          h('div', { className: 'dw-status-age' }, ago(s.at, zone) + '写的')))
+    }
     function Overview(props) {
       var snap = props.snap, zone = snap.timeZone, life = snap.life, alarm = life && life.alarm, mem = snap.memory
       var health = list(snap.health), wakes = life ? list(life.recentWakes) : []
@@ -623,6 +661,7 @@ window.__ModuleLoader__.load({
             h('li', null, '在「人设」里写她的名字、性格和你对她的愿景'),
             h('li', null, '需要的话，在「世界提示词」里写你想对她说的话'),
             h('li', null, '按「开始」：插件建好她的房间和家，叫醒她')))) : null,
+        h(StatusCard, { status: snap.herStatus, zone: zone, running: snap.running === true, name: snap.name }),
         life ? h('div', { className: 'dw-grid' },
           h(Card, { title: '此刻', delay: 0 },
             h('div', { className: 'dw-big' }, statusLabel[life.status] || life.status),
@@ -634,7 +673,7 @@ window.__ModuleLoader__.load({
             ['最近', wakes.length ? h('div', { className: 'dw-trail' }, wakes.map(function (w, i) { return h('span', { key: i }, local(w.deliveredAt, zone) + ' ' + (sourceLabel[w.source] || w.source) + (w.lateMs >= 120000 ? ' · 晚 ' + Math.round(w.lateMs / 60000) + ' 分' : '')) })) : '—'],
           ]))) : null,
         h('div', { className: 'dw-grid' },
-          h(Card, { title: '健康', delay: 120 }, health.length ? health.map(function (f, i) { return h('div', { key: i, className: 'dw-bad' }, '● ' + f) }) : h('div', { className: 'dw-ok' }, '● 一切正常')),
+          health.length ? h(Card, { title: '健康', delay: 120 }, health.map(function (f, i) { return h('div', { key: i, className: 'dw-bad' }, '● ' + f) })) : null,
           h(Memory, { mem: mem, onSaved: props.refresh }),
           h(Budget, { budget: snap.budget, onSaved: props.refresh }),
           snap.workspace ? h(WorkspacePermission, { workspace: snap.workspace, onSaved: props.refresh }) : null,
