@@ -1,13 +1,16 @@
+import hashlib
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 from native import connect
+from sender import STICKER_CALLS
 
 
 class ConfirmationTest(unittest.TestCase):
-    def deliver(self, text, row, *, serverId=123, baseline=()):
+    def deliver(self, text, row, *, serverId=123, baseline=(), item=None, profile=None):
         class Database:
             def __init__(self, **_):
                 self.account, self.wxid, self.reads = 'bot-account', 'wxid_bot', 0
@@ -24,7 +27,7 @@ class ConfirmationTest(unittest.TestCase):
                 return dict(server_id=serverId)
 
         process = SimpleNamespace(pid=123, create_time=lambda: 1)
-        transport = Mock()
+        transport = Mock(profile=profile or dict(version='4.1.15.56', addresses={name: 1 for name in STICKER_CALLS}))
         modules = {
             'wechatauto.db': SimpleNamespace(WeChatDB=Database),
             'wechatauto.param': SimpleNamespace(WxParam=SimpleNamespace(ENABLE_FILE_LOGGER=False)),
@@ -38,11 +41,29 @@ class ConfirmationTest(unittest.TestCase):
                 patch('native.time.sleep'), patch('sender.NativeSender', return_value=transport):
             _, send = connect(config, Path('unused'))
             try:
-                send(dict(id='private'), dict(type='text', text=text))
+                send(dict(id='private'), item or dict(type='text', text=text))
             finally:
                 send.close()
-                transport.send.assert_called_once_with('private', 1, text)
+                if item is None: transport.send.assert_called_once_with('private', 1, text)
                 transport.close.assert_called_once_with()
+        return transport
+
+    def test_a_build_that_cannot_send_stickers_sends_a_gif_as_its_still_frame(self):
+        from PIL import Image
+        from outgoing import stillSticker
+        with tempfile.TemporaryDirectory() as directory:
+            gif = Path(directory) / 'sticker.gif'
+            blank, smile = Image.new('RGBA', (8, 8), (0, 0, 0, 0)), Image.new('RGBA', (8, 8), (255, 0, 0, 255))
+            for x in range(4): smile.putpixel((x, x), (255, 255, 0, 255))
+            blank.save(gif, format='GIF', save_all=True, append_images=[smile], duration=100, loop=0)
+            still = stillSticker(gif)
+            with Image.open(still) as image:
+                self.assertEqual(image.format, 'PNG')
+                self.assertEqual(image.convert('RGBA').getpixel((7, 0)), (255, 0, 0, 255), 'a blank first frame gives way to the last')
+            digest = hashlib.md5(Path(still).read_bytes()).hexdigest()
+            row = dict(shard='m.db', local_id=2, sender_username='wxid_bot', type='图片', content=f'<img md5="{digest}"/>')
+            transport = self.deliver('', row, item=dict(type='sticker', path=str(gif)), profile=dict(version='4.2.0.11', addresses={}))
+            transport.send.assert_called_once_with('private', 2, still)
 
     def test_text_receipt_matches_the_database_readers_trimmed_view(self):
         for text in ('原文', '原文 ', ' 原文\n', '\n第一行\n\n第二行\t'):

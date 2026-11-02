@@ -140,6 +140,12 @@ test('reasoning-only steps left by a removed tool call are dropped, and an echoe
   const step = (text: string) => ({ id: text, role: 'assistant', source: { kind: 'model' }, content: [{ type: 'reasoning', text }, call] }) as never;
   const result = { id: 'r', role: 'tool', toolCallId: call.id, source: { kind: 'tool' }, content: [{ type: 'text', text: 'sent' }] } as never;
   assert.deepEqual(toolFreeMessages([user('hello'), step('pick a sticker'), result, user('again'), step('another'), result]).map(message => message.role), ['user', 'user']);
+  const reply = (text: string) => ({ id: text, role: 'assistant', source: { kind: 'model' }, content: [{ type: 'text', text }, call] }) as never;
+  const update = (text: string) => ({ id: text, role: 'developer', source: { kind: 'memory' }, content: [{ type: 'text', text }] }) as never;
+  // DeepSeek Messages refuses an update that no longer follows a user or tool-result turn once the tool result is gone.
+  const hello = user('hello');
+  assert.deepEqual(toolFreeMessages([update('first'), hello, update('after user'), reply('looking'), result, update('after tool'), reply('found it')]).map(message => message.id),
+    [hello.id, 'after user', 'looking']);
   const { ctx } = await hostFixture(t, async function* (request) {
     if (request.purpose === 'compaction') { yield* textResponse('以下是此前交流的摘要：用户打了招呼。'); return; }
     yield* textResponse('reply ' + 'detail '.repeat(100));

@@ -9,7 +9,7 @@ import { SessionId } from '@deepseek-ai/dsh-session';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { hostFixture, textResponse } from './hostFixture.ts';
 import { createBridge, HomeUnavailable, REPLY_TIMEOUT_MS, type Bridge } from '../src/ecosystem/bridge/bridge.ts';
-import { BRIDGE_PATH, bridgeRoute } from '../src/ecosystem/bridge/route.ts';
+import { BRIDGE_PATH, COMPACT_PATH, bridgeRoute, compactRoute } from '../src/ecosystem/bridge/route.ts';
 import type { Push } from '../src/ecosystem/shared/outlets.ts';
 
 const tick = () => new Promise(resolve => setImmediate(resolve));
@@ -236,4 +236,30 @@ test('the say route answers 503 when the home is unavailable and never echoes in
   assert.equal((await call(unavailable, { headers: ok, body: JSON.stringify({ text: '在吗' }) })).status, 503);
   const broken = fakeBridge(async () => { throw new Error('C:\\secret'); });
   assert.deepEqual(await call(broken, { headers: ok, body: JSON.stringify({ text: '在吗' }) }), { status: 500, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }, body: { error: 'internal error' } });
+});
+
+async function callCompact(bridge: Bridge | undefined, request: () => string | undefined, init: { method?: string; headers?: Record<string, string> }) {
+  const req = Object.assign(Readable.from([]), { method: init.method ?? 'POST', url: COMPACT_PATH, headers: { host: '127.0.0.1:3080', ...init.headers } });
+  let status = 0; let body = '';
+  await compactRoute(() => bridge, request).handler(req as never, { writeHead: (code: number) => { status = code; }, end: (text: string) => { body = text; } } as never);
+  return { status, body: JSON.parse(body) };
+}
+test('the compact route asks for one compaction with the right token, and says why when it cannot', async () => {
+  const bridge = fakeBridge();
+  let asked = 0;
+  assert.deepEqual(await callCompact(bridge, () => { asked += 1; return undefined; }, { headers: ok }), { status: 202, body: { accepted: true } });
+  assert.equal(asked, 1);
+  assert.deepEqual(await callCompact(bridge, () => '请先启动世界生活线', { headers: ok }), { status: 409, body: { error: '请先启动世界生活线' } });
+});
+test('the compact route asks for nothing on a bad token, a cross-site request, another method or while her world is stopped', async () => {
+  const bridge = fakeBridge();
+  let asked = 0;
+  const request = () => { asked += 1; return undefined; };
+  assert.equal((await callCompact(bridge, request, {})).status, 403);
+  assert.equal((await callCompact(bridge, request, { headers: { 'x-dsh-world-token': 'wrong' } })).status, 403);
+  assert.equal((await callCompact(bridge, request, { headers: { ...ok, 'sec-fetch-site': 'cross-site' } })).status, 403);
+  assert.equal((await callCompact(bridge, request, { headers: { ...ok, host: 'evil.example:3080' } })).status, 403);
+  assert.equal((await callCompact(bridge, request, { method: 'GET', headers: ok })).status, 405);
+  assert.equal((await callCompact(undefined, request, { headers: ok })).status, 503);
+  assert.equal(asked, 0);
 });

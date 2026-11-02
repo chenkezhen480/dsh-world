@@ -37,7 +37,7 @@ async function fixture(t, name = 'dsh-world', compiled = true) {
     await writeFile(join(contents, 'lib', 'index.js'), 'export const version = "0.6.0";');
   }
   const archive = join(root, 'new package.tgz');
-  await command('tar', ['-czf', archive, '-C', join(root, 'input'), 'package']);
+  await command('tar', ['-czf', 'new package.tgz', '-C', 'input', 'package'], { cwd: root });
   const options = { profile, archive, pnpm: join(root, 'pnpm.mjs') };
   await writeFile(options.pnpm, '');
   const runner = async (file, args, settings) => {

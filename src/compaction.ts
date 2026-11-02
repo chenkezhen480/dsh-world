@@ -46,6 +46,13 @@ export function toolFreeMessages(messages: readonly Message[]): Message[] {
   const kept: Message[] = [];
   for (const message of messages) {
     if (message.role === 'tool') continue;
+    // A mid-history update (memory block, tool change) may only follow a user turn on DeepSeek Messages. A tool result was
+    // that turn after a tool call; with it removed, such an update would sit between two replies and the request is refused.
+    // What these updates carry is provided again after compaction, so the summary loses nothing.
+    if (message.role === 'system' || message.role === 'developer') {
+      if (kept.findLast(previous => previous.role === 'user' || previous.role === 'assistant')?.role === 'user') kept.push(message);
+      continue;
+    }
     if (message.role !== 'assistant') { kept.push(message); continue; }
     const content = message.content.filter(block => block.type !== 'tool-call');
     // A step that only reasoned before calling a tool has nothing left to say.

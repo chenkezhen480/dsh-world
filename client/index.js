@@ -426,9 +426,9 @@ window.__ModuleLoader__.load({
         ad ? h('div', { className: 'dw-bar' }, h('button', { className: 'dw-btn', onClick: restartAdapter }, '重启适配器'), adMsg ? h('span', { className: adMsg.indexOf('失败') >= 0 ? 'dw-bad' : 'dw-muted' }, adMsg) : null) : null,
         h('div', { className: 'dw-setting' },
           h('input', { type: 'text', inputMode: 'numeric', 'aria-label': '群聊读取上文条数', placeholder: '上文条数，默认 8', value: context, onChange: function (e) { setContext(e.target.value); setMsg('') } }),
-          h('input', { type: 'text', inputMode: 'decimal', 'aria-label': '图片缓冲秒数', placeholder: '缓冲秒数，默认 3', value: buffer, onChange: function (e) { setBuffer(e.target.value); setMsg('') } }),
+          h('input', { type: 'text', inputMode: 'decimal', 'aria-label': '消息缓冲秒数', placeholder: '缓冲秒数，默认 3', value: buffer, onChange: function (e) { setBuffer(e.target.value); setMsg('') } }),
           h('button', { className: 'dw-btn', onClick: save }, '保存')),
-        h('div', { className: 'dw-muted' }, '上文按消息条数算（群聊被 @ 时带上之前几条）；缓冲是私聊图片等待后续图片或文字的秒数。与共享记忆的 200 轮无关。'),
+        h('div', { className: 'dw-muted' }, '上文按消息条数算（群聊被 @ 时带上之前几条）；缓冲是收到消息后等对方说完的秒数：同一个人在这段时间里又发来消息就重新计时，安静下来再合成一条交给她（最长等 30 秒），0 = 不等。与共享记忆的 200 轮无关。'),
         h(Status, { msg: msg }))
     }
     /** QQ：她自己那条 OneBot 通道（原生），以及 SnowLuma 控制台的入口。 */

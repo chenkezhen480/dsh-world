@@ -8,6 +8,8 @@ import { isDeepStrictEqual, parseArgs, promisify } from 'node:util';
 
 const execute = promisify(execFile);
 const command = (file, args, options = {}) => execute(file, args, { windowsHide: true, maxBuffer: 16 * 1024 * 1024, ...options });
+// GNU tar (the one Git Bash puts first) reads the `C:` of an archive path as a remote host; naming the archive from its own folder works with every tar.
+const readArchive = (run, archive, args, options = {}) => run('tar', [args[0], basename(archive), ...args.slice(1)], { ...options, cwd: dirname(archive) });
 const json = async file => JSON.parse((await readFile(file, 'utf8')).replace(/^\uFEFF/, ''));
 async function exists(file) {
   try { await lstat(file); return true; }
@@ -73,10 +75,10 @@ export async function updateWorld({ profile: profilePath, archive: archivePath, 
     if (active.length) throw new Error(`Please exit DSH and its WeChat adapter normally before updating: ${active.join(', ')}`);
   };
   await stopped();
-  const { stdout: listing } = await run('tar', ['-tzf', archive]);
+  const { stdout: listing } = await readArchive(run, archive, ['-tzf']);
   const entries = listing.trim().split(/\r?\n/);
   if (entries.filter(file => file === 'package/package.json').length !== 1 || !entries.includes('package/lib/index.js')) throw new Error('A compiled dsh-world archive with lib/index.js is required');
-  const { stdout: manifestText } = await run('tar', ['-xOzf', archive, 'package/package.json']);
+  const { stdout: manifestText } = await readArchive(run, archive, ['-xOzf', 'package/package.json']);
   const target = JSON.parse(manifestText.replace(/^\uFEFF/, ''));
   if (target.name !== 'dsh-world' || !/^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(target.version) || target.main !== 'lib/index.js') throw new Error('The archive must be a compiled dsh-world package');
 
@@ -120,7 +122,7 @@ export async function updateWorld({ profile: profilePath, archive: archivePath, 
     const installed = await json(join(installedRoot, 'package.json'));
     if (installed.name !== 'dsh-world' || installed.version !== target.version) throw new Error('Installed dsh-world version does not match the archive');
     for (const entry of ['lib/index.js', 'scripts/update-world.mjs'].filter(file => entries.includes('package/' + file))) {
-      const { stdout } = await run('tar', ['-xOzf', savedArchive, 'package/' + entry], { encoding: 'buffer' });
+      const { stdout } = await readArchive(run, savedArchive, ['-xOzf', 'package/' + entry], { encoding: 'buffer' });
       if (createHash('sha256').update(stdout).digest('hex') !== await digest(join(installedRoot, entry))) throw new Error(`Installed package content does not match: ${entry}`);
     }
     await run(process.execPath, ['--check', join(installedRoot, 'lib', 'index.js')], { cwd: profile });

@@ -15,9 +15,29 @@ interface HomeApplyDeps {
   ctx: Context;
   home(): Promise<Agent>;
   isHome(agent: Agent): boolean;
-  compaction(): Pick<CompactionEngine, 'compactNow'> | undefined;
+  /** The engine her home actually compacts with; on the Web host it sits inside the session's preset, not on the host. */
+  compaction(agent: Agent): Pick<CompactionEngine, 'compactNow'> | undefined;
   refresh(session: Session): void;
   changed(): void;
+  /** The console health entry for a failed request; undefined clears it. */
+  fault(message: string | undefined): void;
+}
+/** The Web host's preset registry; `serviceFor` reads a service from a session's isolated preset group (0.2.1-rc.2 on). */
+interface AgentPresets { serviceFor?(agent: Agent, name: string): unknown }
+/**
+ * DSH's Web host composes compaction inside each session's preset, an isolated realm the host plane cannot see; the
+ * host-plane service is what the TUI, or a profile that inserts one at the top level, provides.
+ */
+export function compactionFor(ctx: Pick<Context, 'get'>, agent: Agent): Pick<CompactionEngine, 'compactNow'> | undefined {
+  const preset = (ctx.get('agentPresets') as AgentPresets | undefined)?.serviceFor?.(agent, 'compaction') as CompactionEngine | undefined;
+  return preset ?? ctx.get('compaction') as CompactionEngine | undefined;
+}
+const unavailable = '未加载压缩服务：家会话所用的预设里和宿主上都没有压缩插件';
+/** The manual compaction error says only which stage failed; what actually went wrong is in its cause. */
+function failureText(error: unknown): string {
+  const parts: string[] = [];
+  for (let current = error; current !== undefined && parts.length < 4; current = current instanceof Error ? current.cause : undefined) parts.push(errorText(current));
+  return parts.join('：');
 }
 async function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
   signal.throwIfAborted();
@@ -33,10 +53,17 @@ export function createHomeApply(deps: HomeApplyDeps) {
   let controller: AbortController | undefined;
   let pending: Promise<void> | undefined;
   const stopped = new Error('世界已停止');
-  function update(next: HomeApplyState): void { state = next; deps.changed(); }
-  async function run(engine: Pick<CompactionEngine, 'compactNow'>, operation: AbortController): Promise<void> {
+  function update(next: HomeApplyState): void {
+    state = next; deps.changed();
+    // The state only lives in memory, and the nightly request after the review has no one watching it.
+    if (next.status === 'failed') { deps.ctx.logger.warn(`dsh-world: ${next.message ?? ''}`); deps.fault(next.message); }
+    else if (next.status === 'done') { deps.ctx.logger.info(`dsh-world: ${next.message ?? ''}`); deps.fault(undefined); }
+  }
+  async function run(operation: AbortController): Promise<void> {
     const { signal } = operation;
     const agent = await abortable(deps.home(), signal);
+    const engine = deps.compaction(agent);
+    if (!engine) throw new Error(unavailable);
     const check = () => {
       if (!signal.aborted && !deps.isHome(agent)) operation.abort(new Error('家会话已变化，请重新提交'));
       signal.throwIfAborted();
@@ -77,15 +104,14 @@ export function createHomeApply(deps: HomeApplyDeps) {
   }
   return {
     snapshot: () => state,
-    request(): string | undefined {
+    /** Failures, including a missing engine, arrive later as the `failed` state. */
+    request(): undefined {
       if (pending) return;
-      const engine = deps.compaction();
-      if (!engine) return '未加载压缩服务，请先启用 DSH 压缩插件';
       controller = new AbortController();
       const { signal } = controller;
       update({ status: 'waiting' });
-      pending = run(engine, controller).catch(error => {
-        update({ ...state, status: signal.reason === stopped ? 'cancelled' : 'failed', message: signal.reason === stopped ? '已取消应用并压缩家会话。' : `应用并压缩失败：${errorText(signal.aborted ? signal.reason : error)}` });
+      pending = run(controller).catch(error => {
+        update({ ...state, status: signal.reason === stopped ? 'cancelled' : 'failed', message: signal.reason === stopped ? '已取消应用并压缩家会话。' : `应用并压缩失败：${failureText(signal.aborted ? signal.reason : error)}` });
       }).finally(() => { controller = undefined; pending = undefined; });
       return undefined;
     },

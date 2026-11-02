@@ -134,9 +134,12 @@ def connect(config, stateDir):
 
     def send(chat, item):
         import hashlib
-        from outgoing import mediaDigestMatches, serverConfirmed
+        from outgoing import mediaDigestMatches, serverConfirmed, stillSticker
+        from sender import sendsStickers
         checkProcess()
         item = dict(type='text', text=item) if isinstance(item, str) else item
+        if item['type'] == 'sticker' and not sendsStickers(getSender().profile):
+            item = dict(type='image', path=stillSticker(item['path']))
         kind = {'text': 1, 'image': 2, 'sticker': 3}[item['type']]
         value = item['text'] if kind == 1 else item['path']
         def stableRows(deadline):

@@ -87,6 +87,27 @@ def prepareMessages(messages, config, stateDir):
     return prepared
 
 
+def blankFrame(frame):
+    """Nothing to see: fully transparent, or a single flat colour (many stickers fade in from one)."""
+    if frame.getchannel('A').point(lambda alpha: 255 if alpha > 16 else 0).getbbox() is None:
+        return True
+    return frame.convert('RGB').getcolors(maxcolors=1) is not None
+
+
+def stillSticker(path):
+    """A GIF sticker as one still PNG beside it, for a WeChat build that cannot send stickers: its first frame, or the
+    last when the first is blank."""
+    from PIL import Image
+    still = Path(path).with_suffix('.still.png')
+    with Image.open(path) as image:
+        frame = image.convert('RGBA')
+        if blankFrame(frame) and getattr(image, 'n_frames', 1) > 1:
+            image.seek(image.n_frames - 1)
+            frame = image.convert('RGBA')
+        frame.save(still, format='PNG')
+    return str(still)
+
+
 def deliverMessages(messages, send, confirmed=None):
     for index, message in enumerate(messages):
         try:

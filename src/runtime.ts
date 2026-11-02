@@ -8,7 +8,7 @@ import { Faults } from './faults.ts';
 import { createHistory, excludePresentMessages, renderHistory } from './history.ts';
 import { createWorldToolRegistry, memoryTools } from './memoryTools.ts';
 import { createPromptSections, type WorldPromptSource } from './promptSection.ts';
-import { belongsToWorld, createSourceArchive, inWorld, isCorruptSessionLog } from './sourceArchive.ts';
+import { belongsToWorld, createSourceArchive, inWorld, isCorruptSessionLog, isNotFound } from './sourceArchive.ts';
 import type { ArchiveStore } from './store.ts';
 import type { WorldConfig } from './types.ts';
 import { worldNames } from './worldPrompt.ts';
@@ -65,8 +65,9 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
   /** Restore the loop position; recalled blocks are located directly on the current surface. */
   async function readMemoryState(session: Session): Promise<MemoryState> {
     let position = { turn: 1, step: 1 };
-    const handle = await ctx.sessionPersistence.open(session.id, 'read');
-    try {
+    // A session the host is still creating may not be readable yet (#27); it has no step to restore.
+    const handle = await ctx.sessionPersistence.open(session.id, 'read').catch(error => { if (isNotFound(error)) return undefined; throw error; });
+    if (handle) try {
       for (let offset = 0; ; offset += 128) {
         const { events } = await handle.read(offset, 128);
         if (!events.length) break;
@@ -159,7 +160,13 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
         if (session.header.origin === 'subagent' || (session.header.delegationDepth ?? 0) > 0 || (!config.archiveScope && !belongsToWorld(session, config))) return;
         if (event.type === 'assistant/message' || event.type === 'turn/end' || event.type === 'turn/start' || event.type === 'compaction/end' || (event.type === 'user/message' && event.data.source.kind === 'user')) void archive.schedule(session.id).catch(() => {});
       }));
-      disposers.push(ctx.on('agent/created', async ({ agent }) => { prompts?.add(agent); syncTools(agent); await attach(agent); return undefined; }));
+      // The host fails the whole session creation when a creation listener rejects, leaving an empty session behind on
+      // every retry (#27). Memory is set up again before the first request, and a failure here stays in the health list.
+      disposers.push(ctx.on('agent/created', ({ agent }) => {
+        prompts?.add(agent); syncTools(agent);
+        void attach(agent).catch(error => ctx.logger.warn(`dsh-world: 会话 ${agent.id} 记忆初始化失败，第一次请求前会再试：`, error));
+        return undefined;
+      }));
       if (tools) {
         disposers.push(reassembleOnChange(ctx, syncTools));
         disposers.push(ctx.on('agent/pre-step', ({ agent }, next) => { syncTools(agent); return next(); }, { prepend: true }));

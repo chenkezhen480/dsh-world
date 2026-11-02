@@ -26,7 +26,8 @@ class ReconnectTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); store = MessageStore(root/'state.sqlite')
             store.baseline('private',10,[old])
-            config = dict(chats=[dict(id='private')], selfId='wxid_bot', moduleFile=str(root/'wechat.json'), pollSeconds=0.5)
+            # The loop ends at its first sleep, so the message must not wait in the buffer.
+            config = dict(chats=[dict(id='private')], selfId='wxid_bot', moduleFile=str(root/'wechat.json'), pollSeconds=0.5, bufferSeconds=0)
             jobs = []
             def enqueue(*_):
                 jobs.append(dict(id='a'*64, accountId='wxid_bot', chatId='private', messages=[dict(type='text',text='听到了')]))

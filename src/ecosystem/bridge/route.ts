@@ -3,6 +3,7 @@ import { jsonObject, knownHost, readBody, sendJson, type JsonResult } from '../.
 import { HomeUnavailable, type Bridge } from './bridge.ts';
 
 export const BRIDGE_PATH = '/dsh-world/bridge/say';
+export const COMPACT_PATH = '/dsh-world/bridge/compact';
 const MAX_BODY_BYTES = 32 * 1024;
 const MAX_TEXT = 2000;
 const bad: JsonResult = { status: 400, body: { error: 'bad request' } };
@@ -29,6 +30,27 @@ export function bridgeRoute(bridge: () => Bridge | undefined, allowedHosts: read
     handler: async (req: IncomingMessage, res: ServerResponse) => {
       let result: JsonResult;
       try { result = await handleSay(bridge(), req, allowedHosts); } catch { result = { status: 500, body: { error: 'internal error' } }; }
+      sendJson(res, result);
+    },
+  };
+}
+
+async function handleCompact(bridge: Bridge | undefined, request: () => string | undefined, req: IncomingMessage, allowedHosts: readonly string[]): Promise<JsonResult> {
+  if (req.method !== 'POST') return { status: 405, body: { error: 'method not allowed' }, headers: { allow: 'POST' } };
+  const token = req.headers['x-dsh-world-token'];
+  if (req.headers['sec-fetch-site'] === 'cross-site' || !knownHost(req.headers.host, allowedHosts)) return { status: 403, body: { error: 'forbidden' } };
+  if (!bridge) return unavailable;
+  if (!bridge.checkToken(Array.isArray(token) ? undefined : token)) return { status: 403, body: { error: 'forbidden' } };
+  const refused = request();
+  return refused ? { status: 409, body: { error: refused } } : { status: 202, body: { accepted: true } };
+}
+/** Asks for one compaction of her home, held behind her running turn; the same token as the words route. */
+export function compactRoute(bridge: () => Bridge | undefined, request: () => string | undefined, allowedHosts: readonly string[] = []) {
+  return {
+    kind: 'exact' as const, path: COMPACT_PATH,
+    handler: async (req: IncomingMessage, res: ServerResponse) => {
+      let result: JsonResult;
+      try { result = await handleCompact(bridge(), request, req, allowedHosts); } catch { result = { status: 500, body: { error: 'internal error' } }; }
       sendJson(res, result);
     },
   };

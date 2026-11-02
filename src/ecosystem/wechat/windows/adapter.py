@@ -23,8 +23,10 @@ from reading import readHistory
 from presence import GroupPresence, seedPresence, speakerName, unreadAfter
 from datetime import datetime, timezone
 
-IMAGE_BUFFER_SECONDS = 3
-IMAGE_BUFFER_POLL_SECONDS = 0.1
+BUFFER_SECONDS = 3
+BUFFER_POLL_SECONDS = 0.1
+MAX_BUFFER_SECONDS = 30
+MAX_BATCH_ROWS = 16
 MAX_PRIVATE_IMAGES = 2
 CONTROL_TIMEOUT_SECONDS = 5
 REPLY_TIMEOUT_SECONDS = 190
@@ -36,6 +38,10 @@ SEND_ATTEMPTS = 3
 
 class NeedsHuman(RuntimeError):
     pass
+
+
+def pendingText(chatId, key):
+    return f'上次消息结果尚未确认：{chatId} / {key}。核对家和微信后使用 acknowledge，不自动重发。'
 
 
 class HomeRequestError(RuntimeError):
@@ -104,30 +110,63 @@ def newMessages(database, chatId, sinceSeq, pageSize):
     return sorted(found.values(), key=messageOrder)
 
 
-def bufferImageMessages(config, database, store, chat, first, *, clock=time.monotonic, sleep=time.sleep):
-    deadline = clock() + config.get('bufferSeconds', IMAGE_BUFFER_SECONDS)
+def followingRows(chat, first, candidates, store):
+    """What the sender of `first` added after it that can join its request, and whether nothing more can (someone else
+    spoke, a message that goes on its own, or a limit was reached)."""
+    group = chat['id'].endswith('@chatroom')
+    rows, images, length = [], int(first['type'] == '图片'), len(str(first['content'])) if first['type'] == '文本' else 0
+    for row in candidates:
+        if messageOrder(row) <= messageOrder(first) or store.seen(chat['id'], messageKey(row)):
+            continue
+        if row.get('sender_username') != first.get('sender_username') or row['type'] not in (('文本',) if group else ('文本', '图片')) or len(rows) + 1 == MAX_BATCH_ROWS:
+            return rows, True
+        if row['type'] == '图片':
+            if images == MAX_PRIVATE_IMAGES: return rows, True
+            images += 1
+        else:
+            text = str(row['content'])
+            # Merged, the request still has to fit the home's 2000-character limit.
+            if not text.strip() or length + len(text) + 1 > 2000: return rows, True
+            length += len(text) + 1
+        rows.append(row)
+    return rows, False
+
+
+def mergeFollowing(database, chat, config, message, rows):
+    """Adds what `bufferMessages` gathered to the request of the first message: texts in order, pictures as media."""
+    group = chat['id'].endswith('@chatroom')
+    # A later group line does not call her itself, so it is read as plain text; the request keeps the identity that did.
+    normalize = messageNormalizer(database, chat, config) if group else None
+    for row in rows:
+        extra = normalize(row) if group else incomingMessage(database, chat, row, config)
+        if extra is None: raise RuntimeError('接收批次包含无法识别的消息')
+        if extra['text']:
+            message['text'] = '\n'.join(text for text in (message['text'], extra['text']) if text)
+            if not group: message['identity'] = extra['identity']
+        if extra.get('media'): message.setdefault('media', []).extend(extra['media'])
+
+
+def bufferMessages(config, database, store, chat, first, *, clock=None, sleep=None):
+    """Waits until the sender of `first` has been quiet for the buffer time, each new message of theirs starting the wait
+    again, so a thought typed as several messages reaches her as one request. The whole wait is capped."""
+    clock, sleep = clock or time.monotonic, sleep or time.sleep
+    quiet = config.get('bufferSeconds', BUFFER_SECONDS)
+    latest = clock() + MAX_BUFFER_SECONDS
+    deadline = min(clock() + quiet, latest)
     batch = [first]
     while True:
         if clock() >= deadline: return batch
         candidates = newMessages(database, chat['id'], int(first['sort_seq']), config.get('pageSize', 50))
+        # A slow read must not take in a message that arrived after the window closed; it starts the next request.
         if clock() > deadline: return batch
-        batch = [first]
-        images = 1
-        for row in candidates:
-            if messageOrder(row) <= messageOrder(first) or store.seen(chat['id'], messageKey(row)):
-                continue
-            if row.get('sender_username') != first.get('sender_username') or row['type'] not in ('文本', '图片'):
-                return batch
-            if row['type'] == '图片':
-                if images == MAX_PRIVATE_IMAGES: return batch
-                images += 1
-                batch.append(row)
-            else:
-                if str(row['content']).strip() and len(str(row['content'])) <= 2000: batch.append(row)
-                return batch
+        following, closed = followingRows(chat, first, candidates, store)
+        if len(following) >= len(batch):
+            batch = [first, *following]
+            deadline = min(clock() + quiet, latest)
+        if closed: return batch
         remaining = deadline - clock()
         if remaining <= 0: return batch
-        sleep(min(IMAGE_BUFFER_POLL_SECONDS, remaining))
+        sleep(min(BUFFER_POLL_SECONDS, remaining))
 
 
 def incomingMessage(database, chat, row, config):
@@ -241,7 +280,14 @@ class MessageStore:
     def checkPending(self):
         row = self.db.execute("SELECT chatId,messageId FROM messages WHERE status='pending' ORDER BY rowid LIMIT 1").fetchone()
         if row:
-            raise NeedsHuman(f'上次消息结果尚未确认：{row[0]} / {row[1]}。核对家和微信后使用 acknowledge，不自动重发。')
+            raise NeedsHuman(pendingText(row[0], row[1]))
+
+    def pendingChats(self):
+        """The chats waiting for a person to check an unconfirmed message, each with its oldest such message."""
+        pending = {}
+        for chatId, key in self.db.execute("SELECT chatId,messageId FROM messages WHERE status='pending' ORDER BY rowid"):
+            pending.setdefault(chatId, key)
+        return pending
 
     def acknowledge(self, chatId, key):
         row = self.db.execute("SELECT seq FROM messages WHERE chatId=? AND messageId=? AND status='pending' LIMIT 1", (chatId, key)).fetchone()
@@ -477,14 +523,21 @@ def askWhileSending(config, message, database, store, send, ask, report, poll):
 
 def watch(config, database, store, send, ask=askHome, report=reportReceipt, poll=pollOutgoing):
     pageSize = config.get('pageSize', 50)
-    paused = None
+    paused, held = None, {}
     while True:
         try:
             flushReceipts(config['moduleFile'], store, report)
             flushOutgoing(config, database, store, send, poll=poll, report=report)
-            store.checkPending()
+            # An unconfirmed message holds back only its own chat: a failed group request used to stop private chats too.
+            pending = store.pendingChats()
+            for chatId, key in pending.items():
+                if held.get(chatId) != key:
+                    print(f'微信入站处理暂缓（仅此聊天，其他聊天照常）：{pendingText(chatId, key)}', file=sys.stderr, flush=True)
+            held = pending
             paused = None
             for chat in config['chats']:
+                if chat['id'] in pending:
+                    continue
                 baselineChat(database, store, chat['id'], pageSize)
                 seedPresence(database, store, config, chat)
                 for row in newMessages(database, chat['id'], store.cursor(chat['id']), pageSize):
@@ -492,25 +545,21 @@ def watch(config, database, store, send, ask=askHome, report=reportReceipt, poll
                         continue
                     if chat['id'].endswith('@chatroom') and row['type'] != '系统消息':
                         store.presence.observe(config['selfId'], chat['id'], row, speakerName(database, config, row))
-                    rows = bufferImageMessages(config, database, store, chat, row) if not chat['id'].endswith('@chatroom') and row['type'] == '图片' and row.get('sender_username') != config['selfId'] else [row]
                     try: message = incomingMessage(database, chat, row, config)
                     except MessageContentError as error:
                         store.fault(chat['id'], row, error, rejected=True)
                         continue
-                    if chat['id'].endswith('@chatroom') and message is None:
+                    group = chat['id'].endswith('@chatroom')
+                    if group and message is None:
                         # No delivery to track: retain only the group's counter and receive position.
                         store.finish(chat['id'], messageKey(row), int(row['sort_seq']))
                         flushOutgoing(config, database, store, send, poll=poll, report=report)
                         continue
                     if message and message.get('reference', {}).get('error'):
                         store.fault(chat['id'], row, message['reference']['error'])
-                    for following in rows[1:]:
-                        extra = incomingMessage(database, chat, following, config)
-                        if extra is None: raise RuntimeError('接收批次包含无法识别的消息')
-                        if extra['text']:
-                            message['text'] = extra['text']
-                            message['identity'] = extra['identity']
-                        if extra.get('media'): message.setdefault('media', []).extend(extra['media'])
+                    # Only a message she is asked about waits for what its sender adds; in a group, that is one that calls her.
+                    rows = bufferMessages(config, database, store, chat, row) if message and row['type'] in ('文本', '图片') else [row]
+                    mergeFollowing(database, chat, config, message, rows[1:])
                     store.beginBatch(chat['id'], rows)
                     if message:
                         askWhileSending(config, message, database, store, send, ask, report, poll)

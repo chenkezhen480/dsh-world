@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 from binding import WechatOffline
-from sender import NativeRequest, NativeSender, encodeRequest, selectProfile, verifyFile
+from sender import NativeRequest, NativeSender, encodeRequest, selectProfile, sendsStickers, verifyFile
 
 
 PROFILES = Path(__file__).parent / 'engine/profiles.json'
@@ -31,8 +31,17 @@ class SenderTest(unittest.TestCase):
 
     def test_each_supported_build_encodes_its_own_native_addresses(self):
         profiles = json.loads(PROFILES.read_text(encoding='utf-8-sig'))
-        self.assertEqual([profile['version'] for profile in profiles], ['4.1.15.13', '4.1.15.56'])
+        self.assertEqual([profile['version'] for profile in profiles], ['4.1.15.13', '4.1.15.56', '4.2.0.11', '4.2.0.12'])
+        # 4.2 values are taken from the upstream version table; its sticker path is unmapped, so those slots are 0.
         for profile, timestamp, imageSize, addresses in (
+            (profiles[2], 0x6ae0a8d1, 0xc4dc000, (
+                0x45d10, 0x47310, 0x311990, 0x47220, 0x384730, 0x71c600, 0x571fd20,
+                0x3ec5540, 0, 0x9b5e0, 0, 0, 0,
+                0x17cf210, 0x76a43bc, 0x76a4400, 0xbd0ce30, 0x90d4f88, 0)),
+            (profiles[3], 0x6ae33707, 0xc4db000, (
+                0x45d10, 0x47310, 0x311990, 0x47220, 0x384730, 0x71b380, 0x5721040,
+                0x3ec6850, 0, 0x9b5e0, 0, 0, 0,
+                0x17ce4c0, 0x76a53bc, 0x76a5400, 0xbd0ce30, 0x90d5f68, 0)),
             (profiles[0], 0x6ab0a378, 0xc0ae000, (
                 0x45d10, 0x47310, 0x2fb010, 0x47220, 0x36c740, 0x6f4d90, 0x54b02f0,
                 0x3d9d990, 0x1bfb1c0, 0x9b5d0, 0xe7a8e0, 0x5309c0, 0x4e6360,
@@ -46,6 +55,15 @@ class SenderTest(unittest.TestCase):
                 request = encodeRequest(profile, 123, 'wxid_bot', 'family@chatroom', 1, '你好')
                 self.assertEqual((request.timestamp, request.imageSize), (timestamp, imageSize))
                 self.assertEqual(tuple(request.rva), addresses)
+
+    def test_a_build_without_the_sticker_path_refuses_native_stickers_but_sends_text_and_images(self):
+        profiles = json.loads(PROFILES.read_text(encoding='utf-8-sig'))
+        self.assertEqual([sendsStickers(profile) for profile in profiles], [True, True, False, False])
+        encodeRequest(profiles[2], 123, 'wxid_bot', 'family@chatroom', 1, '你好')
+        encodeRequest(profiles[2], 123, 'wxid_bot', 'family@chatroom', 2, 'C:/a.png')
+        with self.assertRaisesRegex(ValueError, '4.2.0.11 未适配原生表情包'):
+            encodeRequest(profiles[2], 123, 'wxid_bot', 'family@chatroom', 3, 'C:/a.gif')
+        encodeRequest(profiles[1], 123, 'wxid_bot', 'family@chatroom', 3, 'C:/a.gif')
 
     def test_profile_selection_matches_file_size_and_hash_instead_of_list_order(self):
         profiles = json.loads(PROFILES.read_text(encoding='utf-8-sig'))

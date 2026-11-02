@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from snapshot import NotSent
-from outgoing import deliverMessages, mediaDigestMatches, prepareMessages, serverConfirmed
+from outgoing import deliverMessages, mediaDigestMatches, prepareMessages, serverConfirmed, stillSticker
 
 
 class OutgoingTest(unittest.TestCase):
@@ -86,6 +86,18 @@ class OutgoingTest(unittest.TestCase):
             with Image.open(prepared[0]['path']) as output:
                 self.assertEqual(output.format, 'GIF')
                 self.assertEqual(output.n_frames, 2)
+
+    def test_still_sticker_keeps_a_drawn_first_frame_and_skips_a_flat_one(self):
+        from PIL import Image
+        drawn = Image.new('RGBA', (8, 8), (0, 0, 255, 255)); drawn.putpixel((1, 1), (255, 255, 255, 255))
+        last = Image.new('RGBA', (8, 8), (255, 0, 0, 255)); last.putpixel((2, 2), (0, 0, 0, 255))
+        with tempfile.TemporaryDirectory() as directory:
+            for name, first, corner in (('drawn', drawn, (0, 0, 255, 255)), ('flat', Image.new('RGBA', (8, 8), (255, 255, 255, 255)), (255, 0, 0, 255))):
+                with self.subTest(first=name):
+                    gif = Path(directory) / f'{name}.gif'
+                    first.save(gif, format='GIF', save_all=True, append_images=[last], duration=100, loop=0)
+                    with Image.open(stillSticker(gif)) as still:
+                        self.assertEqual(still.convert('RGBA').getpixel((7, 7)), corner)
 
 
 if __name__ == '__main__':

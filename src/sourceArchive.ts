@@ -21,7 +21,7 @@ export function belongsToWorld(session: Pick<Session, 'header'>, config: WorldCo
 export function inWorld(session: Pick<Session, 'header' | 'id'>, config: WorldConfig, inWorkspace?: (sessionId: string) => boolean): boolean {
   return belongsToWorld(session, config) && (inWorkspace?.(session.id) ?? true);
 }
-const isNotFound = (error: unknown) => error instanceof Error && error.name === 'SessionPersistenceNotFoundError';
+export const isNotFound = (error: unknown) => error instanceof Error && error.name === 'SessionPersistenceNotFoundError';
 const ordinary =(header: Session['header']) => header.origin !== 'subagent' && (header.delegationDepth ?? 0) === 0;
 
 /**

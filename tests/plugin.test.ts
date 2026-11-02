@@ -735,8 +735,8 @@ test('with the bridge and an outlet, words from a local app enter the home and t
   const logged = captureErrors(ctx);
   const outlets = [{ name: '桌面桌宠', urlFile: runningFile, path: '/dsh-pet-7340/broadcast?pet=main&surface=any' }];
   const plugin = ctx.plugin(worldPlugin, { ...config, companionName: '小鱼', life: true, bridge: true, toast: false, outlets }); cleanup.push(() => plugin.dispose()); await plugin.await();
-  await until(async () => routes.length === 3, 'the bridge and console routes');
-  assert.deepEqual(routes.map(route => route.path).sort(), ['/dsh-world/bridge/say', '/dsh-world/qq', '/dsh-world'].sort());
+  await until(async () => routes.length === 4, 'the bridge and console routes');
+  assert.deepEqual(routes.map(route => route.path).sort(), ['/dsh-world/bridge/say', '/dsh-world/bridge/compact', '/dsh-world/qq', '/dsh-world'].sort());
   assert.equal((await routeCall(routes, '/dsh-world/bridge/say', '/dsh-world/bridge/say', { 'x-dsh-world-token': 'any' }, '{}')).status, 503, 'no bridge before start');
   await consolePost(routes, '/dsh-world/console/start');
   const { homeSessionId } = await firstWakeDone(ctx, root);
@@ -756,7 +756,7 @@ test('with the bridge and an outlet, words from a local app enter the home and t
   await until(async () => ctx.agents.list().every(agent => agent.status === 'idle'), 'the second reply'); await home.whenIdle(); await new Promise(resolve => setTimeout(resolve, 20));
   assert.match((await consoleGet(routes, '/dsh-world/console/snapshot')).health.join('|'), /桌面桌宠没收到小鱼的回复：.*baseUrl/);
   await plugin.dispose();
-  assert.ok(!existsSync(bridgeFile)); assert.deepEqual(unregistered.sort(), ['/dsh-world', '/dsh-world/bridge/say', '/dsh-world/qq']);
+  assert.ok(!existsSync(bridgeFile)); assert.deepEqual(unregistered.sort(), ['/dsh-world', '/dsh-world/bridge/compact', '/dsh-world/bridge/say', '/dsh-world/qq']);
   const archive = createArchiveStore({ ...config, root });
   const records = await archive.readPage({ worldId: 'fish', limit: 20 }).then(page => page.records).finally(() => archive.close());
   assert.deepEqual(records.filter(r => r.role === 'user').map(r => r.content).sort(), ['桌宠上的话', '桌宠上的话，第二句'], 'her partner\'s own words, in memory');

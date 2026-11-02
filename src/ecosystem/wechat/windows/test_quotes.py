@@ -139,13 +139,12 @@ class QuoteTest(unittest.TestCase):
         broken = {**quoteRow(), 'content': '<msg><appmsg><type>57</type>'}
         normal = dict(broken, local_id=219, sort_seq=11, type='文本', content='后续普通消息')
         class Finished(Exception): pass
-        class Database:
-            reads = 0
-            def get_messages(self, chatId, limit, offset=0):
-                self.reads += 1
-                if self.reads > 1: raise Finished()
-                return [normal, broken][offset:offset+limit]
         calls = []
+        class Database:
+            def get_messages(self, chatId, limit, offset=0):
+                # The buffer reads again while it waits; stop once the following message has been asked.
+                if calls and store.cursor('owner') == 11: raise Finished()
+                return [normal, broken][offset:offset+limit]
         with tempfile.TemporaryDirectory() as directory:
             store = MessageStore(Path(directory) / 'state.sqlite')
             try:

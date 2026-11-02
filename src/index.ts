@@ -5,12 +5,12 @@ import type { Session } from '@deepseek-ai/dsh-session';
 import z from '@deepseek-ai/schemastery';
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths';
 import { createBridge, type Bridge } from './ecosystem/bridge/bridge.ts';
-import { bridgeRoute } from './ecosystem/bridge/route.ts';
+import { bridgeRoute, compactRoute } from './ecosystem/bridge/route.ts';
 import { consoleRoute, type ConsoleActions } from './console/routes.ts';
 import { consoleSources } from './console/snapshot.ts';
-import { createHomeApply } from './console/homeApply.ts';
+import { compactionFor, createHomeApply } from './console/homeApply.ts';
 import { errorText, Faults } from './faults.ts';
-import { swapCompactionOnce } from './compactionSwap.ts';
+import { swapCompactionOnce, swapPresetCompaction, swapStockCompaction, type ConfigEditor } from './compactionSwap.ts';
 import { hostLife } from './life/host.ts';
 import { createLifeStore, durableWrite } from './life/lifeStore.ts';
 import { toastSupported, windowsToast, type Notifier } from './life/notify.ts';
@@ -99,7 +99,7 @@ export const Config = z.object({
   // The console and the bridge answer only this machine by name, plus these (a LAN address or domain behind a proxy).
   allowedHosts: z.array(z.string()).default([]),
 });
-interface WebServer { register(route: ReturnType<typeof consoleRoute> | ReturnType<typeof bridgeRoute> | ReturnType<typeof qqRoute>): () => void }
+interface WebServer { register(route: ReturnType<typeof consoleRoute> | ReturnType<typeof bridgeRoute> | ReturnType<typeof compactRoute> | ReturnType<typeof qqRoute>): () => void }
 
 /**
  * Her world runs only after her partner presses start in the world console, and stops when they press stop:
@@ -168,8 +168,18 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   ctx.inject(['sessionController', 'permissionPresets', 'webServer'], async lifeCtx => {
     const webServer = (lifeCtx as unknown as { webServer: WebServer }).webServer;
     const host = hostLife(lifeCtx);
-    swapCompactionOnce({ enabled: config.replaceCompaction, profileDir: (lifeCtx.get('profileContext') as { dir?: string } | undefined)?.dir, done: power.compactionSwapped, markDone: power.markCompactionSwapped,
+    const configEditor = lifeCtx.get('configEditor') as ConfigEditor | undefined;
+    const swapCompaction = () => swapCompactionOnce({ enabled: config.replaceCompaction, profileDir: (lifeCtx.get('profileContext') as { dir?: string } | undefined)?.dir, done: power.compactionSwapped, markDone: power.markCompactionSwapped,
+      swap: async dir => { const row = swapStockCompaction(dir); return row.status === 'unchanged' && configEditor ? swapPresetCompaction(configEditor, config.agentPreset, dir) : row; },
       report: message => { faults.set('compaction-swap', message); lifeCtx.logger.warn(`dsh-world: ${message}`); } });
+    // The preset row the editor rewrites is active only once the host has finished loading.
+    const appReady = lifeCtx.get('appReady') as { onReady(listener: () => void): () => void } | undefined;
+    if (!appReady) void swapCompaction();
+    else lifeCtx.effect(() => {
+      let closed = false;
+      const cancel = appReady.onReady(() => { if (!closed) void swapCompaction(); });
+      return () => { closed = true; cancel(); };
+    }, 'dsh-world compaction swap');
     const permissions = createWorkspacePermissions(lifeCtx, options.roomDir, power);
     // QQ 的两扇门：她自己那条 OneBot 通道的状态与开关，以及 SnowLuma 的控制台。**无条件注册** —— 通道
     // 关着的时候 /native 回 null，而 SnowLuma 那扇门跟通道没关系。（这里原来还有一半是给外面那个
@@ -191,9 +201,10 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       ctx: lifeCtx,
       home: async () => { if (!life) throw new Error('请先启动世界生活线'); return life.home(); },
       isHome: agent => !!life?.isHome(agent.id) && ctx.agents.get(agent.id) === agent && !host.isArchived(agent.id) && inWorldSession(agent.session),
-      compaction: () => lifeCtx.get('compaction'),
+      compaction: agent => compactionFor(lifeCtx, agent),
       refresh: session => { if (!memory) throw new Error('世界记忆线已停止'); memory.refreshPrompt(session); },
       changed: () => sources.invalidate(),
+      fault: message => { if (message) faults.set('home-apply', message); else faults.clear('home-apply'); },
     });
     let bridge: Bridge | undefined;
     let wechat: WechatModule | undefined;
@@ -309,6 +320,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     lifeCtx.effect(() => () => stopLife(), 'dsh-world life line');
     // The host matches exact routes before the longest prefix, so this path never reaches the console.
     if (config.bridge) lifeCtx.effect(() => webServer.register(bridgeRoute(() => bridge, config.allowedHosts)), 'dsh-world bridge route');
+    if (config.bridge) lifeCtx.effect(() => webServer.register(compactRoute(() => bridge, () => !power.running() || !life ? '请先启动世界生活线' : homeApply.request(), config.allowedHosts)), 'dsh-world compact route');
 
     // Her album lives in her room, so the console shows it whether or not the life line is running.
     const sources = consoleSources({ ctx: lifeCtx, config: memoryConfig, archive: store, longTerm: memoryService, names, ...(lifeStore ? { lifeStore } : {}), life: () => life, homeApply: homeApply.snapshot, compactAfterReview: power.compactAfterReview, photos, diaryDir: options.diaryDir, running: power.running, dailyBudget: power.dailyBudget, memoryTurns: power.memoryTurns, selectedArchiveScope: power.selectedArchiveScope, workspacePermissions: permissions.snapshot, wechat: () => wechat ? { ...wechat.status(), adapter: adapter?.status() ?? null } : undefined, archiveSession, native: () => qqNative?.status() ?? null,

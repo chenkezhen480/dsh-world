@@ -189,6 +189,11 @@ static uint32_t enqueue(Job* job, std::function<void()>* task) {
     __try { release(future); release(scheduler); } __except (EXCEPTION_EXECUTE_HANDLER) { status = GetExceptionCode(); }
     return status;
 }
+// Used only to send a GIF sticker (kind 3). A build whose sticker path is not mapped (4.2) leaves them 0 and sends
+// text and images only.
+static bool stickerCall(int call) {
+    return call == Emoticon || call == ValidateGif || call == ProbeGif || call == ReleaseProbe || call == EmoticonVtable;
+}
 static bool valid(const Request& request, uintptr_t base) {
     if (request.size != sizeof(Request) || request.pid != GetCurrentProcessId() || request.kind > 3 ||
         !memchr(request.account, 0, sizeof(request.account)) || !request.account[0] ||
@@ -200,7 +205,10 @@ static bool valid(const Request& request, uintptr_t base) {
         auto header = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
         if (header->Signature != IMAGE_NT_SIGNATURE || header->FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64 ||
             header->FileHeader.TimeDateStamp != request.timestamp || header->OptionalHeader.SizeOfImage != request.imageSize) return false;
-        for (auto rva: request.rva) if (!rva || rva >= request.imageSize) return false;
+        for (int call = 0; call < CallCount; ++call) {
+            const auto rva = request.rva[call];
+            if (rva >= request.imageSize || (!rva && (!stickerCall(call) || request.kind == 3))) return false;
+        }
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }

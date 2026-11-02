@@ -55,3 +55,46 @@ test('sessions that can never carry her world are not read, tracked or reported'
   assert.deepEqual(world.faults(), []);
   assert.equal(errors.length, 0);
 });
+
+test('a new world session the store cannot read yet is still created, and its memory comes with the first request (#27)', async t => {
+  const requests: GenerateOptions[] = [];
+  const { ctx, root, cleanup, errors } = await hostFixture(t, request => { requests.push(request); return textResponse('reply'); });
+  const config = { worldId: 'fish', agentPreset: 'companion', timeZone: 'UTC' };
+  const store = createArchiveStore({ ...config, root }); cleanup.push(() => store.close());
+  const persistence = ctx.sessionPersistence, open = persistence.open.bind(persistence);
+  // Seen on Windows hosts: the header is written, but the store does not find the session while it is being created.
+  let creating = true;
+  persistence.open = async (id, mode) => {
+    if (id === 'home' && mode === 'read' && creating) throw Object.assign(new Error('session "home" not found'), { name: 'SessionPersistenceNotFoundError' });
+    return open(id, mode);
+  };
+  cleanup.push(() => { persistence.open = open; });
+  const world = createWorldRuntime(ctx, config, store); cleanup.push(() => world.stop());
+  await world.start();
+  const home = (await ctx.agents.create({ sessionId: SessionId('home'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } })).agent;
+  creating = false;
+  home.followup(user('hello')); await home.whenIdle(); await world.flush();
+  assert.equal(requests.length, 1); assert.equal(errors.length, 0);
+  assert.deepEqual(world.faults(), []);
+  assert.ok((await store.readPage({ worldId: 'fish', limit: 10 })).records.some(record => record.content === 'hello'));
+});
+
+test('a failing memory setup never fails the host\'s session creation; the session\'s own first turn reports it', async t => {
+  const requests: GenerateOptions[] = [];
+  const { ctx, root, cleanup } = await hostFixture(t, request => { requests.push(request); return textResponse('reply'); });
+  const config = { worldId: 'fish', agentPreset: 'companion', timeZone: 'UTC' };
+  const store = createArchiveStore({ ...config, root }); cleanup.push(() => store.close());
+  const persistence = ctx.sessionPersistence, open = persistence.open.bind(persistence);
+  persistence.open = async (id, mode) => {
+    if (id === 'home' && mode === 'read') throw Object.assign(new Error('stored log is corrupt'), { name: 'SessionFormatError' });
+    return open(id, mode);
+  };
+  cleanup.push(() => { persistence.open = open; });
+  const world = createWorldRuntime(ctx, config, store); cleanup.push(() => world.stop());
+  await world.start();
+  const home = (await ctx.agents.create({ sessionId: SessionId('home'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } })).agent;
+  assert.equal(ctx.agents.get(SessionId('home')), home, 'the session exists');
+  home.followup(user('hello')); await home.whenIdle();
+  assert.equal(requests.length, 0, 'it does not run without her memory');
+  assert.ok(world.faults().some(message => /home.*记忆初始化失败/.test(message)));
+});

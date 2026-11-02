@@ -64,6 +64,9 @@ test('the shipped template: room, diary, 我是谁, world line and ask-first rul
   assert.match(home, /【我的时间】/); assert.match(home, /用 plan_next 说好打算做什么、做到什么时候/); assert.match(home, /闹钟不是用来叫醒自己的/); assert.match(home, /每天早上 07:30 被叫醒/); assert.match(home, /reach_out/);
   assert.match(home, /问完不用干等，先去做别的；伙伴回我的话会直接插进我正在做的事里。其余的事我自己决定。/);
   assert.match(home, /## 我是谁\n我眼中的自己写在 S\.md，[\s\S]*伙伴写的设定是我的底子[\s\S]*\n\nSELF\n/);
+  // What happened belongs to the diary; 我是谁 is only who she is now, read in full every time, so it stays short.
+  assert.match(home, /## 日记\n[^\n]*日记记的是发生过的事和我当时的感受[^\n]*日记不会自动读给我/);
+  assert.match(home, /## 我是谁\n[^\n]*这里只写现在的我[^\n]*不写日期，也不写哪天发生了什么，那些写进日记[^\n]*要短/);
 
   const away = renderWorldPrompt({ names: { companion: '小鱼', partner: '阿明' }, life }, shipped, { file: 'S.md', text: 'SELF' }, false);
   assert.match(away, /我的世界线在「小鱼的家」那个会话里/); assert.match(away, /这些事先问阿明/);
@@ -146,7 +149,7 @@ test('after her look back one apply-and-compact makes the 我是谁 she rewrote 
   agent.followup(user('早上好 ' + 'words '.repeat(100))); await agent.whenIdle();
   assert.match(systemOf(requests[0]!), /早上的我/);
   // The same wiring the world uses after the evening look back.
-  const apply = createHomeApply({ ctx, home: async () => agent, isHome: () => true, compaction: () => ctx.compaction, refresh: session => world.refreshPrompt(session), changed() {} });
+  const apply = createHomeApply({ ctx, home: async () => agent, isHome: () => true, compaction: () => ctx.compaction, refresh: session => world.refreshPrompt(session), changed() {}, fault() {} });
   const lookBack = async () => {
     apply.request();
     for (let i = 0; i < 300 && ['waiting', 'compacting'].includes(apply.snapshot().status); i++) await new Promise(resolve => setTimeout(resolve, 10));

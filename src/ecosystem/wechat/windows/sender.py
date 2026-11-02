@@ -9,6 +9,12 @@ from pathlib import Path
 CALLS = ('application', 'scheduler', 'schedule', 'context', 'provider', 'manager', 'text',
          'image', 'emoticon', 'copyWide', 'validateGif', 'probeGif', 'releaseProbe', 'send',
          'allocate', 'free', 'accountRoot', 'contextVtable', 'emoticonVtable')
+# Only a GIF sticker needs these; a build with them unmapped (null) sends stickers as a still image instead.
+STICKER_CALLS = ('emoticon', 'validateGif', 'probeGif', 'releaseProbe', 'emoticonVtable')
+
+
+def sendsStickers(profile):
+    return all(profile['addresses'].get(name) for name in STICKER_CALLS)
 
 
 class NativeRequest(c.Structure):
@@ -26,11 +32,13 @@ def encodeRequest(profile, pid, account, target, kind, value):
             raise ValueError('无效的微信账号或目标 ID')
     if not isinstance(value, str) or '\0' in value or len(value.encode('utf-8')) >= 4095 or (kind and not value):
         raise ValueError('单条内容需要 1–4094 UTF-8 字节')
+    if kind == 3 and not sendsStickers(profile):
+        raise ValueError(f"微信 {profile['version']} 未适配原生表情包发送")
     request = NativeRequest()
     request.size, request.pid, request.kind = c.sizeof(request), pid, kind
     request.ownerPid = os.getpid()
     request.timestamp, request.imageSize = profile['timestamp'], profile['imageSize']
-    request.rva[:] = [profile['addresses'][name] for name in CALLS]
+    request.rva[:] = [profile['addresses'][name] or 0 for name in CALLS]
     request.account, request.target, request.value = account.encode(), target.encode(), value.encode('utf-8')
     return request
 

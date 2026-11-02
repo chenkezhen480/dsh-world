@@ -9,22 +9,26 @@ from adapter import MessageStore, flushOutgoing, watch
 
 
 class SendingTest(unittest.TestCase):
-    def test_pending_incoming_pauses_receiving_but_independent_outgoing_keeps_running(self):
+    def test_pending_incoming_holds_only_its_own_chat_while_other_chats_and_outgoing_keep_running(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); store = MessageStore(root / 'state.sqlite')
-            store.baseline('private', 10); store.baseline('other', 20)
-            store.begin('private', 'm.db:11', 11)
-            config = dict(selfId='bot', moduleFile=str(root / 'wechat.json'), chats=[dict(id='private', name='伙伴'), dict(id='other', name='朋友')])
-            job = dict(id='b' * 64, accountId='bot', chatId='other', messages=[dict(type='text', text='独立消息')])
-            poll = Mock(side_effect=[dict(job=job), {}, {}, StopIteration('done')])
-            database, ask, send = Mock(), Mock(), Mock()
+            store.baseline('family@chatroom', 10); store.baseline('private', 20)
+            store.begin('family@chatroom', 'm.db:11', 11)
+            config = dict(selfId='bot', moduleFile=str(root / 'wechat.json'), chats=[dict(id='family@chatroom', name='家人', trigger='all'), dict(id='private', name='伙伴')])
+            job = dict(id='b' * 64, accountId='bot', chatId='private', messages=[dict(type='text', text='独立消息')])
+            poll = Mock(side_effect=[dict(job=job), {}, {}, {}, {}, StopIteration('done')])
+            rows = {'family@chatroom': [dict(local_id=12, shard='m.db', sort_seq=12, type='文本', sender_username='aunt', content='群里新消息')],
+                    'private': [dict(local_id=21, shard='m.db', sort_seq=21, type='文本', sender_username='owner', content='私聊还在')]}
+            database = Mock(); database.get_messages.side_effect = lambda chat, limit, offset=0: rows[chat][offset:offset + limit]
+            asked, send = [], Mock()
             try:
-                with patch('adapter.time.sleep'), patch('builtins.print'), self.assertRaises(StopIteration):
-                    watch(config, database, store, send, ask=ask, report=lambda *_: None, poll=poll)
+                with patch('adapter.time.sleep'), patch('sys.stderr') as stderr, self.assertRaises(StopIteration):
+                    watch(config, database, store, send, ask=lambda _file, message: asked.append(message['text']) or dict(text=''), report=lambda *_: None, poll=poll)
                 send.assert_called_once_with(config['chats'][1], dict(type='text', text='独立消息'))
-                ask.assert_not_called(); database.get_messages.assert_not_called()
-                self.assertEqual(store.cursor('private'), 10)
-                with self.assertRaisesRegex(RuntimeError, 'm.db:11'): store.checkPending()
+                self.assertEqual(asked, ['私聊还在'], 'a group waiting to be checked no longer stops private chats')
+                self.assertEqual(store.cursor('family@chatroom'), 10, 'the held group is not read past its unconfirmed message')
+                self.assertEqual(store.pendingChats(), {'family@chatroom': 'm.db:11'})
+                self.assertEqual(''.join(call.args[0] for call in stderr.write.call_args_list).count('仅此聊天'), 1, 'said once, not every poll')
             finally: store.close()
 
     def test_uncertain_claim_only_reports_its_receipt_and_does_not_block_the_next_job(self):

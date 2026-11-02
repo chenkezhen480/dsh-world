@@ -9,5 +9,5 @@ This is a tailored send-only bridge. It has its own request ABI and lifecycle;
 it does not include helper's bot framework, model, user interface, receive
 hooks, recall handling, account discovery or group management.
 
-profiles.json contains the fingerprint-locked 4.1.15.13 and 4.1.15.56
+profiles.json contains the fingerprint-locked 4.1.15.13, 4.1.15.56, 4.2.0.11 and 4.2.0.12
 address mappings from https://github.com/Prometheus-first/helper/blob/main/native/core_version.h.

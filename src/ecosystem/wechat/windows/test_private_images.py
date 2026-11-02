@@ -33,7 +33,7 @@ class PrivateImageTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, '账号绑定错误'):
             incomingMessage(database, dict(id='owner', name='伙伴'), row, dict(selfId='bot'))
 
-    def test_buffer_merges_only_following_same_sender_text_and_stops_at_two_images(self):
+    def test_buffer_merges_following_same_sender_messages_restarting_the_wait_and_stops_at_two_images(self):
         first = dict(local_id=1, shard='m.db', sort_seq=11, create_time=100, type='图片', sender_username='owner', content='image')
         caption = dict(first, local_id=2, sort_seq=12, type='文本', content='请看图')
         clock = [0.0]
@@ -42,17 +42,17 @@ class PrivateImageTest(unittest.TestCase):
             store.baseline('owner', 10)
             database = SimpleNamespace(get_messages=lambda _chat, limit, offset=0: ([caption, first] if clock[0] >= 1 else [first])[offset:offset + limit])
             try:
-                rows = adapter.bufferImageMessages(dict(pollSeconds=1), database, store, dict(id='owner'), first, clock=lambda: clock[0], sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+                rows = adapter.bufferMessages(dict(pollSeconds=1), database, store, dict(id='owner'), first, clock=lambda: clock[0], sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds))
                 self.assertEqual([row['local_id'] for row in rows], [1, 2])
-                self.assertLessEqual(clock[0], 3)
+                self.assertAlmostEqual(clock[0], 4, delta=0.2, msg='the caption at 1s starts another 3s wait')
                 self.assertEqual(store.cursor('owner'), 10, 'buffering does not advance durable cursor')
                 second = dict(first, local_id=2, sort_seq=12)
                 third = dict(first, local_id=3, sort_seq=13)
                 database.get_messages = lambda _chat, limit, offset=0: [third, second, first][offset:offset + limit]
-                rows = adapter.bufferImageMessages({}, database, store, dict(id='owner'), first)
+                rows = adapter.bufferMessages({}, database, store, dict(id='owner'), first)
                 self.assertEqual([row['local_id'] for row in rows], [1, 2])
                 database.get_messages = lambda _chat, limit, offset=0: [dict(caption, sender_username='other'), first][offset:offset + limit]
-                self.assertEqual(adapter.bufferImageMessages({}, database, store, dict(id='owner'), first), [first])
+                self.assertEqual(adapter.bufferMessages({}, database, store, dict(id='owner'), first), [first])
             finally:
                 store.close()
 
@@ -63,7 +63,7 @@ class PrivateImageTest(unittest.TestCase):
             store = MessageStore(Path(directory) / 'state.sqlite')
             database = SimpleNamespace(get_messages=lambda _chat, limit, offset=0: [first][offset:offset + limit])
             try:
-                rows = adapter.bufferImageMessages(dict(pollSeconds=2), database, store, dict(id='owner'), first, clock=lambda: clock[0], sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+                rows = adapter.bufferMessages(dict(pollSeconds=2), database, store, dict(id='owner'), first, clock=lambda: clock[0], sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds))
                 self.assertEqual(rows, [first])
                 self.assertEqual(clock[0], 3)
             finally:
@@ -77,7 +77,7 @@ class PrivateImageTest(unittest.TestCase):
             store = MessageStore(Path(directory) / 'state.sqlite')
             database = SimpleNamespace(get_messages=lambda _chat, limit, offset=0: ([caption, first] if clock[0] >= 4 else [first])[offset:offset + limit])
             try:
-                rows = adapter.bufferImageMessages(dict(pollSeconds=1), database, store, dict(id='owner'), first, clock=lambda: clock[0], sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds + 4))
+                rows = adapter.bufferMessages(dict(pollSeconds=1), database, store, dict(id='owner'), first, clock=lambda: clock[0], sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds + 4))
                 self.assertEqual(rows, [first], 'late text must stay for the next request even after a slow wakeup')
             finally:
                 store.close()
@@ -91,9 +91,9 @@ class PrivateImageTest(unittest.TestCase):
                 store = MessageStore(Path(directory) / 'state.sqlite')
                 database = SimpleNamespace(get_messages=lambda _chat, limit, offset=0: ([caption, first] if clock[0] >= captionAt else [first])[offset:offset + limit])
                 try:
-                    rows = adapter.bufferImageMessages(dict(pollSeconds=pollSeconds), database, store, dict(id='owner'), first, clock=lambda: clock[0], sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+                    rows = adapter.bufferMessages(dict(pollSeconds=pollSeconds), database, store, dict(id='owner'), first, clock=lambda: clock[0], sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds))
                     self.assertEqual([row['local_id'] for row in rows], [1, 2])
-                    self.assertLessEqual(clock[0], 3)
+                    self.assertLessEqual(clock[0], captionAt + 3 + 0.2)
                 finally:
                     store.close()
 

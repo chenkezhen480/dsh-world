@@ -371,7 +371,8 @@ test('every evening at 23:00 she looks back on the day: its records, her diary, 
   const text = textOf(s.requests[0]!);
   assert.match(text, /【我的时间】2026-10-23 快过完了，回头看看今天吧。今天的聊天记录在 [^ ]*conversations[\\/]2026-10-23\.jsonl/);
   assert.ok(!text.includes('今天做过的事在'), 'no activity file today, so it is not mentioned');
-  assert.match(text, /今天发生了什么，我当时是什么感受，现在回头看又怎么想。[\s\S]*再翻翻今天的日记：值得记住的事和当时的感受，有没有漏掉的？/);
+  // The diary first, then whether she has changed: what happened goes to the diary, never into 我是谁.
+  assert.match(text, /先写日记，再看自己：\n1\. 日记：[\s\S]*写进今天的日记[\s\S]*\n2\. 我是谁：[\s\S]*今天发生的事不写进去，也不从日记里搬内容/);
   assert.match(text, /改之前的那份已经留在 [^ ]*self\.history[\\/]2026-10-23\.md/);
   assert.equal(await readFile(join(s.worldDir, 'room', 'self.history', '2026-10-23.md'), 'utf8'), '我是早上的我');
   assert.deepEqual(s.store.read().review, { at: '2026-10-24T14:00:00.000Z', day: '2026-10-24' });

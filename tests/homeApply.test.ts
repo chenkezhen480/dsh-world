@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { Agent } from '@deepseek-ai/dsh-agent';
 import { ManualCompactionError, type CompactionEngine, type CompactionResult } from '@deepseek-ai/dsh-compaction';
-import { createHomeApply } from '../src/console/homeApply.ts';
+import { compactionFor, createHomeApply } from '../src/console/homeApply.ts';
 import { SessionId } from '@deepseek-ai/dsh-session';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import TokenMeter from '@deepseek-ai/dsh-token-meter';
@@ -17,7 +17,7 @@ function deferred<T>() {
 }
 function fixture() {
   const idle = deferred<void>();
-  const summary = deferred<CompactionResult | null>();
+  let summary = deferred<CompactionResult | null>();
   let calls = 0, refreshed = 0, current = true, busy = false, unavailable = false;
   const home = {
     id: 'home', session: { id: 'home' }, options: {}, whenIdle: () => idle.promise,
@@ -36,8 +36,9 @@ function fixture() {
       } catch (error) { throw new ManualCompactionError('busy', 'busy', { cause: error }); }
     },
   } satisfies Pick<CompactionEngine, 'compactNow'>;
-  const job = createHomeApply({ ctx: new Context(), home: async () => home, isHome: () => current, compaction: () => unavailable ? undefined : engine, refresh: () => { refreshed++; }, changed() {} });
-  return { job, idle, summary, calls: () => calls, refreshed: () => refreshed, moveHome: () => { current = false; }, race: () => { busy = true; }, unavailable: () => { unavailable = true; } };
+  let fault: string | undefined;
+  const job = createHomeApply({ ctx: new Context(), home: async () => home, isHome: () => current, compaction: agent => unavailable || agent !== home ? undefined : engine, refresh: () => { refreshed++; }, changed() {}, fault: message => { fault = message; } });
+  return { job, idle, get summary() { return summary; }, nextSummary: () => { summary = deferred(); }, calls: () => calls, refreshed: () => refreshed, fault: () => fault, moveHome: () => { current = false; }, race: () => { busy = true; }, unavailable: () => { unavailable = true; } };
 }
 async function until(check: () => boolean) {
   for (let i = 0; i < 200; i++) { if (check()) return; await new Promise(resolve => setTimeout(resolve, 10)); }
@@ -75,12 +76,40 @@ test('a replaced home is never compacted and failures remain visible without a m
   assert.match(moved.job.snapshot().message!, /家会话已变化/); assert.equal(moved.calls(), 0);
   const failed = fixture(); failed.job.request(); failed.idle.resolve();
   await until(() => failed.calls() === 1);
-  failed.summary.reject(new ManualCompactionError('summary', 'summary service unavailable'));
+  failed.summary.reject(new ManualCompactionError('summary', 'manual compaction could not produce a smaller summary', { cause: new Error('system update without a preceding user or tool-result turn') }));
   await until(() => failed.job.snapshot().status === 'failed');
-  assert.match(failed.job.snapshot().message!, /summary service unavailable/);
+  assert.match(failed.job.snapshot().message!, /smaller summary：system update without a preceding user/, 'the real reason is shown, not only the stage');
+  assert.equal(failed.fault(), failed.job.snapshot().message, 'the failure stays in the console health');
   assert.equal(failed.calls(), 1); assert.equal(failed.refreshed(), 0);
+  // Nobody watches the nightly request after the review, so a missing engine is a recorded failure, not a dropped return value.
   const absent = fixture(); absent.unavailable();
-  assert.match(absent.job.request()!, /压缩服务/); assert.equal(absent.job.snapshot().status, 'idle');
+  assert.equal(absent.job.request(), undefined);
+  await until(() => absent.job.snapshot().status === 'failed');
+  assert.match(absent.fault()!, /未加载压缩服务/); assert.equal(absent.calls(), 0);
+});
+
+test('the home compacts with the engine in her session\'s preset, and the host-plane one only when the preset has none', () => {
+  const home = { id: 'home' } as unknown as Agent;
+  const preset = { compactNow: async () => null }, host = { compactNow: async () => null };
+  const ctx = (services: Record<string, unknown>) => ({ get: (name: string) => services[name] }) as never;
+  const registry = (engine: unknown) => ({ serviceFor: (agent: Agent, name: string) => agent === home && name === 'compaction' ? engine : undefined });
+  assert.equal(compactionFor(ctx({ agentPresets: registry(preset), compaction: host }), home), preset, 'the Web host isolates it inside the preset');
+  assert.equal(compactionFor(ctx({ agentPresets: registry(undefined), compaction: host }), home), host);
+  assert.equal(compactionFor(ctx({ compaction: host }), home), host, 'the TUI has no preset registry');
+  assert.equal(compactionFor(ctx({ agentPresets: registry(undefined) }), home), undefined);
+});
+
+test('a later success clears the failure from the console health', async () => {
+  const f = fixture(); f.job.request(); f.idle.resolve();
+  await until(() => f.calls() === 1);
+  f.summary.reject(new Error('timeout'));
+  await until(() => f.job.snapshot().status === 'failed');
+  assert.match(f.fault()!, /timeout/);
+  f.nextSummary(); f.job.request();
+  await until(() => f.calls() === 2);
+  f.summary.resolve(null);
+  await until(() => f.job.snapshot().status === 'done');
+  assert.equal(f.fault(), undefined);
 });
 
 for (const backend of ['tool-free', 'stock']) test(`${backend}: a home changed during summarization is cancelled before replacement`, async t => {
@@ -96,7 +125,7 @@ for (const backend of ['tool-free', 'stock']) test(`${backend}: a home changed d
   await agent.whenIdle();
   const before = agent.session.surface.replaceGeneration;
   let refreshed = 0;
-  const job = createHomeApply({ ctx, home: async () => agent, isHome: () => current, compaction: () => ctx.compaction, refresh: () => { refreshed++; }, changed() {} });
+  const job = createHomeApply({ ctx, home: async () => agent, isHome: () => current, compaction: () => ctx.compaction, refresh: () => { refreshed++; }, changed() {}, fault() {} });
   cleanup.push(() => { summary.resolve(); return job.cancel(); }); job.request();
   await until(() => summaries === 1);
   current = false; summary.resolve();
