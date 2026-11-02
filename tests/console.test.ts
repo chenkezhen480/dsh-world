@@ -327,3 +327,40 @@ test('the memory window is kept in world.json, defaults to 200 and survives a re
   assert.equal(createWorldSwitch(dir).memoryTurns(), 200);
   assert.equal('memoryTurns' in JSON.parse(readFileSync(join(dir, 'world.json'), 'utf8')), false, 'the default is not written out');
 });
+
+test('memory lookups reach the console through the same service as the tools: parameters, paging, errors and the health of her files', async t => {
+  const { createArchiveStore } = await import('../src/store.ts');
+  const { createMemory } = await import('../src/memory.ts');
+  const { record } = await import('./fixtures.ts');
+  const root = mkdtempSync(join(tmpdir(), 'dw-console-memory-'));
+  const store = createArchiveStore({ root, worldId: 'w', timeZone: 'Asia/Seoul', agentPreset: 'companion' });
+  t.after(() => { store.close(); rmSync(root, { recursive: true, force: true }); });
+  const knowledgeDir = join(root, '认识'); mkdirSync(knowledgeDir);
+  writeFileSync(join(knowledgeDir, '潮汐.md'), '潮汐跟月亮有关');
+  const longTerm = createMemory({ store: store.memory, timeZone: 'Asia/Seoul', sources: { knowledgeDir }, visible: id => id === 'home' });
+  await store.commitRecords(['1', '2', '3'].map(n => record(`a${n}`, { sourceSessionId: 'home', turnId: 'home:1', sourceSeq: Number(n), content: `第${n}句 潮汐`, occurredAt: `2026-10-23T12:0${n}:00.000Z` })).concat(record('g1', { sourceSessionId: 'group', content: '群里的潮汐' })));
+  const src = consoleSources({
+    ctx: { agents: { get: () => undefined } } as never, config: { worldId: 'w', timeZone: 'Asia/Seoul' } as never, archive: store as never, longTerm,
+    names: () => ({ companion: '小鱼', partner: '伙伴' }), life: () => undefined, diaryDir: join(root, 'diary'), running: () => false, dailyBudget: () => undefined, memoryTurns: () => 200, faults: () => [],
+  });
+  const find = (query: string) => handleConsole(src, fakeActions().actions, { method: 'GET', url: `/dsh-world/console/memory/find?${query}`, write: false });
+  const first = await find('query=' + encodeURIComponent('潮汐') + '&kinds=conversation,knowledge&limit=2');
+  const page = first.body as { items: { ref: string; sourceId: string; excerpt: string; kind: string }[]; nextCursor: string; coverage: { state: string } };
+  assert.equal(first.status, 200); assert.equal(page.items.length, 2); assert.equal(page.coverage.state, 'ready');
+  assert.ok(page.items.every(item => item.sourceId !== 'chat:group'), 'the group line is out of scope');
+  const second = (await find(`query=${encodeURIComponent('潮汐')}&kinds=conversation,knowledge&limit=2&cursor=${encodeURIComponent(page.nextCursor)}`)).body as { items: unknown[]; nextCursor?: string };
+  assert.equal(second.items.length, 2); assert.equal(second.nextCursor, undefined);
+  assert.equal((await find(`query=${encodeURIComponent('潮汐')}&limit=2&cursor=${encodeURIComponent(page.nextCursor)}`)).status, 409, 'a cursor for another query has expired');
+  assert.deepEqual((await find('limit=0')).status, 400); assert.equal((await find('limit=abc')).status, 400); assert.equal((await find('from=2026-10-23')).status, 400);
+  assert.equal(((await find('limit=0')).body as { code: string }).code, 'invalidQuery');
+  assert.equal((await find('turnId=home:1&order=oldest')).status, 200);
+  assert.equal(((await find('kinds=knowledge&history=1')).body as { items: unknown[] }).items.length, 1, 'history is accepted and changes nothing');
+  const read = await handleConsole(src, fakeActions().actions, { method: 'GET', url: `/dsh-world/console/memory/read?ref=${encodeURIComponent(page.items[0]!.ref)}&limit=3`, write: false });
+  assert.equal(read.status, 200); assert.equal((read.body as { content: string }).content.length > 0, true);
+  assert.equal((await handleConsole(src, fakeActions().actions, { method: 'GET', url: '/dsh-world/console/memory/read?ref=junk', write: false })).status, 400);
+  assert.equal((await handleConsole(src, fakeActions().actions, { method: 'GET', url: '/dsh-world/console/memory/read?ref=' + encodeURIComponent('m1.' + Buffer.from('["a","knowledge:nope.md","abc"]').toString('base64url')), write: false })).status, 404);
+  assert.equal((await handleConsole(sources, fakeActions().actions, { method: 'GET', url: '/dsh-world/console/memory/find', write: false })).status, 404, 'a console without long-term memory says so');
+  assert.equal((await handleConsole(src, fakeActions().actions, { method: 'POST', url: '/dsh-world/console/memory/find', write: true, body: {} })).status, 404, 'lookups are reads only');
+  const snapshot = await src.snapshot() as { memory: { index: { state: string; failures: unknown[] } } };
+  assert.equal(snapshot.memory.index.state, 'ready'); assert.deepEqual(snapshot.memory.index.failures, []);
+});

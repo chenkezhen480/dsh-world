@@ -4,6 +4,7 @@ import { PERSONA_LAYERS, type Persona } from '../persona.ts';
 import { validTurns, validWechatBuffer, validWechatContext, validWorkspacePermission, MAX_WECHAT_BUFFER_SECONDS, MAX_WECHAT_CONTEXT } from '../worldSwitch.ts';
 import { validArchiveScope, type MemoryArchiveScope } from '../archiveSelection.ts';
 import type { PhotoStore } from '../life/photos.ts';
+import { MemoryError, type MemoryContent, type MemoryErrorCode, type MemoryPage } from '../memory.ts';
 
 export const CONSOLE_PREFIX = '/dsh-world';
 /** A write must carry this header; a page on another site cannot add it without a CORS preflight, which is never answered. */
@@ -15,6 +16,9 @@ export interface ConsoleSources {
   diary(date: string): string | undefined;
   photos?(limit: number, offset: number): ReturnType<PhotoStore['list']>;
   photo?(id: string): ReturnType<PhotoStore['image']>;
+  /** The same lookups the memory tools make; they check the query themselves. */
+  memoryFind?(input: Record<string, unknown>): Promise<MemoryPage>;
+  memoryRead?(input: Record<string, unknown>): Promise<MemoryContent>;
 }
 /** What the console can change: whether her world runs, and her persona and world prompt. */
 export interface ConsoleActions {
@@ -22,7 +26,7 @@ export interface ConsoleActions {
   stop(): Promise<void>;
   /** Enqueue one application of saved prompts and idle-home compaction; returns a refusal, if any. */
   applyHome(): string | undefined;
-  prompts(): { persona: Persona; worldPrompt: { text: string; custom: boolean } };
+  prompts(): { persona: Persona; worldPrompt: { text: string; custom: boolean; memory?: { missing: string[]; snippet: string } } };
   savePersona(persona: Partial<Persona>): void;
   /** An empty text goes back to the shipped template. */
   saveWorldPrompt(text: string): void;
@@ -42,6 +46,24 @@ export interface ConsoleActions {
   setWechatSettings(settings: { context?: number | null; bufferSeconds?: number | null }): void;
 }
 export interface ConsoleRequest { method: string; url: string; write: boolean; body?: Record<string, unknown> | undefined }
+const MEMORY_STATUS: Record<MemoryErrorCode, number> = { invalidQuery: 400, invalidRef: 400, invalidCursor: 400, notFound: 404, outOfScope: 403, cursorExpired: 409, sourceChanged: 409, scopeChanged: 409, readFailed: 500 };
+/** Query-string values to the shape the tools take: a number that is not one stays NaN and is refused by the shared check. */
+function memoryInput(params: URLSearchParams, numbers: readonly string[], flags: readonly string[], lists: readonly string[]): Record<string, unknown> {
+  const input: Record<string, unknown> = {};
+  for (const [key, value] of params) {
+    if (value === '') continue;
+    input[key] = numbers.includes(key) ? Number(value) : flags.includes(key) ? value === '1' || value === 'true' : lists.includes(key) ? value.split(',') : value;
+  }
+  return input;
+}
+async function memoryCall<T>(run: (() => Promise<T>) | undefined): Promise<JsonResult> {
+  if (!run) return { status: 404, body: { error: '记忆查找不可用' } };
+  try { return ok(await run()); }
+  catch (error) {
+    if (error instanceof MemoryError) return { status: MEMORY_STATUS[error.code], body: { error: error.message, code: error.code } };
+    throw error;
+  }
+}
 const ok = (body: unknown = { ok: true }): JsonResult => ({ status: 200, body });
 const bad = (error: string): JsonResult => ({ status: 400, body: { error } });
 
@@ -119,6 +141,8 @@ export async function handleConsole(sources: ConsoleSources, actions: ConsoleAct
       return text === undefined ? { status: 404, body: { error: 'no diary for this date' } } : ok({ date, text });
     }
     case '/console/prompts': return ok(actions.prompts());
+    case '/console/memory/find': { const input = memoryInput(url.searchParams, ['limit'], ['history'], ['kinds']); return memoryCall(sources.memoryFind && (() => sources.memoryFind!(input))); }
+    case '/console/memory/read': { const input = memoryInput(url.searchParams, ['offset', 'limit'], [], []); return memoryCall(sources.memoryRead && (() => sources.memoryRead!(input))); }
     case '/console/photos': {
       const limit = Number(url.searchParams.get('limit') ?? 20), offset = Number(url.searchParams.get('offset') ?? 0);
       if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100 || !Number.isSafeInteger(offset) || offset < 0) return bad('相册分页参数无效');

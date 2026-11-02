@@ -388,3 +388,23 @@ test('removal after prompt assembly rejects the stale request before the adapter
   assert.match(textOf(requests[0].messages), /ORIGINAL_BEFORE_SCOPE_CHANGED/);
   assert.doesNotMatch(systemOf(requests[0]), /我的世界/);
 });
+
+test('the memory sections of the shipped template follow their switches and say what the tools and files are for', () => {
+  const on = renderWorldPrompt({ names, life, memoryTools: true }, shipped, undefined, true);
+  assert.match(on, /## 找回过去[\s\S]*memory_find[\s\S]*memory_read/);
+  assert.ok(!/\{\{/.test(on), on);
+  const off = renderWorldPrompt({ names, life }, shipped, undefined, true);
+  assert.ok(!/找回过去|memory_find/.test(off), 'without the capability the section is not in the prompt');
+});
+test('a custom world prompt is never changed: the console is told which memory variables it lacks and gets a snippet to paste', async () => {
+  const { memoryTemplateGaps, MEMORY_SNIPPET_FILE } = await import('../src/worldPrompt.ts');
+  assert.deepEqual(memoryTemplateGaps('我自己写的 {{self}}'), ['memoryTools']);
+  assert.deepEqual(memoryTemplateGaps(shipped), []);
+  assert.deepEqual(memoryTemplateGaps('{{#memoryTools}}x{{/memoryTools}} {{partner}}'), []);
+  const custom = 'WORLD_INTRO {{self}}';
+  assert.equal(renderWorldPrompt({ names, memoryTools: true }, custom, undefined, true), 'WORLD_INTRO');
+  const snippet = (await readFile(MEMORY_SNIPPET_FILE, 'utf8')).replace(/^<!--[\s\S]*?-->\s*/, '').trim();
+  const unix = (text: string) => text.replace(/\r\n/g, '\n');
+  assert.ok(unix(shipped).includes(unix(snippet)), 'the snippet is exactly what the shipped template carries');
+  assert.equal(renderWorldPrompt({ names, memoryTools: true }, snippet, undefined, true), renderWorldPrompt({ names, memoryTools: true }, shipped, undefined, true).replace(/^[\s\S]*?(?=## 找回过去)/, '').trim());
+});

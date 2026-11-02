@@ -5,6 +5,13 @@ import type { LifeOptions } from './life/types.ts';
 /** The template shipped with the plugin; a `world-prompt.md` in the world directory replaces it. */
 export const DEFAULT_TEMPLATE_FILE = fileURLToPath(new URL('../templates/world-prompt.md', import.meta.url));
 
+/** The sections an older custom template lacks; she can paste them in (see README). */
+export const MEMORY_SNIPPET_FILE = fileURLToPath(new URL('../templates/world-prompt-memory.md', import.meta.url));
+/** Which of the memory variables a template does not use, so the console can say what her prompt does not mention. */
+export function memoryTemplateGaps(template: string): string[] {
+  return ['memoryTools'].filter(name => !new RegExp(String.raw`\{\{[#^]?${name}\}\}`).test(template));
+}
+
 export interface WorldNames { companion: string; partner: string }
 /** No name is assumed for anyone's companion: an unnamed one is the neutral TA. */
 export function worldNames(config: { companionName?: string; partnerName?: string }): WorldNames {
@@ -24,6 +31,8 @@ export interface WorldPrompt {
   names: WorldNames;
   /** Present when the life line runs: room, diary, world line, ask-first rules. */
   life?: LifeOptions;
+  /** The memory_find and memory_read tools are on her sessions. */
+  memoryTools?: boolean;
 }
 export interface TemplateRead { text: string; error?: string }
 /** Never throws: a template that cannot be read falls back to the shipped one and says why. */
@@ -57,7 +66,7 @@ export function renderTemplate(template: string, flags: Record<string, boolean>,
  */
 export function renderWorldPrompt(prompt: WorldPrompt, template: string, self: { file: string; text: string } | undefined, home: boolean): string {
   const { life, names } = prompt;
-  return renderTemplate(template, { life: Boolean(life), home, selfFile: Boolean(self), conversationsDir: Boolean(prompt.conversationsDir) }, {
+  return renderTemplate(template, { life: Boolean(life), home, selfFile: Boolean(self), conversationsDir: Boolean(prompt.conversationsDir), memoryTools: Boolean(prompt.memoryTools) }, {
     name: names.companion, partner: names.partner, homeTitle: homeTitle(names), selfFile: self?.file ?? '', self: self?.text ?? '', conversationsDir: prompt.conversationsDir ?? '',
     ...(life ? { roomDir: life.roomDir, diaryDir: life.diaryDir, fallbackWakeTime: life.fallbackWakeTime } : {}),
   });

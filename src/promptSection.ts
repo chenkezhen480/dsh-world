@@ -14,6 +14,8 @@ export interface WorldPromptSource {
   names?(): WorldNames;
   /** Her room's workspace; her world (all but the persona) reaches only its sessions. Absent, every session of hers. */
   inWorkspace?(sessionId: string): boolean;
+  /** Long-term memory; its two tools are registered on world sessions. */
+  memory?: import('./memory.ts').MemoryService;
 }
 interface PromptText { template: string; self?: { file: string; text: string }; persona: string; names: WorldNames }
 /** `active`: the world prompt is placed (the session is in her workspace); the persona is placed either way. */

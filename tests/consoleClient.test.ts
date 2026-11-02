@@ -348,3 +348,37 @@ test('the module switches say what is on, what is off and what the config does n
   assert.match(off, /微信 · 已关闭/); assert.match(off, /QQ · 已关闭/); assert.match(off, /工具未注册/);
   assert.match(render({ wechat: { available: true, enabled: true, running: false }, qq: { available: true, enabled: true, running: false } }, false), /已开启，世界启动后生效/);
 });
+
+test('the archive tab builds its query in the configured zone, drops a late answer to an old query and keeps the error code', async () => {
+  const source = await readFile('client/index.js', 'utf8');
+  type Plugin = { __test: Record<string, (...args: never[]) => unknown> };
+  let loaded: { factory: (require: (name: string) => unknown) => Plugin } | undefined;
+  const react = { createElement: (type: unknown, props: unknown, ...children: unknown[]) => ({ type, props, children }), useState: (value: unknown) => [typeof value === 'function' ? (value as () => unknown)() : value, () => {}], useEffect: () => {}, useRef: (current: unknown) => ({ current }) };
+  const replies: { resolve: (value: unknown) => void; url: string }[] = [];
+  runInNewContext(source, { fetch: (url: string) => new Promise(resolve => { replies.push({ url, resolve: (value: unknown) => resolve(value) }); }), window: { __ModuleLoader__: { load: (entry: typeof loaded) => { loaded = entry; } } } });
+  const t = loaded!.factory(() => react).__test as unknown as { memoryQuery: (f: object, zone: string, cursor?: string) => string; dayStartIso: (d: string, z: string, plus?: number) => string; latest: () => { next(): number; current(id: number): boolean }; searchMemory: (guard: unknown, path: string, query: string, done: (b: unknown) => void, fail: (e: Error & { code?: string }) => void) => Promise<void>; MemorySearch: unknown };
+  assert.equal(t.dayStartIso('2026-10-23', 'Asia/Seoul'), '2026-10-22T15:00:00.000Z');
+  assert.equal(t.dayStartIso('2026-10-23', 'America/New_York'), '2026-10-23T04:00:00.000Z', 'daylight time');
+  const filters = { query: '潮汐', kinds: ['diary', 'self'], from: '2026-10-23', to: '2026-10-23', sourceId: 'self', turnId: '', linkedTo: '', order: 'oldest' };
+  const query = new URLSearchParams(t.memoryQuery(filters, 'Asia/Seoul', 'CUR'));
+  assert.deepEqual(Object.fromEntries(query), { query: '潮汐', kinds: 'diary,self', from: '2026-10-22T15:00:00.000Z', to: '2026-10-23T15:00:00.000Z', sourceId: 'self', order: 'oldest', limit: '20', cursor: 'CUR' });
+  assert.equal(new URLSearchParams(t.memoryQuery({ query: '', kinds: [], order: 'newest' }, 'UTC')).toString(), 'limit=20');
+
+  const guard = t.latest(); const seen: string[] = [];
+  const first = t.searchMemory(guard, 'memory/find', 'query=old', b => seen.push('old:' + JSON.stringify(b)), e => seen.push('old-error:' + e.message));
+  const second = t.searchMemory(guard, 'memory/find', 'query=new', b => seen.push('new:' + JSON.stringify(b)), e => seen.push('new-error:' + e.message));
+  assert.deepEqual(replies.map(reply => reply.url), ['/dsh-world/console/memory/find?query=old', '/dsh-world/console/memory/find?query=new']);
+  const ok = (body: unknown) => ({ ok: true, status: 200, json: async () => body });
+  replies[1]!.resolve(ok({ items: ['n'] })); await second;
+  replies[0]!.resolve(ok({ items: ['o'] })); await first;
+  assert.deepEqual(seen, ['new:{"items":["n"]}'], 'the old query answered last and was dropped');
+  let failure: (Error & { code?: string }) | undefined;
+  const third = t.searchMemory(guard, 'memory/find', 'cursor=x', () => {}, e => { failure = e; });
+  replies[2]!.resolve({ ok: false, status: 409, json: async () => ({ error: '资料变了', code: 'cursorExpired' }) }); await third;
+  assert.equal(failure?.code, 'cursorExpired'); assert.equal(typeof t.MemorySearch, 'function');
+  assert.doesNotThrow(() => (t.MemorySearch as unknown as (props: object) => unknown)({ zone: 'UTC' }));
+  const stale = t.searchMemory(guard, 'memory/read', 'ref=a', b => seen.push('read:' + JSON.stringify(b)), () => {});
+  guard.next(); // the filters changed while it was in flight
+  replies[3]!.resolve(ok({ content: 'x' })); await stale;
+  assert.ok(!seen.some(entry => entry.startsWith('read:')));
+});

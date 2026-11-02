@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import type { ArchiveCursor, ConversationRecord, DeliveryState, PageQuery, RecordPage, WorldConfig } from './types.ts';
 import { formatLocalTime } from './timeContext.ts';
 import type { SpeakerIdentity } from './ecosystem/shared/identity.ts';
+import { createMemoryStore } from './memoryStore.ts';
 
 export interface ExportProgress { sessionId: string; nextSeq: number; turn: number }
 interface StoredRow { sequence: number; day: string; body: string }
@@ -36,6 +37,8 @@ export function createArchiveStore(config: WorldConfig & { root: string }) {
     try { const result = work(); db.exec('COMMIT'); return result; }
     catch (error) { db.exec('ROLLBACK'); throw error; }
   }
+  /** Long-term memory reads the records table on this connection; it keeps nothing of its own in the database. */
+  const memory = createMemoryStore(db, { timeZone: config.timeZone });
   const decode = (row: StoredRow) => JSON.parse(row.body) as ConversationRecord;
   const dayOf = (record: ConversationRecord) => formatLocalTime(new Date(record.occurredAt), config.timeZone).slice(0, 10);
   /**
@@ -117,6 +120,7 @@ export function createArchiveStore(config: WorldConfig & { root: string }) {
       if (updated.wechatDelivery) db.prepare('UPDATE channelDeliveries SET body=? WHERE recordId=?').run(JSON.stringify(updated.wechatDelivery), recordId);
       if (body === row.body) return;
       db.prepare('UPDATE records SET body=? WHERE recordId=?').run(body, recordId);
+      memory.revised();
       // A changed line invalidates later byte offsets; rebuild this day from the canonical database.
       db.prepare('UPDATE records SET fileOffset=NULL, fileBytes=NULL WHERE day=?').run(row.day);
       db.prepare('UPDATE days SET exportedBytes=0 WHERE day=?').run(row.day);
@@ -142,6 +146,11 @@ export function createArchiveStore(config: WorldConfig & { root: string }) {
     const row = db.prepare("SELECT count(*) AS records, count(DISTINCT json_extract(body, '$.sourceSessionId')) AS sessions FROM records").get() as { records: number; sessions: number } | undefined;
     return { records: Number(row?.records ?? 0), sessions: Number(row?.sessions ?? 0) };
   }
+  /** A consistent copy of the whole archive database (originals and index), for forking an experiment branch from one snapshot. */
+  function snapshotTo(file: string): void {
+    if (existsSync(file)) throw new Error('snapshot target already exists');
+    db.prepare('VACUUM INTO ?').run(file);
+  }
   function close(): void { if (!closed) { closed = true; db.close(); } }
   function hasRecord(recordId: string): boolean { return !!db.prepare('SELECT 1 FROM records WHERE recordId=? LIMIT 1').get(recordId); }
   function channelSession(key: string): string | undefined {
@@ -165,6 +174,6 @@ export function createArchiveStore(config: WorldConfig & { root: string }) {
     });
   }
   return { commitRecords, hasRecord, updateRecord, readPage, readTurn, progress, forgetProgress, sourcePage, stats, close,
-    channelSession, bindChannelSession, delivery, registerDelivery, updateDelivery };
+    channelSession, bindChannelSession, delivery, registerDelivery, updateDelivery, memory, snapshotTo };
 }
 export type ArchiveStore = ReturnType<typeof createArchiveStore>;

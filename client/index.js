@@ -15,7 +15,7 @@ window.__ModuleLoader__.load({
     function settle(r) {
       return r.json().then(function (body) { return { body: body } }, function () { return null }).then(function (parsed) {
         var body = parsed && parsed.body
-        if (!r.ok) { var err = new Error((body && body.error) || ('HTTP ' + r.status)); err.status = r.status; throw err }
+        if (!r.ok) { var err = new Error((body && body.error) || ('HTTP ' + r.status)); err.status = r.status; if (body && body.code) err.code = body.code; throw err }
         if (!parsed) { var bad = new Error('回复不是 JSON'); bad.notJson = true; throw bad }
         return body
       })
@@ -126,6 +126,7 @@ window.__ModuleLoader__.load({
       '.dw table{width:100%;border-collapse:collapse}.dw td{padding:3px 6px;vertical-align:top;border-bottom:1px solid color-mix(in srgb,currentColor 6%,transparent)}',
       '.dw-activity{table-layout:fixed}.dw-activity td{overflow:hidden;overflow-wrap:anywhere}.dw-activity td:first-child{white-space:nowrap}',
       '.dw-clamp{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;font-family:ui-monospace,"Cascadia Mono",Consolas,monospace;font-size:12px}',
+      '.dw-hit{padding:10px 0;border-top:1px solid var(--line);min-width:0}.dw-hit .dw-diary{max-height:320px;overflow:auto}',
       '.dw-setting{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;align-items:center}.dw-setting input[type=text]{flex:1 1 120px;max-width:200px;min-width:0}',
       '.dw-setting select{flex:1 1 140px;max-width:100%;min-width:0}',
       '.dw pre.dw-diary{white-space:pre-wrap;margin:10px 0 0;font-family:var(--serif)}',
@@ -259,6 +260,9 @@ window.__ModuleLoader__.load({
           h('div', { style: { marginBottom: 8 } }, h('span', { className: 'dw-chip' }, prompt.custom ? '你自己的一份' : '插件自带'), ' ',
             h('span', { className: 'dw-muted' }, '可用 {{name}} {{partner}} {{homeTitle}} {{roomDir}} {{diaryDir}} {{selfFile}} {{self}} 和 {{#home}}…{{/home}} 等，见 README')),
           h('textarea', { className: 'dw-code', value: text, onChange: function (e) { setText(e.target.value); setMsg('') } })),
+        prompt.memory && list(prompt.memory.missing).length ? h(Card, { title: '这份提示词还没提到新的记忆能力' },
+          h('div', { className: 'dw-muted' }, '你自己的这份没有用到：' + list(prompt.memory.missing).join('、') + '。工具照样可用，但她在提示里读不到它们的来历。想加的话，把下面这段贴进去；插件不会自动改你的模板。'),
+          h('pre', { className: 'dw-diary' }, prompt.memory.snippet)) : null,
         h('div', { className: 'dw-bar' },
           h('button', { className: 'dw-btn primary', disabled: text === prompt.text, onClick: function () { save(text, '已保存。新会话或下次压缩后生效，也可点击「应用并压缩家会话」。') } }, '保存'),
           prompt.custom ? h('button', { className: 'dw-btn', onClick: function () { if (window.confirm('删掉你自己的这份，换回插件自带的模板？')) save('', '已换回插件自带的模板。') } }, '恢复默认') : null,
@@ -651,7 +655,113 @@ window.__ModuleLoader__.load({
         }))) : h('div', { className: 'dw-muted' }, '还没有压缩记录')))
     }
 
-    var TABS = [['overview', '概览'], ['persona', '人设'], ['prompt', '世界提示词'], ['records', '记录'], ['photos', '相册'], ['qq', 'QQ'], ['wechat', '微信']]
+    /** 只认最后一次发出的请求：条件变了，迟到的旧回复不能盖掉新结果。 */
+    function latest() {
+      var n = 0
+      return { next: function () { return ++n }, current: function (id) { return id === n } }
+    }
+    function searchMemory(guard, path, query, done, fail) {
+      var id = guard.next()
+      return api(path + '?' + query).then(function (b) { if (guard.current(id)) done(b) }, function (e) { if (guard.current(id)) fail(e) })
+    }
+    function zoneOffsetMs(at, zone) {
+      var parts = {}
+      new Intl.DateTimeFormat('en-US', { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).formatToParts(new Date(at)).forEach(function (p) { parts[p.type] = p.value })
+      return Date.UTC(+parts.year, +parts.month - 1, +parts.day, +parts.hour, +parts.minute, +parts.second) - Math.floor(at / 1000) * 1000
+    }
+    /** 配置时区里某一天的零点，写成 UTC 的 ISO 时间；date 是 YYYY-MM-DD，plusDays 取后面的日子。 */
+    function dayStartIso(date, zone, plusDays) {
+      var guess = Date.parse(date + 'T00:00:00Z') + (plusDays || 0) * 86400000
+      var ms = guess - zoneOffsetMs(guess, zone)
+      ms = guess - zoneOffsetMs(ms, zone)
+      return new Date(ms).toISOString()
+    }
+    var KINDS = [['conversation', '聊天'], ['diary', '日记']]
+    var basisLabel = { message: '发言时间', diaryDate: '日记日期', fileObserved: '看到文件的时间' }
+    /** 筛选条件变成 memory/find 的查询串；结束日期含当天。 */
+    function memoryQuery(f, zone, cursor) {
+      var q = []
+      function add(k, v) { q.push(k + '=' + encodeURIComponent(v)) }
+      if (f.query) add('query', f.query)
+      if (f.kinds && f.kinds.length) add('kinds', f.kinds.join(','))
+      if (f.from) add('from', dayStartIso(f.from, zone))
+      if (f.to) add('to', dayStartIso(f.to, zone, 1))
+      if (f.sourceId) add('sourceId', f.sourceId)
+      if (f.turnId) add('turnId', f.turnId)
+      if (f.linkedTo) add('linkedTo', f.linkedTo)
+      if (f.order === 'oldest') add('order', 'oldest')
+      add('limit', '20')
+      if (cursor) add('cursor', cursor)
+      return q.join('&')
+    }
+    function MemorySearch(props) {
+      var zone = props.zone
+      var formState = useState({ query: '', kinds: [], from: '', to: '', sourceId: '', turnId: '', linkedTo: '', order: 'newest' }), form = formState[0], setForm = formState[1]
+      var resultState = useState(null), result = resultState[0], setResult = resultState[1]
+      var busyState = useState(false), busy = busyState[0], setBusy = busyState[1]
+      var errState = useState(''), err = errState[0], setErr = errState[1]
+      var openState = useState(null), open = openState[0], setOpen = openState[1]
+      var guards = useRef(null)
+      if (!guards.current) guards.current = { find: latest(), read: latest() }
+      function change(patch) { setForm(Object.assign({}, form, patch)); setResult(null); setErr(''); guards.current.find.next() }
+      function run(next, cursor) {
+        setBusy(true); setErr('')
+        searchMemory(guards.current.find, 'memory/find', memoryQuery(next, zone, cursor), function (b) {
+          setBusy(false); setResult(cursor && result ? { items: result.items.concat(b.items), nextCursor: b.nextCursor, coverage: b.coverage, search: b.search } : b)
+        }, function (e) {
+          setBusy(false)
+          if (e && e.code === 'cursorExpired') { setResult(null); setErr('资料或范围有变化，请重新查询。') } else setErr('查找失败：' + (e.message || e))
+        })
+      }
+      function show(item, offset) {
+        setOpen({ ref: item.ref, title: item.title, loading: true, content: '' })
+        searchMemory(guards.current.read, 'memory/read', 'ref=' + encodeURIComponent(item.ref) + (offset ? '&offset=' + offset : ''), function (b) {
+          setOpen({ ref: item.ref, title: item.title, loading: false, content: (offset && open && open.ref === item.ref ? open.content : '') + b.content, nextOffset: b.nextOffset, total: b.totalChars, version: b.version, turnId: b.turnId, current: b.current, item: item })
+        }, function (e) {
+          setOpen({ ref: item.ref, title: item.title, loading: false, content: '', error: e.code === 'sourceChanged' ? '这条聊天后来被修订过，旧版正文没有保留。' : String(e.message || e) })
+        })
+      }
+      function kindsToggle(kind) { change({ kinds: form.kinds.indexOf(kind) >= 0 ? form.kinds.filter(function (k) { return k !== kind }) : form.kinds.concat([kind]) }) }
+      var cov = result && result.coverage
+      return h('div', { className: 'dw-pane' },
+        h(Card, { title: '总归档查找' },
+          h('div', { className: 'dw-muted' }, '查她的聊天原文和日记。关键词按原文字面匹配、区分大小写；这里只读。'),
+          h('form', { className: 'dw-setting', onSubmit: function (e) { if (e && e.preventDefault) e.preventDefault(); run(form) } },
+            h('input', { type: 'text', 'aria-label': '关键词', placeholder: '关键词（可留空，按时间翻）', value: form.query, style: { maxWidth: 'none' }, onChange: function (e) { change({ query: e.target.value }) } }),
+            h('button', { className: 'dw-btn primary', type: 'submit', disabled: busy }, busy ? '查找中…' : '查找')),
+          h('div', { className: 'dw-setting' }, KINDS.map(function (k) {
+            return h('label', { key: k[0], className: 'dw-muted' }, h('input', { type: 'checkbox', checked: form.kinds.indexOf(k[0]) >= 0, onChange: function () { kindsToggle(k[0]) } }), ' ' + k[1])
+          })),
+          h('div', { className: 'dw-setting' },
+            h('label', { className: 'dw-muted' }, '从 ', h('input', { type: 'date', value: form.from, onChange: function (e) { change({ from: e.target.value }) } })),
+            h('label', { className: 'dw-muted' }, '到 ', h('input', { type: 'date', value: form.to, onChange: function (e) { change({ to: e.target.value }) } })),
+            h('select', { value: form.order, 'aria-label': '排序', onChange: function (e) { change({ order: e.target.value }) } }, h('option', { value: 'newest' }, '新的在前'), h('option', { value: 'oldest' }, '旧的在前'))),
+          form.sourceId || form.turnId || form.linkedTo ? h('div', { className: 'dw-setting' },
+            form.sourceId ? h('button', { className: 'dw-btn', onClick: function () { change({ sourceId: '' }) } }, '来源：' + form.sourceId + ' ×') : null,
+            form.turnId ? h('button', { className: 'dw-btn', onClick: function () { change({ turnId: '', order: 'oldest' }) } }, '同一轮：' + form.turnId + ' ×') : null,
+            form.linkedTo ? h('button', { className: 'dw-btn', onClick: function () { change({ linkedTo: '' }) } }, '只看关联的内容 ×') : null) : null,
+          err ? h('div', { className: 'dw-bad', role: 'alert' }, err) : null,
+          cov && cov.state !== 'ready' ? h('div', { className: 'dw-muted', role: 'status' }, '有来源没能读到，零结果不代表没发生过：', list(cov.failures).map(function (f) { return ' ' + f.sourceId + '：' + f.message }).join('；')) : null,
+          result ? h('div', { className: 'dw-muted' }, result.items.length ? '已显示 ' + result.items.length + ' 条' : '没有找到。' + (cov && cov.state === 'ready' ? '（范围内完整查过了）' : '')) : null,
+          result ? result.items.map(function (item) {
+            return h('div', { className: 'dw-hit', key: item.ref },
+              h('div', { className: 'dw-muted' }, [(KINDS.filter(function (k) { return k[0] === item.kind })[0] || [0, item.kind])[1], item.title, item.time + '（' + (basisLabel[item.timeBasis] || item.timeBasis) + '）', item.current ? '' : '旧版本'].filter(Boolean).join(' · ')),
+              h('div', { style: { overflowWrap: 'anywhere', whiteSpace: 'pre-wrap' } }, item.excerpt),
+              h('div', { className: 'dw-setting' },
+                h('button', { className: 'dw-btn', onClick: function () { show(item, 0) } }, '读原文'),
+                h('button', { className: 'dw-btn', onClick: function () { change({ linkedTo: item.ref }); run(Object.assign({}, form, { linkedTo: item.ref })) } }, '看关联'),
+                item.turnId ? h('button', { className: 'dw-btn', onClick: function () { var next = Object.assign({}, form, { turnId: item.turnId, order: 'oldest' }); change({ turnId: item.turnId, order: 'oldest' }); run(next) } }, '同一轮') : null,
+                h('button', { className: 'dw-btn', onClick: function () { var next = Object.assign({}, form, { sourceId: item.sourceId }); change({ sourceId: item.sourceId }); run(next) } }, '只看这个来源')),
+              open && open.ref === item.ref ? h('div', null,
+                open.loading ? h('div', { className: 'dw-muted' }, '读取中…') : null,
+                open.error ? h('div', { className: 'dw-bad', role: 'alert' }, open.error) : null,
+                open.content ? h('pre', { className: 'dw-diary' }, open.content) : null,
+                open.nextOffset ? h('button', { className: 'dw-btn', onClick: function () { show(item, open.nextOffset) } }, '继续读（共 ' + open.total + ' 字）') : null) : null)
+          }) : null,
+          result && result.nextCursor ? h('button', { className: 'dw-btn', disabled: busy, onClick: function () { run(form, result.nextCursor) } }, '更多') : null))
+    }
+
+    var TABS = [['overview', '概览'], ['persona', '人设'], ['prompt', '世界提示词'], ['records', '记录'], ['archive', '档案'], ['photos', '相册'], ['qq', 'QQ'], ['wechat', '微信']]
     /** 一份快照的画面；life 为 null（停着，或生活线没能启动）或缺了哪一块都不会崩。 */
     function View(props) {
       var snap = props.snap, error = props.error
@@ -681,6 +791,7 @@ window.__ModuleLoader__.load({
           tab === 'persona' ? h(PersonaEditor, { onSaved: props.refresh }) : h(PromptEditor)) : null,
         tab === 'overview' ? h(Overview, { snap: snap, refresh: props.refresh }) : null,
         tab === 'records' ? h(Records, { snap: snap, tick: props.tick }) : null,
+        tab === 'archive' ? h(MemorySearch, { zone: snap.timeZone }) : null,
         tab === 'photos' ? h(PhotoAlbum, { tick: props.tick, zone: snap.timeZone }) : null,
         tab === 'qq' ? h('div', { className: 'dw-pane' }, snap.native
           ? h(Qq, { native: snap.native, onSaved: props.refresh, onNeedPassword: setPanel })
@@ -732,7 +843,7 @@ window.__ModuleLoader__.load({
         return ctx.slots.register({ name: 'settings.section', id: 'world-console', order: 28, label: '世界控制台' }, function () { return h(Console) })
       })
     }
-    Object.defineProperty(exports, '__test', { value: { WorkspacePermission: WorkspacePermission, CompactAfterReview: CompactAfterReview, Modules: Modules, HomeApply: HomeApply, PhotoAlbum: PhotoAlbum, Wechat: Wechat, Activity: Activity, Diary: Diary, Qq: Qq, Panel: Panel, View: View, Overview: Overview, PersonaEditor: PersonaEditor, PromptEditor: PromptEditor, loadSnapshot: loadSnapshot, renderPersona: renderPersona }, enumerable: false })
+    Object.defineProperty(exports, '__test', { value: { MemorySearch: MemorySearch, latest: latest, searchMemory: searchMemory, memoryQuery: memoryQuery, dayStartIso: dayStartIso, WorkspacePermission: WorkspacePermission, CompactAfterReview: CompactAfterReview, Modules: Modules, HomeApply: HomeApply, PhotoAlbum: PhotoAlbum, Wechat: Wechat, Activity: Activity, Diary: Diary, Qq: Qq, Panel: Panel, View: View, Overview: Overview, PersonaEditor: PersonaEditor, PromptEditor: PromptEditor, loadSnapshot: loadSnapshot, renderPersona: renderPersona }, enumerable: false })
     return exports
   },
 })

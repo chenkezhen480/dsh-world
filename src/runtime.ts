@@ -6,15 +6,18 @@ import type {} from '@deepseek-ai/dsh-compaction';
 import './hostContract.ts';
 import { Faults } from './faults.ts';
 import { createHistory, excludePresentMessages, renderHistory } from './history.ts';
+import { createWorldToolRegistry, memoryTools } from './memoryTools.ts';
 import { createPromptSections, type WorldPromptSource } from './promptSection.ts';
 import { belongsToWorld, createSourceArchive, inWorld, isCorruptSessionLog } from './sourceArchive.ts';
 import type { ArchiveStore } from './store.ts';
 import type { WorldConfig } from './types.ts';
 import { worldNames } from './worldPrompt.ts';
+import { reassembleOnChange } from './worldScope.ts';
 import { DEFAULT_MEMORY_TURNS } from './worldSwitch.ts';
 
 export type { WorldPromptSource } from './promptSection.ts';
 const memorySource = 'dsh-world-history';
+const worldSources: readonly string[] = [memorySource];
 
 /**
  * Per session: whether the memory block must be (re)built at the next step and the current loop position.
@@ -42,16 +45,21 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
   const faults = new Faults();
   const prompts = world && createPromptSections(config, world, { logger: ctx.logger });
   const memory = new WeakMap<Session, MemoryState>();
+  const toolSets = [world?.memory ? (inside: () => boolean) => memoryTools(world.memory!, inside) : undefined].filter(make => !!make);
+  const tools = toolSets.length ? createWorldToolRegistry({ tools: inside => toolSets.flatMap(make => make(inside)), inWorld: agent => !stopped && included(agent.session), faults, logger: ctx.logger }) : undefined;
+  /** The memory tools follow world membership, whatever the life line does. */
+  const syncTools = (agent: Agent): boolean => !tools ? false : included(agent.session) ? tools.attach(agent) : tools.detach(agent);
   const attaching = new WeakMap<Session, Promise<void>>();
   const disposers: (() => void)[] = [];
   let stopping: Promise<void> | undefined;
+  let stopped = false;
   /**
    * Whether the session may carry her world: her preset, or a memory block inherited onto its surface (a delegated
    * child of her session). Everything else is never read from disk or tracked. The check stays in memory.
    */
   const mayCarryWorld = (session: Session) => belongsToWorld(session, config) || memory.has(session) || session.surface.nodes.some(seq => {
     const event = session.eventAt(seq);
-    return event?.type === 'user/message' && event.data.source.kind === memorySource;
+    return event?.type === 'user/message' && worldSources.includes(event.data.source.kind);
   });
 
   /** Restore the loop position; recalled blocks are located directly on the current surface. */
@@ -75,13 +83,14 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
    * the host only inside an open turn and step, which pre-step and attach are not, so `flushRetired` writes it from
    * the step's request hook, after the step has started and before the request is assembled (#22).
    */
-  function retireMemory(session: Session, state: MemoryState): void {
-    state.retiring = session.surface.nodes.filter(seq => {
+  function retireMemory(session: Session, state: MemoryState, kinds: readonly string[] = worldSources): void {
+    const found = session.surface.nodes.filter(seq => {
       const event = session.eventAt(seq);
-      return event?.type === 'user/message' && event.data.source.kind === memorySource;
+      return event?.type === 'user/message' && kinds.includes(event.data.source.kind);
     });
-    if (state.retiring.length) state.restart = true;
-    state.reload = true; state.pendingId = undefined;
+    state.retiring = [...new Set([...state.retiring, ...found])];
+    if (found.length) state.restart = true;
+    if (kinds.includes(memorySource)) { state.reload = true; state.pendingId = undefined; }
   }
   /** Where memory blocks sit on a session's surface, for the log: positions and event types only, never message text. */
   function memoryNodesOn(session: Session): string {
@@ -91,7 +100,7 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
       if (!event) continue;
       let message: ReturnType<Session['deriveEventMessage']>;
       try { message = session.deriveEventMessage(event); } catch { continue; }
-      if (message?.source?.kind === memorySource) found.push(`#${seq}(${event.type})`);
+      if (message?.source?.kind && worldSources.includes(message.source.kind)) found.push(`#${seq}(${event.type})`);
     }
     return found.length ? found.slice(0, 8).join('、') + (found.length > 8 ? `…共 ${found.length} 个` : '') : '无';
   }
@@ -127,10 +136,9 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
     if (!included(session)) { retireMemory(session, state); return undefined; }
     const present = new Set(session.deriveMessages().map(message => message.id));
     const text = renderHistory(excludePresentMessages(turns, present), config.timeZone, names(), config.archiveScope === 'home');
-    retireMemory(session, state);
+    retireMemory(session, state, [memorySource]);
     return text ? createUserMessage({ content: [{ type: 'text', text }], source: { kind: memorySource, form: 'recall' } }) : undefined;
   }
-
   /** Reads what the first catch-up had to leave, once the host can say which sessions belong to her. */
   async function retryCatchUp(): Promise<void> {
     if (!undecided) return;
@@ -146,12 +154,17 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
         if (state && event.type === 'step/start') state.position = { turn: event.data.turn, step: event.data.step };
         const compacted = event.type === 'compaction/end' && event.data.error === undefined;
         if (state && event.type === 'user/message' && event.data.id === state.pendingId) { state.reload = false; state.pendingId = undefined; }
-        if (state && compacted) state.reload = true;
+        if (state && compacted) { state.reload = true; }
         if (compacted) prompts?.refresh(session);
         if (session.header.origin === 'subagent' || (session.header.delegationDepth ?? 0) > 0 || (!config.archiveScope && !belongsToWorld(session, config))) return;
         if (event.type === 'assistant/message' || event.type === 'turn/end' || event.type === 'turn/start' || event.type === 'compaction/end' || (event.type === 'user/message' && event.data.source.kind === 'user')) void archive.schedule(session.id).catch(() => {});
       }));
-      disposers.push(ctx.on('agent/created', async ({ agent }) => { prompts?.add(agent); await attach(agent); return undefined; }));
+      disposers.push(ctx.on('agent/created', async ({ agent }) => { prompts?.add(agent); syncTools(agent); await attach(agent); return undefined; }));
+      if (tools) {
+        disposers.push(reassembleOnChange(ctx, syncTools));
+        disposers.push(ctx.on('agent/pre-step', ({ agent }, next) => { syncTools(agent); return next(); }, { prepend: true }));
+        disposers.push(ctx.on('agent/disposed', ({ agent }) => tools.forget(agent)));
+      }
       // Admitted ahead of the step's new input; the host's own admission order (contexts, time-context last) is kept.
       disposers.push(ctx.on('agent/pre-step', async (payload, next) => {
         const decision = await next();
@@ -174,7 +187,10 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
         let block: UserMessage | undefined;
         await faults.track(`memory:${agent.id}`, `会话 ${agent.id} 记忆刷新失败`, async () => { block = await freshBlock(agent.session, state); });
         if (!included(agent.session)) return leave();
-        if (!block) { state.reload = false; return decision; }
+        signal.throwIfAborted();
+        if (!included(agent.session)) return leave();
+        if (state.reload && !block) state.reload = false;
+        if (!block) return decision;
         state.pendingId = block.id;
         return { ...decision, messages: [block, ...decision.messages] };
       }));
@@ -187,7 +203,7 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
       disposers.push(ctx.on('llm/stream', async function* (request, next) {
         const agent = isAgentLoopRequest(request) && request.sessionId ? ctx.agents.get(request.sessionId) : undefined;
         const owned = agent && included(agent.session);
-        const inRequest = agent && !owned ? request.messages.filter(message => message.source?.kind === memorySource).length : 0;
+        const inRequest = agent && !owned ? request.messages.filter(message => !!message.source?.kind && worldSources.includes(message.source.kind)).length : 0;
         const placed = !!agent && !owned && !!prompts?.active(agent.session);
         if (agent && !owned && (placed || inRequest)) {
           const state = memory.get(agent.session);
@@ -218,10 +234,11 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
   }
   function stop(): Promise<void> {
     return stopping ??= (async () => {
-      prompts?.clear();
+      stopped = true;
+      prompts?.clear(); tools?.clear();
       for (const dispose of disposers.splice(0).reverse()) dispose();
       await archive.flush();
     })();
   }
-  return { start, retryCatchUp, refreshPrompt: (session: Session) => prompts?.refresh(session), flush: archive.flush, stop, faults: () => [...faults.list(), ...archive.faults()] };
+  return { start, retryCatchUp, refreshPrompt: (session: Session) => { prompts?.refresh(session); }, flush: archive.flush, stop, faults: () => [...faults.list(), ...archive.faults()] };
 }
