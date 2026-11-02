@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { cp, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,7 +11,8 @@ const command = promisify(execFile);
 const script = fileURLToPath(new URL('../scripts/update-world.mjs', import.meta.url));
 
 async function fixture(t, name = 'dsh-world', compiled = true) {
-  const root = await mkdtemp(join(tmpdir(), 'dsh-update-'));
+  // The updater works on real paths; a Windows temp folder may be an 8.3 short name (CI's RUNNER~1).
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'dsh-update-')));
   t.after(() => rm(root, { recursive: true, force: true }));
   const profile = join(root, 'profiles', 'desktop');
   const oldPackage = join(profile, 'node_modules', 'dsh-world');

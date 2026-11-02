@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Context } from '@deepseek-ai/cordis';
@@ -17,7 +17,8 @@ import type { TestContext } from 'node:test';
 
 /** `personaPrefix`: the deployment's own system persona, as DSH's settings would give the system prompt plugin. */
 export async function hostFixture(t: TestContext, stream: (request: GenerateOptions) => AsyncIterable<StreamChunk>, options: { personaPrefix?: string; includeHarnessIdentity?: boolean } = {}) {
-  const root = await mkdtemp(join(tmpdir(), 'dsh-world-host-'));
+  // The host keeps workspace paths in their real form; a Windows temp folder may be an 8.3 short name (CI's RUNNER~1).
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'dsh-world-host-')));
   const ctx = new Context();
   const cleanup: (() => Promise<unknown> | unknown)[] = [];
   t.after(async () => { try { for (const stop of cleanup.reverse()) await stop(); await ctx.fiber.dispose(); } finally { await rm(root, { recursive: true, force: true }); } });
