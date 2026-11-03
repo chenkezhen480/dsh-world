@@ -123,6 +123,8 @@ export interface QqNativeStatus {
   groupTrigger: 'mention' | 'all';
   /** 静默到什么时候；没在静默就是 null。 */
   mutedUntil: string | null;
+  /** 同一个人连发几句合成一次问的窗口（毫秒）。 */
+  batchQuietMs: number;
   supervisor: SnowlumaStatus;
   /** 这次请求按下「拉起 SnowLuma」的结果。 */
   launch?: StartResult;
@@ -192,7 +194,7 @@ export function createQqNativeModule(deps: {
   };
 
   // 拨过的开关写在 stateFile 里，重载不丢；配置里那个是出厂默认。
-  type Overrides = { autoReply?: boolean; bridge?: { port?: number }; mutedUntil?: string | null; allowPrivate?: string[]; allowGroups?: string[] };
+  type Overrides = { autoReply?: boolean; bridge?: { port?: number }; mutedUntil?: string | null; allowPrivate?: string[]; allowGroups?: string[]; batchQuietMs?: number };
   const overrides = ((): Overrides => {
     try { return deps.stateFile ? JSON.parse(readFileSync(deps.stateFile, 'utf8')) : {}; } catch { return {}; }
   })();
@@ -210,6 +212,7 @@ export function createQqNativeModule(deps: {
       ...(overrides.mutedUntil === undefined ? {} : { mutedUntil: overrides.mutedUntil ?? '' }),
       ...(overrides.allowPrivate === undefined ? {} : { allowPrivate: overrides.allowPrivate }),
       ...(overrides.allowGroups === undefined ? {} : { allowGroups: overrides.allowGroups }),
+      ...(overrides.batchQuietMs === undefined ? {} : { batchQuietMs: overrides.batchQuietMs }),
       bridge: overrides.bridge?.port === undefined ? base.bridge : { ...base.bridge, port: overrides.bridge.port },
     };
   };
@@ -425,6 +428,7 @@ export function createQqNativeModule(deps: {
       failed: stats.failed,
       outbox: outbox.size,
       mutedUntil: mutedUntil(config),
+      batchQuietMs: config.batchQuietMs,
       supervisor: supervisor.status(),
     };
   }
@@ -441,6 +445,7 @@ export function createQqNativeModule(deps: {
       if (patch.allowPrivate) overrides.allowPrivate = patch.allowPrivate;
       if (patch.allowGroups) overrides.allowGroups = patch.allowGroups;
       if (patch.bridge) overrides.bridge = { port: patch.bridge.port };
+      if (patch.batchQuietMs !== undefined) overrides.batchQuietMs = patch.batchQuietMs;
       writeOverrides();
       if (patch.bridge) { nativeBridge?.stop(); nativeBridge = undefined; startBridge(settings()); }
       return { ...status(), ...(patch.startSnowluma ? { launch: startSnowluma(settings().snowlumaHome) } : {}) };
