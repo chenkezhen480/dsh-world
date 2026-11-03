@@ -183,6 +183,8 @@ test('corrupt session logs are isolated without treating unrelated errors as cor
   assert.equal(isCorruptSessionLog(new Error('stored log is corrupt: unexpected end of file')), true);
   assert.equal(isCorruptSessionLog(Object.assign(new Error('boom'), { name: 'SessionFormatError' })), true);
   assert.equal(isCorruptSessionLog(new Error('system/message does not match an open turn and step')), true);
+  // 一轮里步数重号（有人遇到过）：错误名在跨线程或被包装时可能丢掉，只剩这句原文。
+  assert.equal(isCorruptSessionLog(new Error('step/start does not match the open turn and next step')), true);
   // 别的错误照旧往外抛，不能被这道网兜住。
   assert.equal(isCorruptSessionLog(new Error('EACCES: permission denied')), false);
   assert.equal(isCorruptSessionLog(undefined), false);

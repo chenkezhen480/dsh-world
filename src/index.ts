@@ -147,11 +147,16 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   const memoryHealth = (): string[] => memoryService.status().failures.map(failure => `记忆来源 ${failure.sourceId}：${failure.message}`);
   let memory: ReturnType<typeof createWorldRuntime> | undefined;
   let stopLifeLine: (() => Promise<void>) | undefined;
+  /**
+   * A memory line that cannot start is a fault, never a failed plugin: the console must still open to say so, and
+   * the life line and channels run on. Stopping and starting the world from the console tries again.
+   */
   async function startMemory(fresh: boolean): Promise<void> {
     if (memory) return;
     const prompt = { file: worldPromptFile, persona: personaFile, conversationsDir: join(worldDir, 'conversations'), names: names(), memoryTools: true, ...(config.life ? { life: options } : {}) };
-    memory = createWorldRuntime(ctx, { ...memoryConfig, selfFile }, store, { prompt, names, isHome: id => isHome(id), archiveSession, inWorkspace, memory: memoryService }, power.memoryTurns);
-    await memory.start({ fresh });
+    const runtime = createWorldRuntime(ctx, { ...memoryConfig, selfFile }, store, { prompt, names, isHome: id => isHome(id), archiveSession, inWorkspace, memory: memoryService }, power.memoryTurns);
+    try { await runtime.start({ fresh }); memory = runtime; faults.clear('memory'); }
+    catch (error) { faults.set('memory', `记忆线没能启动：${errorText(error)}`); ctx.logger.error(error); }
   }
   async function stopMemory(): Promise<void> {
     const running = memory; memory = undefined;

@@ -444,6 +444,22 @@ test('opening an existing home preserves its manual permission instead of granti
   assert.equal(permission, 'workspace-write');
 });
 
+test('a memory line that cannot start leaves the plugin up: the console opens and says why', async t => {
+  const { ctx, root, cleanup } = await hostFixture(t, () => textResponse('ok'));
+  isolateHome(t, root);
+  await mkdir(join(root, 'worlds/fish'), { recursive: true });
+  await writeFile(join(root, 'worlds/fish/world.json'), JSON.stringify({ running: true }));
+  const persistence = ctx.sessionPersistence, list = persistence.list.bind(persistence);
+  persistence.list = async () => { throw new Error('session inventory unreadable'); };
+  cleanup.push(() => { persistence.list = list; });
+  const { routes } = provideLifeHost(ctx);
+  captureErrors(ctx);
+  const plugin = ctx.plugin(worldPlugin, { ...config, life: true }); cleanup.push(() => plugin.dispose()); await plugin.await();
+  await until(async () => routes.some(route => route.path === '/dsh-world'), 'the console route');
+  const snapshot = await consoleGet(routes, '/dsh-world/console/snapshot');
+  assert.ok(snapshot.health.some((fault: string) => /记忆线没能启动：session inventory unreadable/.test(fault)), snapshot.health.join('|'));
+});
+
 test('the console workspace permission initializes later room sessions without changing existing sessions', async t => {
   const { ctx, root, cleanup } = await hostFixture(t, () => textResponse('ok'));
   isolateHome(t, root);

@@ -11,7 +11,7 @@ const pageSize = 128;
 /** Unreadable logs are isolated per source; their archive gaps remain visible until replay succeeds. */
 export function isCorruptSessionLog(error: unknown): boolean {
   const text = error instanceof Error ? `${error.name} ${error.message}` : String(error ?? '');
-  return /stored log is corrupt|SessionFormatError|does not match an open turn/i.test(text);
+  return /stored log is corrupt|SessionFormatError|does not match (?:an|the) open turn/i.test(text);
 }
 export function belongsToWorld(session: Pick<Session, 'header'>, config: WorldConfig): boolean {
   const header = session.header;
