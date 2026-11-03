@@ -312,13 +312,20 @@ test('a reply is not released for sending until its own session log is durable',
   } finally { offEvent(); offFlush(); }
 });
 
-test('desktop words steered into the same turn prevent a mixed answer from leaving on WeChat', async t => {
+test('desktop words that cut in before she has said anything keep the mixed answer from leaving on WeChat', async t => {
   let release!: () => void, entered!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; });
   const running = new Promise<void>(resolve => { entered = resolve; });
-  const { ctx, cleanup } = await hostFixture(t, () => (async function* () {
-    entered(); await gate; yield* textResponse('混合内容');
+  let step = 0;
+  const { ctx, cleanup } = await hostFixture(t, () => (async function* (): AsyncIterable<StreamChunk> {
+    if (step++) { yield* textResponse('混合内容'); return; }
+    const call = { type: 'tool-call' as const, id: ToolCallId('look'), name: 'look_up', arguments: '{}' };
+    yield { type: 'block-start', index: 0, blockType: 'tool-call' };
+    yield { type: 'tool-call-delta', index: 0, id: call.id, name: call.name, argumentsDelta: call.arguments };
+    yield { type: 'block-end', index: 0, block: call };
+    yield { type: 'finish', reason: { kind: 'tool-calls' } };
   })());
+  ctx.tools.register(defineTool({ name: 'look_up', description: 'test', parameters: {}, output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] }, execute: async () => { entered(); await gate; return 'ok'; } }));
   const home = (await ctx.agents.create({ sessionId: SessionId('home'), agentOptions: { provider: 'test', model: 'test' } })).agent;
   const channel = createWechatHome({ ctx, home: async () => home }); cleanup.push(channel.stop);
   const reply = channel.ask('微信问题', identity);
@@ -340,6 +347,33 @@ test('host snapshots, the first-session skill catalog and memory recall do not c
   };
   const channel = createWechatHome({ ctx, home: async () => home }); cleanup.push(channel.stop);
   assert.equal((await channel.ask('在吗', identity)).text, '微信正常答复');
+});
+
+test('what she said before desktop words cut in still goes out on WeChat; what came after them does not', async t => {
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const looking = new Promise<void>(resolve => { entered = resolve; });
+  let step = 0;
+  const { ctx, cleanup } = await hostFixture(t, () => (async function* (): AsyncIterable<StreamChunk> {
+    if (step++) { yield* textResponse('混合内容'); return; }
+    const call = { type: 'tool-call' as const, id: ToolCallId('look'), name: 'look_up', arguments: '{}' };
+    yield { type: 'block-start', index: 0, blockType: 'text' };
+    yield { type: 'text-delta', index: 0, text: '我先看看' };
+    yield { type: 'block-end', index: 0, block: { type: 'text', text: '我先看看' } };
+    yield { type: 'block-start', index: 1, blockType: 'tool-call' };
+    yield { type: 'tool-call-delta', index: 1, id: call.id, name: call.name, argumentsDelta: call.arguments };
+    yield { type: 'block-end', index: 1, block: call };
+    yield { type: 'finish', reason: { kind: 'tool-calls' } };
+  })());
+  ctx.tools.register(defineTool({ name: 'look_up', description: 'test', parameters: {}, output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] }, execute: async () => { entered(); await gate; return 'ok'; } }));
+  const home = (await ctx.agents.create({ sessionId: SessionId('home'), agentOptions: { provider: 'test', model: 'test' } })).agent;
+  const channel = createWechatHome({ ctx, home: async () => home }); cleanup.push(channel.stop);
+  const reply = channel.ask('微信问题', identity);
+  await looking;
+  home.steer(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: '桌面内容' }] }));
+  release();
+  assert.equal((await reply).text, '我先看看');
+  await home.whenIdle();
 });
 
 test('her own alarm ringing during a WeChat reply does not make the request fail', async t => {

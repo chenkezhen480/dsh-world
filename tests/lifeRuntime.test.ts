@@ -14,6 +14,7 @@ import { hostLife, type LifeHost } from '../src/life/host.ts';
 import type { Notifier } from '../src/life/notify.ts';
 import ToolFreeCompaction from '../src/compaction.ts';
 import { stepCost } from '../src/life/pricing.ts';
+import { askTurn } from '../src/ecosystem/shared/turn.ts';
 
 const config = { worldId: 'fish', agentPreset: 'companion', timeZone: 'Asia/Seoul', companionName: '鲸鲸' };
 const textOf = (request: GenerateOptions) => request.messages.map(m => m.content.filter(b => b.type === 'text').map(b => b.text).join('\n')).join('\n');
@@ -253,6 +254,18 @@ test('a partner turn in the home does not consume the pending alarm', async t =>
   assert.equal(s.requests.length, 2); assert.deepEqual(s.life.snapshot().alarm, pending);
   await s.untilMorning();
   assert.equal(s.requests.length, 4); assert.match(textOf(s.requests[3]), /没说接下来做什么/);
+});
+test('a channel\'s words that join a home turn already running get that turn\'s answer, not a ten-minute wait (#34)', async t => {
+  let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });
+  let entered!: () => void; const playing = new Promise<void>(resolve => { entered = resolve; });
+  const s = await setup(t, (_request, index) => index === 0 ? toolCall('play_game', {}) : textResponse('在呢，刚玩完'));
+  s.ctx.tools.register(testTool('play_game', async () => { entered(); await gate; return 'played'; }));
+  await s.life.start(); s.timers.advance(0); await playing;
+  const home = s.ctx.agents.get(SessionId(s.life.snapshot().homeSessionId!))!;
+  assert.equal(home.status, 'running', 'her own turn started first');
+  const answer = askTurn(s.ctx, home, userMessage('在吗'), { name: 'QQ', cancelled: new Promise<never>((_resolve, reject) => { setTimeout(() => reject(new Error('still waiting')), 2000).unref(); }) });
+  release();
+  assert.equal(await answer, '在呢，刚玩完');
 });
 test('while she is busy, the alarm and her partner\'s message both enter the running turn', async t => {
   let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });
