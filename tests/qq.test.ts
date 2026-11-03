@@ -67,6 +67,16 @@ test('面板的白名单、静默和拉起 SnowLuma 校验后一起交给通道'
   ]);
 });
 
+test('合批窗口只收 0 到 30 秒的整数毫秒：一批从第一句起最多等 30 秒，再长也没用', async () => {
+  const patches: unknown[] = [];
+  const route = qqRoute([], doors(), native, patch => { patches.push(patch); return { ok: true }; });
+  const post = (body: unknown) => call(route, request('POST', '/native', { headers: WRITE, body }));
+  for (const bad of [-1, 30_001, 1.5, '6000', null]) assert.equal((await post({ batchQuietMs: bad })).status, 400, String(bad));
+  assert.equal((await post({ batchQuietMs: 0 })).status, 200);
+  assert.equal((await post({ batchQuietMs: 30_000 })).status, 200);
+  assert.deepEqual(patches, [{ batchQuietMs: 0 }, { batchQuietMs: 30_000 }]);
+});
+
 test('原生通道没有接上时，写接口说清楚，而不是静默成功', async () => {
   const route = qqRoute([], doors(), undefined, undefined);
   assert.equal((await call(route, request('GET', '/native'))).status, 200);

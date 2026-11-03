@@ -6,7 +6,8 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { SessionId } from '@deepseek-ai/dsh-session';
 import { hostFixture, textResponse } from './hostFixture.ts';
 import { createQqNativeModule, type QqNativeConfig, type QqPart, type QqTransport, type QqTransportOptions } from '../src/ecosystem/qq-native/index.ts';
-import { planReply } from '../src/ecosystem/qq-native/replies.ts';
+import { planReply, stripHostNoise } from '../src/ecosystem/qq-native/replies.ts';
+import { identityPrefix } from '../src/ecosystem/shared/identity.ts';
 import { createBatcher } from '../src/ecosystem/qq-native/batch.ts';
 import { createOutbox } from '../src/ecosystem/qq-native/outbox.ts';
 import { createSnowlumaSupervisor } from '../src/ecosystem/qq/supervisor.ts';
@@ -63,6 +64,16 @@ test('her answer becomes messages split at blank lines, with marks turned into s
     stickers: ['开心'], qzone: ['今天天气好'],
   });
   assert.deepEqual(planReply('[[sticker:2]]'), { messages: [], stickers: ['2'], qzone: [] });
+});
+
+test('the host\'s time lines, copied source headers and transport refs never reach QQ; her own words stay', () => {
+  const header = identityPrefix({ channel: 'qq', accountId: '1', conversationType: 'private', conversationId: '42', speakerId: 'qq:42', speakerName: '伙伴' }).trim();
+  assert.equal(stripHostNoise(`${header}\n好呀`), '好呀');
+  assert.equal(stripHostNoise('【消息来源 {"channel":"qq","conversationId":"42"}】\n好呀'), '好呀', 'the 0.7.0 header too');
+  assert.equal(stripHostNoise('Time sampled: 2026-11-03T12:00\r\nBrowser time zone: Asia/Seoul\r\n\r\n晚上好'), '晚上好');
+  assert.equal(stripHostNoise('好呀 m00123\n第二行 text">m00042 还在'), '好呀\n第二行 还在', 'a ref at the end of any line, a text"> ref anywhere');
+  assert.equal(stripHostNoise('【旁白】时间过得真快 room00123'), '【旁白】时间过得真快 room00123', 'brackets, 时间 and words ending in digits are hers');
+  assert.deepEqual(planReply(`${header}\n\nm00123`), { messages: [], stickers: [], qzone: [] }, 'a reply that was only plumbing sends nothing');
 });
 
 test('close messages are gathered until a quiet moment, but never past the longest wait', async () => {

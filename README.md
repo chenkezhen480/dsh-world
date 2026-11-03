@@ -156,7 +156,7 @@ node <DSH 自带 pnpm 的入口文件> add dsh-world@latest --ignore-scripts --r
       allowGroups: []            # 群白名单
       autoReply: true            # false = 只看不回
       contextMessages: 6         # 每轮带上最近的几条
-      batchQuietMs: 10000        # 同一会话这几毫秒内的话攒成一条问她；0 = 一条一问
+      batchQuietMs: 10000        # 同一会话这几毫秒内的话攒成一条问她；0 = 一条一问；QQ 页里改过的优先（0–30 秒，一批最多等 30 秒）
       groupTrigger: mention      # mention：@ 她／引用她／命中关键词才接；all：每句都接
       groupKeywords: []          # groupTrigger: mention 时算「在叫她」的词
       mutedUntil: ''             # 静默到这个时间（ISO）：只收不回，到点自己醒

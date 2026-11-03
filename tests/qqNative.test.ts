@@ -483,3 +483,14 @@ test('面板先改阳台端口，也不会丢掉之前存下的自动回复开�
   assert.equal(make().status().autoReply, false);
   assert.deepEqual(JSON.parse(readFileSync(stateFile, 'utf8')), { autoReply: false, bridge: { port: 0 } });
 });
+
+test('面板改的合批窗口存下来，重载后还在；没改过的就是配置里的', async t => {
+  const { ctx } = await hostFixture(t, () => textResponse('嗯'));
+  const dir = mkdtempSync(join(tmpdir(), 'dw-qq-batch-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const stateFile = join(dir, 'qq-native.json');
+  const make = () => createQqNativeModule({ ctx, home: async () => { throw new Error('unused'); }, config: () => configOf(), stateFile, logger: quiet, transport: fakeTransport().factory });
+  assert.equal(make().status().batchQuietMs, configOf().batchQuietMs);
+  make().update({ batchQuietMs: 0 });
+  assert.equal(make().status().batchQuietMs, 0);
+  assert.equal(JSON.parse(readFileSync(stateFile, 'utf8')).batchQuietMs, 0);
+});

@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { lastAssistantStreamChunk, type ContentBlock } from '@deepseek-ai/dsh-llm';
 import { isAppendSurfaceEvent, type SessionEvent, type SessionHeader } from '@deepseek-ai/dsh-session';
 import type { ArchiveScope, ConversationRecord } from './types.ts';
-import { identityPrefix, speakerIdentity, type SpeakerIdentity } from './ecosystem/shared/identity.ts';
+import { identityPrefix, legacyIdentityPrefix, speakerIdentity } from './ecosystem/shared/identity.ts';
 import { replyMessages, replyText } from './ecosystem/wechat/messages.ts';
 
 export const conversationRecordId = (worldId: string, sessionId: string, messageId: string) =>
@@ -15,9 +15,6 @@ export function visibleText(content: readonly ContentBlock[]): string {
     return [];
   }).join('\n');
 }
-
-/** Channel messages from 0.7.0 and earlier open with the whole identity; an upgraded log may still hold some not yet archived. */
-const legacyIdentityPrefix = (identity: SpeakerIdentity) => `【消息来源 ${JSON.stringify(identity)}】\n`;
 
 /** A session someone talks in: not a subagent, not delegated. Only these are archived or carry her world. */
 export const isOrdinarySession = (header: Pick<SessionHeader, 'origin' | 'delegationDepth'>) => header.origin !== 'subagent' && (header.delegationDepth ?? 0) === 0;

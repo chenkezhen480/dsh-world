@@ -54,3 +54,7 @@ export function identityPrefix(identity: SpeakerIdentity): string {
   const speaker = identity.conversationType === 'group' ? ` ${identity.speakerName ?? identity.speakerId} 说` : '';
   return `【${chatLabel(identity.channel, identity.conversationType, chatName(identity) ?? identity.conversationId)}${speaker}，chatId ${identity.conversationId}】\n`;
 }
+/** Channel messages from 0.7.0 and earlier opened with the whole identity; an upgraded log may still hold some. */
+export const legacyIdentityPrefix = (identity: SpeakerIdentity) => `【消息来源 ${JSON.stringify(identity)}】\n`;
+/** A whole line that is one of the headers above, new or legacy, whoever it names. */
+export const IDENTITY_HEADER_LINE = /^【(?:消息来源 \{.*\}|[^【】\n]*，chatId [^【】\n]+)】$/;

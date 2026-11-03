@@ -1,3 +1,5 @@
+import { IDENTITY_HEADER_LINE } from '../shared/identity.ts';
+
 /** One piece of a QQ message: text, @, an image or a QQ face (the segments `snowluma.ts` builds). */
 export type QqPart = { type: 'text'; text: string } | { type: 'at'; qq: string } | { type: 'image'; file: string } | { type: 'face'; id: string };
 
@@ -14,28 +16,22 @@ export interface ReplyPlan {
 const MARK = /\[\[(img|face|at|sticker|qzone):([^[\]]+)\]\]/g;
 
 /**
- * Lines the host injects into a turn that must never reach QQ: the time sample, the browser time-zone note, the
- * elapsed-time note, and the inline source header of an incoming message. They are matched by line prefix only, so
- * a sentence of hers that merely mentions 时间 is left alone.
+ * Lines the host injects into a turn that must never reach QQ: the time sample, the browser time-zone note and the
+ * elapsed-time note. Matched by line prefix only, so a sentence of hers that merely mentions 时间 is left alone.
  */
-const HOST_LINE = /^(?:\s*(?:Time sampled|Browser time zone|Elapsed since|Elapsed from)\b|\s*【消息来源\b)/;
+const HOST_LINE = /^\s*(?:Time sampled|Browser time zone|Elapsed since|Elapsed from)\b/;
+
+/** Transport refs that leak into her prose: `text">m00123` anywhere, a bare `m00123` at the end of a line. */
+const HOST_FRAGMENT = /[ \t]*text">m\d{5}\b|[ \t]*\bm\d{5}[ \t]*$/gm;
 
 /**
- * Fragments of transport plumbing that leak into her prose: a bare `m00123` ref, a `text">m00123` tail, and the
- * closing quote left over from a JSON blob. Removed wherever they appear; they never occur in a normal sentence.
- */
-const HOST_FRAGMENT = /(?:^|\s)text">m\d{5}\b|(?:^|\s)m\d{5}\b$/g;
-
-/**
- * Drops the host's own bookkeeping from an answer before it is sent. The paragraphs it empties are removed, so a
- * reply that was only plumbing sends nothing at all instead of a blank message.
+ * Drops the host's own bookkeeping, and any copy of an incoming message's source header, from an answer before it is
+ * sent. The paragraphs it empties are removed, so a reply that was only plumbing sends nothing instead of a blank message.
  */
 export function stripHostNoise(text: string): string {
-    const kept = text
-        .replace(HOST_FRAGMENT, '')
-        .split(/\r?\n/)
-        .filter(line => !HOST_LINE.test(line));
-    return kept.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  const kept = text.replace(/\r\n/g, '\n').replace(HOST_FRAGMENT, '').split('\n')
+    .filter(line => !HOST_LINE.test(line) && !IDENTITY_HEADER_LINE.test(line.trim()));
+  return kept.join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
 /**

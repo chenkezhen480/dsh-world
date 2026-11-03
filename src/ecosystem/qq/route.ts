@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { jsonObject, knownHost, readBody, sendJson, type JsonResult } from '../../http.ts';
 import type { ConsoleDoors } from './panel.ts';
+import { MAX_BATCH_MS } from '../qq-native/batch.ts';
 
 /**
  * The QQ module's few doors, on the same webServer as the console. The `/dsh-world/qq` prefix is never eaten
@@ -10,7 +11,7 @@ import type { ConsoleDoors } from './panel.ts';
  *        GET  /dsh-world/qq/console   SnowLuma's console address, with a session token already traded for the
  *                                     panel password
  * Write: POST /dsh-world/qq/native    { autoReply?, bridge?: { port? }, mutedUntil?, allowPrivate?, allowGroups?,
- *                                     startSnowluma? } the channel's switches, applied together; a new bridge
+ *                                     batchQuietMs?, startSnowluma? } the channel's switches, applied together; a new bridge
  *                                     port restarts the balcony on the spot
  *        POST /dsh-world/qq/panel-password  { username, password } remembers SnowLuma's panel password and
  *                                     trades it for a session token right away
@@ -74,10 +75,10 @@ async function write(doors: ConsoleDoors | undefined, path: string, body: Record
         if (until !== null && (typeof until !== 'string' || (until.trim() && Number.isNaN(Date.parse(until))))) return bad('mutedUntil 要是能解析的 ISO 时间，或者 null');
         patch.mutedUntil = until === null || !until.trim() ? null : until.trim();
       }
-      // 合批窗口：同一个人在这么多毫秒内连发几句，合成一次问。给 0 就是每句单独回。
+      // 合批窗口：同一个人在这么多毫秒内连发几句，合成一次问。给 0 就是每句单独回；一批从第一句起最多等 MAX_BATCH_MS，再长也没用。
       if (body?.batchQuietMs !== undefined) {
         const ms = body.batchQuietMs;
-        if (typeof ms !== 'number' || !Number.isInteger(ms) || ms < 0 || ms > 120000) return bad('batchQuietMs 要是 0 到 120000 之间的整数（毫秒）');
+        if (typeof ms !== 'number' || !Number.isInteger(ms) || ms < 0 || ms > MAX_BATCH_MS) return bad(`batchQuietMs 要是 0 到 ${MAX_BATCH_MS} 之间的整数（毫秒）`);
         patch.batchQuietMs = ms;
       }
       if (body?.startSnowluma === true) patch.startSnowluma = true;

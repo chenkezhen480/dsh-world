@@ -503,7 +503,7 @@ window.__ModuleLoader__.load({
       }, [props.native && props.native.batchQuietMs])
       function saveQuiet() {
         var sec = Number(String(quiet).trim())
-        if (!isFinite(sec) || sec < 0 || sec > 120) { setMsg('填 0 到 120 之间的秒数'); return }
+        if (!isFinite(sec) || sec < 0 || sec > 30) { setMsg('填 0 到 30 之间的秒数（一批最多等 30 秒）'); return }
         change({ batchQuietMs: Math.round(sec * 1000) })
       }
       // 白名单：谁的话能进来。打开时填上现有的名单，之后不覆盖正在改的字。
@@ -553,7 +553,7 @@ window.__ModuleLoader__.load({
           var ms = typeof n.batchQuietMs === 'number' ? n.batchQuietMs : 10000
           return h('div', { key: 'quiet', className: 'dw-setting' }, [
             h('span', { key: 's', className: 'dw-muted' }, ms ? '连着发几句：' + (ms / 1000) + ' 秒内合成一次问' : '连着发几句：每句单独回'),
-            h('input', { key: 'i', type: 'number', min: 0, max: 120, step: 1, 'aria-label': '合批窗口（秒）', style: { width: 64 }, disabled: busy, value: quiet, onChange: function (e) { setQuiet(e.target.value) } }),
+            h('input', { key: 'i', type: 'number', min: 0, max: 30, step: 1, 'aria-label': '合批窗口（秒）', style: { width: 64 }, disabled: busy, value: quiet, onChange: function (e) { setQuiet(e.target.value) } }),
             h('button', { key: 'b', className: 'dw-btn', disabled: busy, onClick: saveQuiet }, '存'),
           ])
         })(props.native),

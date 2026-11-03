@@ -3,8 +3,10 @@
  * row, and asking her each half sentence on its own costs a turn apiece. The quiet window restarts with every
  * message but never stretches past `maxMs` from the first, so a busy group still gets its answer.
  */
+/** The longest a batch waits from its first message, so a quiet window past it changes nothing. */
+export const MAX_BATCH_MS = 30_000;
 export function createBatcher<T>(options: { quietMs(): number; maxMs?: number; flush(key: string, items: T[]): void }) {
-  const maxMs = options.maxMs ?? 30_000;
+  const maxMs = options.maxMs ?? MAX_BATCH_MS;
   const open = new Map<string, { items: T[]; since: number; timer?: ReturnType<typeof setTimeout> }>();
   return {
     add(key: string, item: T): void {
