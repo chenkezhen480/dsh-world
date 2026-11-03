@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 from binding import WechatOffline
-from sender import NativeRequest, NativeSender, encodeRequest, selectProfile, sendsStickers, verifyFile
+from sender import BuildStale, NativeRequest, NativeSender, currentBuild, encodeRequest, selectProfile, sendsStickers, verifyFile
 
 
 PROFILES = Path(__file__).parent / 'engine/profiles.json'
@@ -98,6 +98,18 @@ class SenderTest(unittest.TestCase):
                 verifyFile(path, 201552944, '0' * 64)
             with self.assertRaises(ValueError):
                 verifyFile(path, path.stat().st_size, '0' * 64)
+
+    def test_a_missing_or_stale_build_asks_for_a_new_one_and_a_matching_one_is_used(self):
+        source = hashlib.sha256((PROFILES.parent / 'bridge.cpp').read_bytes()).hexdigest()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with self.assertRaisesRegex(BuildStale, '还没有构建'):
+                currentBuild(root)
+            (root / 'current.json').write_text(json.dumps(dict(file='x.dll', sha256='0' * 64, sourceSha256='f' * 64)), encoding='utf-8')
+            with self.assertRaisesRegex(BuildStale, '源码已变化'):
+                currentBuild(root)
+            (root / 'current.json').write_text(json.dumps(dict(file='x.dll', sha256='0' * 64, sourceSha256=source)), encoding='utf-8-sig')
+            self.assertEqual(currentBuild(root)['file'], 'x.dll')
 
     def test_sender_initialization_releases_its_handle_when_the_process_goes_offline(self):
         profile = json.loads(PROFILES.read_text(encoding='utf-8-sig'))[0]

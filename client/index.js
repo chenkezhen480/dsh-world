@@ -419,7 +419,7 @@ window.__ModuleLoader__.load({
       var contacted = age != null && age < 30000, offline = contacted && w.account === 'offline'
       var ad = w.adapter
       var blocked = ad && ad.needsHuman
-      var stateText = blocked ? '● 有消息待核对，适配器已停' : !contacted ? (ad && ad.running ? '● 适配器启动中' : ad && ad.error ? '● 等待适配器文件' : w.lastContactAt ? '● 适配器已断开' : '● 等待适配器') : offline ? '● 微信离线，等待重新登录' : '● 已连接'
+      var stateText = blocked ? '● 有消息待核对，适配器已停' : !contacted ? (ad && ad.building ? '● 正在重新构建原生桥' : ad && ad.running ? '● 适配器启动中' : ad && ad.error ? '● 适配器没能启动' : w.lastContactAt ? '● 适配器已断开' : '● 等待适配器') : offline ? '● 微信离线，等待重新登录' : '● 已连接'
       var adMsgState = useState(''), adMsg = adMsgState[0], setAdMsg = adMsgState[1]
       function restartAdapter() {
         setAdMsg('正在重启…')

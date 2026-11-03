@@ -69,6 +69,22 @@ def selectProfile(path, profiles):
     raise ValueError(f'不支持当前微信构建，已适配版本：{versions}；文件大小与 SHA256 必须同时匹配，禁止加载原生桥')
 
 
+class BuildStale(RuntimeError):
+    """No build of the native bridge matches its source: `engine/build.ps1` makes one, nothing else may stand in."""
+
+
+def currentBuild(engineDir):
+    """The build record in `engineDir`, only if it was compiled from the bridge source shipped beside this file."""
+    buildFile = Path(engineDir) / 'current.json'
+    if not buildFile.is_file():
+        raise BuildStale('还没有构建原生桥，请先运行 Build')
+    build = json.loads(buildFile.read_text(encoding='utf-8-sig'))
+    source = Path(__file__).parent / 'engine/bridge.cpp'
+    if hashlib.sha256(source.read_bytes()).hexdigest() != build['sourceSha256']:
+        raise BuildStale('原生桥源码已变化，请先重新 Build')
+    return build
+
+
 class NativeSender:
     def __init__(self, config, checkProcess):
         import psutil
@@ -84,13 +100,9 @@ class NativeSender:
         self.profile = selectProfile(core, profiles)
         # The build sits beside the adapter's config.json, which is where the adapter runs from or is managed by the plugin.
         engineDir = Path(config['engineDir']) if config.get('engineDir') else Path(__file__).resolve().parents[4] / '.host/wechat/engine'
-        buildFile = engineDir / 'current.json'
-        build = json.loads(buildFile.read_text(encoding='utf-8-sig'))
+        build = currentBuild(engineDir)
         self.dll = Path(build['file']).resolve()
         verifyFile(self.dll, self.dll.stat().st_size, build['sha256'])
-        source = Path(__file__).parent / 'engine/bridge.cpp'
-        if hashlib.sha256(source.read_bytes()).hexdigest() != build['sourceSha256']:
-            raise RuntimeError('原生桥源码已变化，请先重新 Build')
         self.api = c.WinDLL('kernel32', use_last_error=True)
         signatures = {
             'OpenProcess': (w.HANDLE, [w.DWORD, w.BOOL, w.DWORD]),

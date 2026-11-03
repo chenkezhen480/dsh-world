@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, rmSync, writeFileSync, readdirSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, rmSync, writeFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ChildProcess } from 'node:child_process';
@@ -28,7 +28,7 @@ test('the adapter starts with the bound config and an explicit send permission, 
   assert.equal(launches.length, 1);
   assert.equal(launches[0]!.command, python);
   assert.deepEqual(launches[0]!.args, ['-X', 'utf8', '-u', script, 'watch', '--config', config, '--allow-send']);
-  assert.deepEqual(supervisor.status(), { running: true, pid: 100, restarts: 0, lastExit: null, error: null, needsHuman: false });
+  assert.deepEqual(supervisor.status(), { running: true, pid: 100, restarts: 0, lastExit: null, error: null, needsHuman: false, building: false });
   await supervisor.stop();
   assert.deepEqual(killed, [children[0]!.pid]);
   assert.equal(supervisor.status().running, false);
@@ -87,5 +87,57 @@ test('restarting a running adapter replaces it once, without a second automatic 
   await wait(60);
   assert.equal(launches.length, 2);
   assert.equal(supervisor.status().restarts, 1);
+  await supervisor.stop();
+});
+
+test('a stale native bridge is built again into the engine folder beside the config, and the adapter starts after it', async t => {
+  const { supervisor, launches, children, config, dir } = setup(t);
+  supervisor.start();
+  children[0]!.emit('exit', 3, null);
+  assert.equal(launches.length, 2);
+  assert.equal(launches[1]!.command, 'powershell.exe');
+  assert.deepEqual(launches[1]!.args.slice(-2), ['-OutDir', join(dir, 'engine')]);
+  assert.equal(join(config, '..', 'engine'), join(dir, 'engine'));
+  assert.equal(supervisor.status().building, true);
+  await supervisor.restart();
+  assert.equal(launches.length, 2, 'the console waits for the build');
+  children[1]!.emit('exit', 0, null);
+  assert.equal(supervisor.status().building, false);
+  assert.equal(launches.length, 3); assert.equal(supervisor.status().running, true);
+  assert.equal(supervisor.status().error, null);
+  await supervisor.stop();
+});
+
+test('a build that fails, or one that still does not match, stops with what to do instead of looping', async t => {
+  const failing = setup(t);
+  failing.supervisor.start();
+  failing.children[0]!.emit('exit', 3, null);
+  failing.children[1]!.emit('exit', 1, null);
+  await wait(60);
+  assert.equal(failing.launches.length, 2, 'no retry');
+  assert.match(failing.supervisor.status().error ?? '', /自动构建没成功[\s\S]*wechat\.ps1 Build/);
+  await failing.supervisor.stop();
+
+  const stale = setup(t);
+  stale.supervisor.start();
+  stale.children[0]!.emit('exit', 3, null);
+  stale.children[1]!.emit('exit', 0, null);
+  stale.children[2]!.emit('exit', 3, null);
+  await wait(60);
+  assert.equal(stale.launches.length, 3, 'built once; building again cannot help');
+  assert.match(stale.supervisor.status().error ?? '', /刚重新构建过，仍然对不上/);
+  await stale.supervisor.restart();
+  assert.equal(stale.launches.length, 4, 'the console restart tries again');
+  assert.equal(stale.supervisor.status().error, null);
+  await stale.supervisor.stop();
+});
+
+test('an exit carries the last thing the adapter said in its log', async t => {
+  const { supervisor, children, dir } = setup(t);
+  writeFileSync(join(dir, 'adapter.log'), '上一次的话\n');
+  supervisor.start();
+  appendFileSync(join(dir, 'adapter.log'), '开始监听所选聊天；Ctrl+C 停止。\r\n微信适配器停止：不能唯一核对微信核心 DLL\r\n');
+  children[0]!.emit('exit', 1, null);
+  assert.equal(supervisor.status().lastExit, 'code 1：微信适配器停止：不能唯一核对微信核心 DLL');
   await supervisor.stop();
 });
