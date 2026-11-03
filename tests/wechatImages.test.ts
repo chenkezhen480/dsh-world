@@ -49,7 +49,7 @@ test('group images are committed before their session event and never become sha
     const { events } = await log.read(0, 128);
     const pictureEvent = events.find(event => event.type === 'user/message' && event.data.source.kind === 'dsh-world-channel-context')!;
     assert.match(JSON.stringify(pictureEvent), new RegExp(digest));
-    assert.deepEqual(extractConversationRecords(pictureEvent, { worldId: 'test', agentPreset: 'test', header: log.header, inheritedEventCount: 0, turn: 1 }), []);
+    assert.deepEqual(extractConversationRecords(pictureEvent, { worldId: 'test', header: log.header, inheritedEventCount: 0, turn: 1 }), []);
     const actualUser = events.find(event => event.type === 'user/message' && event.data.source.kind === 'user')!;
     assert.doesNotMatch(JSON.stringify(actualUser), new RegExp(digest));
   } finally { await log.close(); }
@@ -102,7 +102,7 @@ for (const caption of ['', '这张图里有什么']) test(`private images reach 
   try {
     const { events } = await log.read(0, 128);
     assert.ok(events.some(event => event.type === 'user/message' && JSON.stringify(event).includes(digest)));
-    const records = events.flatMap(event => extractConversationRecords(event, { worldId: 'test', agentPreset: 'test', header: log.header, inheritedEventCount: 0, turn: 1 }));
+    const records = events.flatMap(event => extractConversationRecords(event, { worldId: 'test', header: log.header, inheritedEventCount: 0, turn: 1 }));
     assert.deepEqual(records.filter(record => record.role === 'user').map(record => record.content), caption ? [caption] : []);
     assert.doesNotMatch(JSON.stringify(records), new RegExp(digest));
   } finally { await log.close(); }

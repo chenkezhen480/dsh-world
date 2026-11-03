@@ -36,10 +36,10 @@ export function memoryTools(service: MemoryService, inside: () => boolean): Tool
   return [
     defineTool({
       name: 'memory_find',
-      description: `在我自己的长期记忆里按线索查找：原始聊天（conversation）和日记（diary）。query 是要在原文里照字面找的一小段话（区分大小写，不是搜索语法）；没有 query 就按时间或来源翻页。kinds 限定种类；from / to 是带时区的 ISO 时间，左闭右开（日期请换成当天零点，如 2026-10-30T00:00:00+08:00）；time 的含义看 timeBasis：聊天是发言时间，日记是日记日期，其他文件是它最后改动的时间，不一定是事情发生的时间。sourceId 限定来源；turnId 取同一轮的全部发言。limit 默认 8、最多 100；返回 nextCursor 就用 cursor 翻下一页，返回 cursorExpired 说明资料变了、要重新查。零命中不等于从没发生过：返回里若带 coverage，说明有来源没能读到。每条结果的 text 只是摘录，要看原文用它的 ref 调 memory_read。`,
+      description: `在我自己的长期记忆里按线索查找：原始聊天（conversation）和日记（diary）。query 是要在原文里照字面找的一小段话（区分大小写，不是搜索语法）；没有 query 就按时间或来源翻页。kinds 限定种类；from / to 是带时区的 ISO 时间，左闭右开（日期请换成当天零点，如 2026-10-30T00:00:00+08:00）；time 的含义看 timeBasis：聊天是发言时间，日记是文件名里的日期（文件名没有日期时是它最后改动的时间，不一定是事情发生的时间）。sourceId 限定来源；turnId 取同一轮的全部发言。limit 默认 8、最多 100；返回 nextCursor 就用 cursor 翻下一页，返回 cursorExpired 说明资料变了、要重新查。零命中不等于从没发生过：返回里若带 coverage，说明有来源没能读到。每条结果的 text 只是摘录，要看原文用它的 ref 调 memory_read。`,
       parameters: {
         query: { type: 'string' }, kinds: { type: 'array', items: { type: 'string' } }, from: { type: 'string' }, to: { type: 'string' }, sourceId: { type: 'string' }, turnId: { type: 'string' },
-        linkedTo: { type: 'string' }, history: { type: 'boolean' }, order: { type: 'string' }, limit: { type: 'integer' }, cursor: { type: 'string' },
+        linkedTo: { type: 'string' }, order: { type: 'string' }, limit: { type: 'integer' }, cursor: { type: 'string' },
       },
       output,
       execute: async input => JSON.stringify(compactFind(await checked(() => service.find({ limit: TOOL_FIND_LIMIT, ...(input as Record<string, unknown>) })))),

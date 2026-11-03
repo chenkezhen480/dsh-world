@@ -74,7 +74,7 @@ test('narrowing memory filters old broader archive records without deleting them
     record('home', { sourceSessionId: 'home', turnId: 'home:1', occurredAt: '2026-10-25T01:00:00Z' }),
     record('group', { sourceSessionId: 'family', turnId: 'family:1', occurredAt: '2026-10-26T01:00:00Z' }),
   ]);
-  const turns = await createHistory(store).loadRecentTurns('fish', 200, id => id === 'home');
+  const turns = await createHistory(store).loadRecentTurns(200, id => id === 'home');
   assert.deepEqual(turns.map(turn => turn.turnId), ['home:1']);
   assert.equal(store.stats().records, 2);
 });
@@ -96,7 +96,7 @@ test('workspace injection excludes other workspaces and subagents while home-onl
     else assert.doesNotMatch(request, /WORKSPACE_PRIVATE_MEMORY|我的世界/);
   }
   await runtime.flush();
-  assert.deepEqual((await store.readPage({ worldId: 'fish', limit: 100 })).records.map(row => row.content), ['WORKSPACE_PRIVATE_MEMORY']);
+  assert.deepEqual((await store.readPage({ limit: 100 })).records.map(row => row.content), ['WORKSPACE_PRIVATE_MEMORY']);
   assert.deepEqual(errors, []);
 });
 
@@ -125,7 +125,7 @@ test('restart retires leaked plugin memory from outside and inherited sessions w
     assert.match(request, /ORIGINAL_/);
     assert.ok(handle.agent.session.snapshotEvents().some(event => event.type === 'user/message' && event.data.source.kind === 'dsh-world-history'), 'original durable log retained');
   }
-  assert.ok((await store.readPage({ worldId: 'fish', limit: 100 })).records.some(row => row.content === 'DURABLE_PRIVATE_MEMORY'));
+  assert.ok((await store.readPage({ limit: 100 })).records.some(row => row.content === 'DURABLE_PRIVATE_MEMORY'));
   assert.deepEqual(errors, []);
 });
 
@@ -235,7 +235,7 @@ test('restart discovers cold workspace sessions and replaces an older broad memo
   }
   const source = { prompt: { names: { companion: '鱼', partner: '我' } }, isHome: (id: string) => id === 'home', archiveSession: (id: string) => included.has(id) };
   const broad = createWorldRuntime(ctx, config, store, source); await broad.start();
-  const archived = (await store.readPage({ worldId: 'fish', limit: 100 })).records.map(row => row.content);
+  const archived = (await store.readPage({ limit: 100 })).records.map(row => row.content);
   for (const text of ['home-original', 'family-original', 'different-original']) assert.ok(archived.includes(text), text);
   assert.ok(!archived.includes('foreign-original'));
   const home = agents[0]; home.followup(user('first home request')); await home.whenIdle(); await broad.flush();
@@ -248,5 +248,5 @@ test('restart discovers cold workspace sessions and replaces an older broad memo
   const blocks = requests.at(-1)!.messages.filter(message => message.source?.kind === 'dsh-world-history');
   assert.ok(blocks.length <= 1);
   assert.doesNotMatch(JSON.stringify(blocks), /family-original|different-original|foreign-original/);
-  assert.ok((await store.readPage({ worldId: 'fish', limit: 100 })).records.some(row => row.content === 'family-original'), 'old archive retained');
+  assert.ok((await store.readPage({ limit: 100 })).records.some(row => row.content === 'family-original'), 'old archive retained');
 });

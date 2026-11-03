@@ -38,7 +38,7 @@ test('new words and marked quoted text share one user archive record and the fol
   const log = await ctx.sessionPersistence.open(agent.id, 'read');
   try {
     const { events } = await log.read(0, 128);
-    const records = events.flatMap(event => extractConversationRecords(event, { worldId: 'test', agentPreset: 'test', header: log.header, inheritedEventCount: 0, turn: 1 }));
+    const records = events.flatMap(event => extractConversationRecords(event, { worldId: 'test', header: log.header, inheritedEventCount: 0, turn: 1 }));
     const users = records.filter(record => record.role === 'user');
     assert.equal(users.length, 2);
     assert.match(users[0].content, /^继续讨论这个问题\n\n【引用/);
@@ -77,7 +77,7 @@ test('a private quote of her own sticker admits the image without relaxing curre
   const log = await ctx.sessionPersistence.open(agent.id, 'read');
   try {
     const { events } = await log.read(0, 128);
-    const records = events.flatMap(event => extractConversationRecords(event, { worldId: 'test', agentPreset: 'test', header: log.header, inheritedEventCount: 0, turn: 1 }));
+    const records = events.flatMap(event => extractConversationRecords(event, { worldId: 'test', header: log.header, inheritedEventCount: 0, turn: 1 }));
     const users = records.filter(record => record.role === 'user');
     assert.equal(users.length, 1, 'a quote without new words is still one real user action');
     assert.match(users[0].content, /引用表情包/);

@@ -172,14 +172,14 @@ test('delivery updates the same durable record, survives reopening and rejects s
   const id = await recorder.record({ sessionId: 'home', messageId: 'answer', seq: 10, turn: 1, time: Date.now(), identity,
     messages: [{ type: 'text', text: '第一句' }, { type: 'sticker', stickerId: 'st_hi' }, { type: 'text', text: '最后一句' }] });
   await recorder.receipt({ id, confirmed: 1, status: 'uncertain' });
-  assert.match((await store.readPage({ worldId: 'test', limit: 10 })).records[0].content, /已确认发送 1\/3/);
+  assert.match((await store.readPage({ limit: 10 })).records[0].content, /已确认发送 1\/3/);
   store.close(); store = createArchiveStore(config);
   const restored = createWechatRecorder(store, 'test');
   await restored.receipt({ id, confirmed: 3, status: 'sent' });
   await restored.receipt({ id, confirmed: 3, status: 'sent' });
   await assert.rejects(restored.receipt({ id, confirmed: 1, status: 'uncertain' }));
   await assert.rejects(restored.receipt({ id, confirmed: 4, status: 'sent' }));
-  const records = (await store.readPage({ worldId: 'test', limit: 10 })).records;
+  const records = (await store.readPage({ limit: 10 })).records;
   assert.equal(records.length, 1);
   assert.match(records[0].content, /已确认发送 3\/3/);
   assert.doesNotMatch(records[0].content, /待发送|送达尚未确认/);
@@ -201,7 +201,7 @@ test('non-home group delivery cannot bypass the configured shared archive scope'
   const id = await recorder.record({ sessionId: 'group', messageId: 'group-answer', seq: 5, turn: 1, time: Date.now(), identity,
     messages: [{ type: 'text', text: '只在群里的话' }] });
   await recorder.receipt({ id, confirmed: 1, status: 'sent' });
-  assert.equal((await store.readPage({ worldId: 'test', limit: 10 })).records.length, 0);
+  assert.equal((await store.readPage({ limit: 10 })).records.length, 0);
   assert.deepEqual(store.delivery(id), { status: 'sent', confirmed: 1, total: 1 });
 });
 
@@ -241,6 +241,21 @@ test('WeChat requests use the existing home and keep user-role sender identity',
   assert.deepEqual((sent.source as unknown as { identity: unknown }).identity, identity);
   const event = home.session.snapshotEvents().find(event => event.type === 'user/message' && event.data.id === reply.id);
   assert.ok(event, 'the actual home log contains the message');
+});
+
+test('a plain WeChat message carries one short header and no repeated tool instructions (#token)', async t => {
+  const requests: GenerateOptions[] = [];
+  const { ctx, cleanup } = await hostFixture(t, request => { requests.push(request); return textResponse('好'); });
+  const home = (await ctx.agents.create({ sessionId: SessionId('home'), agentOptions: { provider: 'test', model: 'test' } })).agent;
+  const channel = createWechatHome({ ctx, home: async () => home }); cleanup.push(channel.stop);
+  const ken = { channel: 'wechat', accountId: 'wxid_bot', conversationType: 'private' as const, conversationId: 'wxid_ken', speakerId: 'wechat:wxid_ken', speakerName: 'Ken', platformMessageId: 'message_0.db:7' };
+  const reply = await channel.ask('在吗', ken);
+  const sent = requests[0].messages.find(message => message.id === reply.id)!;
+  assert.deepEqual(sent.content, [{ type: 'text', text: '【微信「Ken」，chatId wxid_ken】\n在吗' }]);
+  assert.equal(requests[0].messages.some(message => message.source?.kind === 'dsh-world-channel-context'), false);
+  await channel.ask('@她', identity);
+  const group = requests[1].messages.findLast(message => message.role === 'user' && message.source?.kind === 'user')!;
+  assert.deepEqual(group.content, [{ type: 'text', text: '【微信群「family@chatroom」 妈妈 说，chatId family@chatroom】\n@她' }]);
 });
 
 test('WeChat conversations wait their turn and do not receive each other\'s reply', async t => {

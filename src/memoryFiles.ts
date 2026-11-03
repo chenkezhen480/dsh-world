@@ -4,8 +4,8 @@ import { errorText } from './faults.ts';
 import { formatLocalTime } from './timeContext.ts';
 import { extractLinks, fileRef, localDayStart, type MemoryKind, type TimeBasis } from './memoryStore.ts';
 
-/** Where she keeps what she writes. A file authorizes that file alone; a directory its markdown and text files, a few levels deep. */
-export interface MemorySources { diaryDir?: string; selfFile?: string; focusFile?: string; knowledgeDir?: string }
+/** Where she keeps what she writes for memory to find: her diary directory's markdown and text files. 我是谁 is not here; it is placed whole in the world prompt. */
+export interface MemorySources { diaryDir?: string }
 export type AuthorKind = Exclude<MemoryKind, 'conversation'>;
 /** One file as she wrote it, with the time it has and the ref that is bound to this exact text. */
 export interface AuthorDoc {
@@ -14,7 +14,6 @@ export interface AuthorDoc {
 }
 
 const MAX_FILE_BYTES = 2 * 1024 * 1024, MAX_FILES_PER_DIR = 2000;
-const DIR_DEPTH: Record<'diary' | 'knowledge', number> = { diary: 1, knowledge: 4 };
 
 const sameFile = (a: { size: number; mtimeMs: number }, b: { size: number; mtimeMs: number }) => a.size === b.size && a.mtimeMs === b.mtimeMs;
 /** Windows compares paths without case. */
@@ -45,33 +44,24 @@ export async function readStable(path: string, between?: () => Promise<void>): P
   }
 }
 type Listing = { kind: 'ok'; files: { path: string; id: string }[] } | { kind: 'missing' } | { kind: 'failed'; message: string };
-/** Lists a configured directory only: real paths must stay inside it, so links cannot lead out, and nothing is followed from file contents. */
-async function listDirectory(root: string, depth: number): Promise<Listing> {
+/** The diary's own markdown and text files, one level: real paths must stay inside it, so links cannot lead out, and nothing is followed from file contents. */
+async function listDirectory(root: string): Promise<Listing> {
   let realRoot: string;
   try { realRoot = await realpath(root); }
   catch (error) { return (error as NodeJS.ErrnoException).code === 'ENOENT' ? { kind: 'missing' } : { kind: 'failed', message: errorText(error) }; }
   const files: { path: string; id: string }[] = [];
-  const visited = new Set<string>();
-  async function walk(directory: string, prefix: string, level: number): Promise<void> {
-    const real = await realpath(directory);
-    if (!within(realRoot, real) || visited.has(normalized(real))) return;
-    visited.add(normalized(real));
-    for (const entry of await readdir(directory, { withFileTypes: true })) {
-      if (entry.name.startsWith('.')) continue;
-      const path = join(directory, entry.name);
+  try {
+    for (const entry of await readdir(root, { withFileTypes: true })) {
+      if (entry.name.startsWith('.') || !/\.(md|txt)$/i.test(entry.name)) continue;
+      const path = join(root, entry.name);
       let target;
       try { target = await realpath(path); } catch { continue; }
-      if (!within(realRoot, target)) continue;
-      const info = await stat(path).catch(() => undefined);
-      if (info?.isDirectory() && level < depth) await walk(path, `${prefix}${entry.name}/`, level + 1);
-      else if (info?.isFile() && /\.(md|txt)$/i.test(entry.name)) {
-        if (files.length >= MAX_FILES_PER_DIR) throw new Error(`文件超过 ${MAX_FILES_PER_DIR} 个，后面的没有读取`);
-        files.push({ path, id: `${prefix}${entry.name}` });
-      }
+      if (!within(realRoot, target) || !(await stat(path).catch(() => undefined))?.isFile()) continue;
+      if (files.length >= MAX_FILES_PER_DIR) throw new Error(`文件超过 ${MAX_FILES_PER_DIR} 个，后面的没有读取`);
+      files.push({ path, id: entry.name });
     }
-  }
-  try { await walk(root, '', 1); return { kind: 'ok', files }; }
-  catch (error) { return { kind: 'failed', message: errorText(error) }; }
+    return { kind: 'ok', files };
+  } catch (error) { return { kind: 'failed', message: errorText(error) }; }
 }
 
 interface Cached { kind: AuthorKind; path: string; stat: string; mtimeMs: number; content: string; doc?: AuthorDoc }
@@ -98,8 +88,8 @@ export function createAuthorFiles(sources: MemorySources, timeZone: string) {
     if (result.kind === 'missing' || !result.content.trim()) cache.delete(sourceId);
     else cache.set(sourceId, { kind, path, stat: result.stat, mtimeMs: result.mtimeMs, content: result.content });
   }
-  async function loadDirectory(kind: 'diary' | 'knowledge', root: string): Promise<void> {
-    const listing = await listDirectory(root, DIR_DEPTH[kind]);
+  async function loadDirectory(kind: AuthorKind, root: string): Promise<void> {
+    const listing = await listDirectory(root);
     const key = `dir:${kind}`;
     if (listing.kind === 'failed') { failures.set(key, `${root}：${listing.message}`); return; }
     failures.delete(key);
@@ -112,14 +102,9 @@ export function createAuthorFiles(sources: MemorySources, timeZone: string) {
     for (const [sourceId, entry] of cache) if (entry.kind === kind && !present.has(sourceId)) { cache.delete(sourceId); failures.delete(sourceId); }
   }
   async function refreshOnce(): Promise<void> {
-    for (const [kind, path] of [['self', sources.selfFile], ['focus', sources.focusFile]] as const) {
-      if (!path) continue;
-      try { await load(kind, kind, path); } catch (error) { failures.set(kind, `${path}：${errorText(error)}`); }
-    }
-    for (const [kind, root] of [['diary', sources.diaryDir], ['knowledge', sources.knowledgeDir]] as const) {
-      if (!root) continue;
-      try { await loadDirectory(kind, root); } catch (error) { failures.set(`dir:${kind}`, `${root}：${errorText(error)}`); }
-    }
+    const root = sources.diaryDir;
+    if (!root) return;
+    try { await loadDirectory('diary', root); } catch (error) { failures.set('dir:diary', `${root}：${errorText(error)}`); }
   }
   /** Calls arriving during a refresh join it and make it run once more, so a file saved just now is never missed. */
   function refresh(): Promise<void> {

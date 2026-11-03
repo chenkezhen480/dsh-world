@@ -11,6 +11,7 @@ import type { MemoryArchiveScope } from '../archiveSelection.ts';
 import type { ConsoleSources } from './routes.ts';
 import type { HomeApplyState } from './homeApply.ts';
 import type { PhotoStore } from '../life/photos.ts';
+import type { DailySchedule } from '../life/types.ts';
 import type { MemoryService } from '../memory.ts';
 
 const SNAPSHOT_TTL_MS = 5000;
@@ -39,6 +40,8 @@ export interface SnapshotDeps {
   memoryTurns(): number;
   selectedArchiveScope?(): MemoryArchiveScope;
   compactAfterReview?(): boolean;
+  /** The evening look back and the morning wake, with what an empty field goes back to; absent without the life line. */
+  schedule?(): DailySchedule & { defaults: DailySchedule };
   workspacePermissions?(): { defaultPermission: string; options: { value: string; name: string; description?: string }[] };
   /** The WeChat module's state; undefined while it is off or her world is stopped. */
   wechat?(): unknown;
@@ -63,7 +66,7 @@ export function consoleSources(deps: SnapshotDeps): ConsoleSources & { invalidat
     const life = deps.life()?.snapshot();
     const home = life?.homeSessionId ? deps.ctx.agents.get(SessionId(life.homeSessionId)) : undefined;
     const window = deps.memoryTurns();
-    const turns = await history.loadRecentTurns(config.worldId, window, deps.archiveSession);
+    const turns = await history.loadRecentTurns(window, deps.archiveSession);
     const archiveScope = config.archiveScope ?? 'workspace';
     const selectedArchiveScope = deps.selectedArchiveScope?.() ?? archiveScope;
     // Never let a dead bridge take the whole console down with it: a broken QQ module shows as "not running".
@@ -74,6 +77,7 @@ export function consoleSources(deps: SnapshotDeps): ConsoleSources & { invalidat
       budget: { daily: deps.dailyBudget() ?? null, today: life?.spend ?? null },
       workspace: deps.workspacePermissions?.() ?? null,
       compactAfterReview: deps.compactAfterReview?.() ?? null,
+      schedule: deps.schedule?.() ?? null,
       life: life ? { homeSessionId: life.homeSessionId, status: home ? home.status : 'cold', alarm: life.alarm, review: life.review, recentWakes: lifeStore?.wakes().slice(-5).reverse() ?? [] } : null,
       homeApply: deps.homeApply?.() ?? null,
       health: [...(life?.faults ?? []), ...deps.faults()],

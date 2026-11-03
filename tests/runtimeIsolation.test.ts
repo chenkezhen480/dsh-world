@@ -7,7 +7,7 @@ import { createArchiveStore } from '../src/store.ts';
 import { hostFixture, textResponse } from './hostFixture.ts';
 
 const user = (text: string) => createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text }] });
-test('hot reload isolates an active corrupt session, keeps healthy turns running and retries the repaired session', async t => {
+test('a session whose log cannot be read keeps talking with the fault shown, and what it said is archived once the log reads again', async t => {
   const requests: GenerateOptions[] = [];
   const { ctx, root, cleanup, errors } = await hostFixture(t, request => { requests.push(request); return textResponse('healthy reply'); });
   const config = { worldId: 'fish', agentPreset: 'companion', timeZone: 'UTC' };
@@ -24,16 +24,20 @@ test('hot reload isolates an active corrupt session, keeps healthy turns running
   cleanup.push(() => { persistence.open = open; });
   const world = createWorldRuntime(ctx, config, store); cleanup.push(() => world.stop());
   await world.start();
-  assert.ok(world.faults().some(message => /bad.*记忆初始化/.test(message)));
+  assert.ok(world.faults().some(message => /bad.*归档未完成/.test(message)), world.faults().join('|'));
   good.followup(user('healthy after reload')); await good.whenIdle(); await world.flush();
   assert.equal(requests.length, 2); assert.equal(errors.length, 0);
-  assert.ok((await store.readPage({ worldId: 'fish', limit: 10 })).records.some(record => record.content === 'healthy after reload'));
-  bad.followup(user('still broken')); await bad.whenIdle();
-  assert.equal(requests.length, 2, 'a broken session must fail its own turn rather than run without memory');
-  assert.equal(errors.length, 1);
+  assert.ok((await store.readPage({ limit: 10 })).records.some(record => record.content === 'healthy after reload'));
+  bad.followup(user('still broken')); await bad.whenIdle(); await world.flush();
+  assert.equal(requests.length, 3, 'a broken archive does not stop her talking');
+  assert.equal(errors.length, 0);
+  assert.ok(!(await store.readPage({ limit: 10 })).records.some(record => record.content === 'still broken'));
+  assert.ok(world.faults().some(message => /bad.*归档未完成/.test(message)));
   broken = false;
   bad.followup(user('repaired now')); await bad.whenIdle(); await world.flush();
-  assert.equal(requests.length, 3); assert.deepEqual(world.faults(), []);
+  assert.equal(requests.length, 4); assert.deepEqual(world.faults(), []);
+  const contents = (await store.readPage({ limit: 20 })).records.map(record => record.content);
+  for (const words of ['before reload', 'still broken', 'repaired now']) assert.equal(contents.filter(content => content === words).length, 1, words);
 });
 
 test('sessions that can never carry her world are not read, tracked or reported', async t => {
@@ -76,10 +80,33 @@ test('a new world session the store cannot read yet is still created, and its me
   home.followup(user('hello')); await home.whenIdle(); await world.flush();
   assert.equal(requests.length, 1); assert.equal(errors.length, 0);
   assert.deepEqual(world.faults(), []);
-  assert.ok((await store.readPage({ worldId: 'fish', limit: 10 })).records.some(record => record.content === 'hello'));
+  assert.ok((await store.readPage({ limit: 10 })).records.some(record => record.content === 'hello'));
 });
 
-test('a failing memory setup never fails the host\'s session creation; the session\'s own first turn reports it', async t => {
+test('an archive that cannot be written does not stop her talking; what she said is archived once it can be written again', async t => {
+  const requests: GenerateOptions[] = [];
+  const { ctx, root, cleanup } = await hostFixture(t, request => { requests.push(request); return textResponse('reply'); });
+  const config = { worldId: 'fish', agentPreset: 'companion', timeZone: 'UTC' };
+  const store = createArchiveStore({ ...config, root }); cleanup.push(() => store.close());
+  const commitRecords = store.commitRecords;
+  let broken = false;
+  store.commitRecords = (records, progress) => broken ? Promise.reject(new Error('disk full')) : commitRecords(records, progress);
+  const world = createWorldRuntime(ctx, config, store); cleanup.push(() => world.stop());
+  await world.start();
+  const home = (await ctx.agents.create({ sessionId: SessionId('home'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } })).agent;
+  broken = true;
+  home.followup(user('while broken')); await home.whenIdle();
+  assert.equal(requests.length, 1);
+  assert.ok(world.faults().some(message => /home.*disk full/.test(message)), world.faults().join('|'));
+  broken = false;
+  home.followup(user('after repair')); await home.whenIdle(); await world.flush();
+  assert.equal(requests.length, 2); assert.deepEqual(world.faults(), []);
+  const records = (await store.readPage({ limit: 10 })).records;
+  for (const words of ['while broken', 'after repair']) assert.equal(records.filter(record => record.content === words).length, 1, words);
+  assert.equal(records.filter(record => record.role === 'assistant').length, 2);
+});
+
+test('a session whose log cannot be read is still created and talks; the fault names it', async t => {
   const requests: GenerateOptions[] = [];
   const { ctx, root, cleanup } = await hostFixture(t, request => { requests.push(request); return textResponse('reply'); });
   const config = { worldId: 'fish', agentPreset: 'companion', timeZone: 'UTC' };
@@ -95,6 +122,6 @@ test('a failing memory setup never fails the host\'s session creation; the sessi
   const home = (await ctx.agents.create({ sessionId: SessionId('home'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } })).agent;
   assert.equal(ctx.agents.get(SessionId('home')), home, 'the session exists');
   home.followup(user('hello')); await home.whenIdle();
-  assert.equal(requests.length, 0, 'it does not run without her memory');
-  assert.ok(world.faults().some(message => /home.*记忆初始化失败/.test(message)));
+  assert.equal(requests.length, 1);
+  assert.ok(world.faults().some(message => /home.*归档未完成/.test(message)), world.faults().join('|'));
 });

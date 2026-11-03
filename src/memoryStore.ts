@@ -3,7 +3,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { formatLocalTime } from './timeContext.ts';
 import type { ConversationRecord } from './types.ts';
 
-export const MEMORY_KINDS = ['conversation', 'diary', 'self', 'knowledge', 'focus'] as const;
+export const MEMORY_KINDS = ['conversation', 'diary'] as const;
 export type MemoryKind = typeof MEMORY_KINDS[number];
 /** `message`: when the line was said. `diaryDate`: the day in a diary's file name. `fileObserved`: when the file last changed. */
 export type TimeBasis = 'message' | 'diaryDate' | 'fileObserved';
@@ -28,8 +28,7 @@ export interface MemoryItem {
 }
 export interface FindParams {
   query?: string; kinds?: readonly MemoryKind[]; fromMs?: number; toMs?: number; sourceId?: string; turnId?: string; linkedTo?: string;
-  /** Only the current content of a file exists, so this changes nothing; it is accepted so older callers keep working. */
-  history: boolean; order: 'newest' | 'oldest'; limit: number; cursor?: string;
+  order: 'newest' | 'oldest'; limit: number; cursor?: string;
 }
 export interface ReadResult {
   ref: string; sourceId: string; kind: MemoryKind; version: string; title: string; time: string; timeBasis: TimeBasis; current: boolean;

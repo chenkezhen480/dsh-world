@@ -160,14 +160,14 @@ test('a corrupt later page preserves committed words and resumes without duplica
   await archive.catchUp(); await archive.flush();
   assert.equal(archive.faults().length, 1);
   assert.equal(store.progress('a').nextSeq, 2, 'the failed page must not advance progress');
-  assert.equal((await store.readPage({ worldId: 'fish', limit: 10 })).records.length, 2, 'healthy and already committed words survive');
+  assert.equal((await store.readPage({ limit: 10 })).records.length, 2, 'healthy and already committed words survive');
   assert.deepEqual(reads, [0, 2]);
   broken = false; reads.length = 0;
   await archive.schedule('a'); await archive.flush();
   assert.deepEqual(reads, [2, 3]);
   assert.equal(store.progress('a').nextSeq, 3);
   assert.deepEqual(archive.faults(), []);
-  assert.equal((await store.readPage({ worldId: 'fish', limit: 10 })).records.length, 3);
+  assert.equal((await store.readPage({ limit: 10 })).records.length, 3);
   broken = true;
   await archive.schedule('a'); await archive.flush();
   assert.equal(archive.faults().length, 1);
@@ -175,7 +175,7 @@ test('a corrupt later page preserves committed words and resumes without duplica
   await archive.schedule('a'); await archive.flush();
   assert.deepEqual(archive.faults(), []);
   assert.equal(store.progress('a').nextSeq, 0);
-  assert.equal((await store.readPage({ worldId: 'fish', limit: 10 })).records.length, 3);
+  assert.equal((await store.readPage({ limit: 10 })).records.length, 3);
 });
 
 test('corrupt session logs are isolated without treating unrelated errors as corruption', () => {

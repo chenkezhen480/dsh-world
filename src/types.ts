@@ -78,11 +78,9 @@ export interface ConversationRecord extends Partial<SpeakerIdentity> {
 }
 export interface ArchiveScope {
   worldId: string;
-  agentPreset: string;
   header: SessionHeader;
   inheritedEventCount: number;
   turn: number;
-  archiveScope?: MemoryArchiveScope;
 }
 export interface ArchiveCursor {
   date: string;
@@ -91,7 +89,6 @@ export interface ArchiveCursor {
   maxSequence: number;
 }
 export interface PageQuery {
-  worldId: string;
   before?: ArchiveCursor;
   limit: number;
 }
@@ -106,5 +103,5 @@ export interface ConversationTurn {
 }
 export interface ArchiveReader {
   readPage(query: PageQuery): Promise<RecordPage>;
-  readTurn(worldId: string, turnId: string, afterSeq?: number, limit?: number): Promise<ConversationRecord[]>;
+  readTurn(turnId: string, afterSeq?: number, limit?: number): Promise<ConversationRecord[]>;
 }

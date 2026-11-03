@@ -4,8 +4,11 @@ import { ALARM_MARK, exampleTime, fillMessage, readAlarmMessages, type AlarmMess
 
 const MIN_ALARM_MS = 60_000;
 const LATE_NOTICE_MS = 2 * 60_000;
-/** Every evening at this local time she looks back on the day. */
-export const REVIEW_TIME = '23:00';
+/** The local time of her evening look back unless the console sets another. */
+export const DEFAULT_REVIEW_TIME = '23:00';
+/** A local time of day, HH:MM on the 24-hour clock. */
+export const CLOCK_TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
+export const validClockTime = (value: unknown): value is string => typeof value === 'string' && CLOCK_TIME.test(value);
 
 export function resolveAlarmTime(input: { at?: string; after_minutes?: number }, now: Date, timeZone = 'UTC'): Date {
   if ((input.at === undefined) === (input.after_minutes === undefined)) throw new Error('请只给 at 或 after_minutes 其中一个');
@@ -71,10 +74,21 @@ export function greetingText(kind: 'arrival' | 'return', timeZone: string, fallb
   const base = { ...extra, timeZone, fallbackWakeTime };
   return withTail(fillMessage(messages, kind === 'arrival' ? '第一次到家' : '重新开始', base), messages, base);
 }
-/** The next evening look back after `now`, and the day it looks back on. */
-export function nextReview(now: Date, timeZone: string): Review {
-  const at = nextLocalTime(now, REVIEW_TIME, timeZone);
-  return { at: at.toISOString(), day: formatLocalTime(at, timeZone).slice(0, 10) };
+const dayBefore = (day: string) => new Date(Date.parse(`${day}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
+/** The next look back after `now` at local `time`, and the day it looks back on: one before noon looks back on the day before. */
+export function nextReview(now: Date, timeZone: string, time = DEFAULT_REVIEW_TIME): Review {
+  const at = nextLocalTime(now, time, timeZone);
+  const date = formatLocalTime(at, timeZone).slice(0, 10);
+  return { at: at.toISOString(), day: time < '12:00' ? dayBefore(date) : date };
+}
+/**
+ * The look back on `day` once its time has changed to `time`: no day is looked back on twice or skipped. Moved
+ * earlier than now, the day's look back is due at once.
+ */
+export function reviewOf(day: string, now: Date, timeZone: string, time: string): Review {
+  let review = nextReview(now, timeZone, time);
+  while (review.day < day) review = nextReview(new Date(review.at), timeZone, time);
+  return review.day > day ? { at: now.toISOString(), day } : review;
 }
 /** Where her day is written down; a file that does not exist is left out. */
 export interface ReviewFiles { conversations?: string; activity?: string; diaryDir: string; selfFile: string; snapshot?: string }

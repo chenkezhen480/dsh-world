@@ -6,7 +6,7 @@ const pathKeys = new Set(['path', 'file_path', 'filePath', 'paths', 'cwd', 'dire
 const clip = (text: string) => Array.from(text.replace(/\s+/g, ' ').trim()).slice(0, 160).join('');
 
 /** Path strings under pathKeys at any depth, so nested operation arrays are covered. */
-function collectPaths(value: unknown, keyed: boolean, out: string[]): string[] {
+export function collectPaths(value: unknown, keyed: boolean, out: string[]): string[] {
   if (typeof value === 'string') { if (keyed) out.push(value); }
   else if (Array.isArray(value)) for (const item of value) collectPaths(item, keyed, out);
   else if (value && typeof value === 'object') for (const [key, item] of Object.entries(value)) collectPaths(item, keyed || pathKeys.has(key), out);

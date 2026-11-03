@@ -385,6 +385,30 @@ window.__ModuleLoader__.load({
           ' ', props.on ? '已开启' : '已关闭'),
         h(Status, { msg: msg }))
     }
+    /** 每日回顾和早上兜底的时间：留空恢复默认；保存后已排好的回顾和早上闹钟立刻改到新时间。 */
+    function Schedule(props) {
+      var s = props.schedule
+      var reviewState = useState(s.review), review = reviewState[0], setReview = reviewState[1]
+      var wakeState = useState(s.wake), wake = wakeState[0], setWake = wakeState[1]
+      var msgState = useState(''), msg = msgState[0], setMsg = msgState[1]
+      function save() {
+        var values = [String(review).trim(), String(wake).trim()]
+        if (values.some(function (v) { return v !== '' && !/^([01]\d|2[0-3]):[0-5]\d$/.test(v) })) { setMsg('请填 HH:MM 格式的时间（00:00–23:59），留空恢复默认'); return }
+        post('schedule', { review: values[0] || null, wake: values[1] || null }).then(function () {
+          if (!values[0]) setReview(s.defaults.review); if (!values[1]) setWake(s.defaults.wake)
+          setMsg('已保存。已排好的回顾和早上闹钟已改到新时间，她自己定的闹钟不变。')
+          if (props.onSaved) props.onSaved()
+        }, failedTo(setMsg))
+      }
+      return h(Card, { title: '作息' },
+        h('div', { className: 'dw-muted' }, '每日回顾：她回头看一天、写日记的时间，定在中午以前就回顾前一天。早上：她没定闹钟时醒来的时间。留空恢复默认（回顾 ' + s.defaults.review + '，早上 ' + s.defaults.wake + '）。'),
+        h('div', { className: 'dw-setting' },
+          h('label', null, '每日回顾 ', h('input', { type: 'time', 'aria-label': '每日回顾时间', value: review, onChange: function (e) { setReview(e.target.value); setMsg('') } })),
+          h('label', null, '早上 ', h('input', { type: 'time', 'aria-label': '早上醒来时间', value: wake, onChange: function (e) { setWake(e.target.value); setMsg('') } })),
+          h('button', { className: 'dw-btn', onClick: save }, '保存')),
+        h('div', { className: 'dw-muted' }, '她看到的工具说明里写的早上时间，要等新开的会话或重启 DSH 后才更新。'),
+        h(Status, { msg: msg }))
+    }
     /** 微信：适配器每约 2 秒来问一次，最近一次来问的时间就是连接状态；两个读取参数在它下次来问时同步。 */
     function Wechat(props) {
       var w = props.wechat, zone = props.zone
@@ -643,6 +667,7 @@ window.__ModuleLoader__.load({
           h(Budget, { budget: snap.budget, onSaved: props.refresh }),
           snap.workspace ? h(WorkspacePermission, { workspace: snap.workspace, onSaved: props.refresh }) : null,
           typeof snap.compactAfterReview === 'boolean' ? h(CompactAfterReview, { on: snap.compactAfterReview, onSaved: props.refresh }) : null,
+          snap.schedule ? h(Schedule, { schedule: snap.schedule, onSaved: props.refresh }) : null,
           snap.modules && (snap.modules.wechat.available || snap.modules.qq.available) ? h(Modules, { modules: snap.modules, running: snap.running, onSaved: props.refresh }) : null))
     }
     function Records(props) {
@@ -843,7 +868,7 @@ window.__ModuleLoader__.load({
         return ctx.slots.register({ name: 'settings.section', id: 'world-console', order: 28, label: '世界控制台' }, function () { return h(Console) })
       })
     }
-    Object.defineProperty(exports, '__test', { value: { MemorySearch: MemorySearch, latest: latest, searchMemory: searchMemory, memoryQuery: memoryQuery, dayStartIso: dayStartIso, WorkspacePermission: WorkspacePermission, CompactAfterReview: CompactAfterReview, Modules: Modules, HomeApply: HomeApply, PhotoAlbum: PhotoAlbum, Wechat: Wechat, Activity: Activity, Diary: Diary, Qq: Qq, Panel: Panel, View: View, Overview: Overview, PersonaEditor: PersonaEditor, PromptEditor: PromptEditor, loadSnapshot: loadSnapshot, renderPersona: renderPersona }, enumerable: false })
+    Object.defineProperty(exports, '__test', { value: { MemorySearch: MemorySearch, latest: latest, searchMemory: searchMemory, memoryQuery: memoryQuery, dayStartIso: dayStartIso, WorkspacePermission: WorkspacePermission, CompactAfterReview: CompactAfterReview, Schedule: Schedule, Modules: Modules, HomeApply: HomeApply, PhotoAlbum: PhotoAlbum, Wechat: Wechat, Activity: Activity, Diary: Diary, Qq: Qq, Panel: Panel, View: View, Overview: Overview, PersonaEditor: PersonaEditor, PromptEditor: PromptEditor, loadSnapshot: loadSnapshot, renderPersona: renderPersona }, enumerable: false })
     return exports
   },
 })

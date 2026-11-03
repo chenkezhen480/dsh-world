@@ -28,6 +28,7 @@ function fakeActions() {
     setArchiveScope: scope => { calls.push(`scope:${scope}`); return scope === 'workspace'; },
     setWorkspacePermission: permission => { calls.push(`permission:${permission}`); },
     setCompactAfterReview: on => { calls.push(`compact-after-review:${on}`); },
+    setSchedule: next => { calls.push(`schedule:${JSON.stringify(next)}`); },
     setModules: async modules => { calls.push(`modules:${JSON.stringify(modules)}`); return undefined; },
     restartWechatAdapter: async () => { calls.push('adapter-restart'); return true; },
     setWechatSettings: next => { calls.push(`wechat:${JSON.stringify(next)}`); },
@@ -104,6 +105,26 @@ test('the compact-after-review switch is a boolean write that survives a restart
   power.setCompactAfterReview(true);
   assert.equal(createWorldSwitch(dir).compactAfterReview(), true);
   assert.ok(!('compactAfterReview' in JSON.parse(readFileSync(join(dir, 'world.json'), 'utf8'))), 'on is the absence of the key');
+});
+
+test('the review and morning times are HH:MM writes that survive a restart; empty goes back to 23:00 and the configured morning', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'dw-schedule-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const { actions, calls } = fakeActions();
+  const post = (body: Record<string, unknown>) => handleConsole(sources, actions, { method: 'POST', url: '/dsh-world/console/schedule', write: true, body });
+  assert.equal((await post({ review: '00:30', wake: '07:15' })).status, 200);
+  assert.equal((await post({ wake: null })).status, 200);
+  for (const bad of [{}, { review: '24:00' }, { review: '9:00' }, { wake: '07:60' }, { wake: 730 }, { review: '' }]) assert.equal((await post(bad)).status, 400, JSON.stringify(bad));
+  assert.deepEqual(calls, ['schedule:{"review":"00:30","wake":"07:15"}', 'schedule:{"wake":null}']);
+  const power = createWorldSwitch(dir, 'workspace', '08:00');
+  assert.deepEqual([power.reviewTime(), power.wakeTime()], ['23:00', '08:00'], 'a world that never set them keeps 23:00 and the configured morning');
+  power.setSchedule({ review: '00:30', wake: '07:15' });
+  const again = createWorldSwitch(dir, 'workspace', '08:00');
+  assert.deepEqual([again.reviewTime(), again.wakeTime()], ['00:30', '07:15']);
+  again.setSchedule({ wake: null });
+  assert.deepEqual([again.reviewTime(), again.wakeTime()], ['00:30', '08:00'], 'a field left out stays');
+  again.setSchedule({ review: '23:00' });
+  const stored = JSON.parse(readFileSync(join(dir, 'world.json'), 'utf8'));
+  assert.ok(!('reviewTime' in stored) && !('wakeTime' in stored), 'the defaults are the absence of the keys');
 });
 
 test('workspace permission writes accept the host catalog and reject invalid or unauthorized requests without changing settings', async t => {
@@ -335,30 +356,29 @@ test('memory lookups reach the console through the same service as the tools: pa
   const root = mkdtempSync(join(tmpdir(), 'dw-console-memory-'));
   const store = createArchiveStore({ root, worldId: 'w', timeZone: 'Asia/Seoul', agentPreset: 'companion' });
   t.after(() => { store.close(); rmSync(root, { recursive: true, force: true }); });
-  const knowledgeDir = join(root, '认识'); mkdirSync(knowledgeDir);
-  writeFileSync(join(knowledgeDir, '潮汐.md'), '潮汐跟月亮有关');
-  const longTerm = createMemory({ store: store.memory, timeZone: 'Asia/Seoul', sources: { knowledgeDir }, visible: id => id === 'home' });
+  const diaryDir = join(root, '日记'); mkdirSync(diaryDir);
+  writeFileSync(join(diaryDir, '潮汐.md'), '潮汐跟月亮有关');
+  const longTerm = createMemory({ store: store.memory, timeZone: 'Asia/Seoul', sources: { diaryDir }, visible: id => id === 'home' });
   await store.commitRecords(['1', '2', '3'].map(n => record(`a${n}`, { sourceSessionId: 'home', turnId: 'home:1', sourceSeq: Number(n), content: `第${n}句 潮汐`, occurredAt: `2026-10-23T12:0${n}:00.000Z` })).concat(record('g1', { sourceSessionId: 'group', content: '群里的潮汐' })));
   const src = consoleSources({
     ctx: { agents: { get: () => undefined } } as never, config: { worldId: 'w', timeZone: 'Asia/Seoul' } as never, archive: store as never, longTerm,
     names: () => ({ companion: '小鱼', partner: '伙伴' }), life: () => undefined, diaryDir: join(root, 'diary'), running: () => false, dailyBudget: () => undefined, memoryTurns: () => 200, faults: () => [],
   });
   const find = (query: string) => handleConsole(src, fakeActions().actions, { method: 'GET', url: `/dsh-world/console/memory/find?${query}`, write: false });
-  const first = await find('query=' + encodeURIComponent('潮汐') + '&kinds=conversation,knowledge&limit=2');
+  const first = await find('query=' + encodeURIComponent('潮汐') + '&kinds=conversation,diary&limit=2');
   const page = first.body as { items: { ref: string; sourceId: string; excerpt: string; kind: string }[]; nextCursor: string; coverage: { state: string } };
   assert.equal(first.status, 200); assert.equal(page.items.length, 2); assert.equal(page.coverage.state, 'ready');
   assert.ok(page.items.every(item => item.sourceId !== 'chat:group'), 'the group line is out of scope');
-  const second = (await find(`query=${encodeURIComponent('潮汐')}&kinds=conversation,knowledge&limit=2&cursor=${encodeURIComponent(page.nextCursor)}`)).body as { items: unknown[]; nextCursor?: string };
+  const second = (await find(`query=${encodeURIComponent('潮汐')}&kinds=conversation,diary&limit=2&cursor=${encodeURIComponent(page.nextCursor)}`)).body as { items: unknown[]; nextCursor?: string };
   assert.equal(second.items.length, 2); assert.equal(second.nextCursor, undefined);
   assert.equal((await find(`query=${encodeURIComponent('潮汐')}&limit=2&cursor=${encodeURIComponent(page.nextCursor)}`)).status, 409, 'a cursor for another query has expired');
   assert.deepEqual((await find('limit=0')).status, 400); assert.equal((await find('limit=abc')).status, 400); assert.equal((await find('from=2026-10-23')).status, 400);
   assert.equal(((await find('limit=0')).body as { code: string }).code, 'invalidQuery');
   assert.equal((await find('turnId=home:1&order=oldest')).status, 200);
-  assert.equal(((await find('kinds=knowledge&history=1')).body as { items: unknown[] }).items.length, 1, 'history is accepted and changes nothing');
   const read = await handleConsole(src, fakeActions().actions, { method: 'GET', url: `/dsh-world/console/memory/read?ref=${encodeURIComponent(page.items[0]!.ref)}&limit=3`, write: false });
   assert.equal(read.status, 200); assert.equal((read.body as { content: string }).content.length > 0, true);
   assert.equal((await handleConsole(src, fakeActions().actions, { method: 'GET', url: '/dsh-world/console/memory/read?ref=junk', write: false })).status, 400);
-  assert.equal((await handleConsole(src, fakeActions().actions, { method: 'GET', url: '/dsh-world/console/memory/read?ref=' + encodeURIComponent('m1.' + Buffer.from('["a","knowledge:nope.md","abc"]').toString('base64url')), write: false })).status, 404);
+  assert.equal((await handleConsole(src, fakeActions().actions, { method: 'GET', url: '/dsh-world/console/memory/read?ref=' + encodeURIComponent('m1.' + Buffer.from('["a","diary:nope.md","abc"]').toString('base64url')), write: false })).status, 404);
   assert.equal((await handleConsole(sources, fakeActions().actions, { method: 'GET', url: '/dsh-world/console/memory/find', write: false })).status, 404, 'a console without long-term memory says so');
   assert.equal((await handleConsole(src, fakeActions().actions, { method: 'POST', url: '/dsh-world/console/memory/find', write: true, body: {} })).status, 404, 'lookups are reads only');
   const snapshot = await src.snapshot() as { memory: { index: { state: string; failures: unknown[] } } };

@@ -19,7 +19,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools';
 import { createHomeApply } from '../src/console/homeApply.ts';
 
 const config = { worldId: 'fish', agentPreset: 'companion', timeZone: 'Asia/Seoul' };
-const life = { worldDir: 'W', roomDir: 'R', diaryDir: 'D', selfFile: 'S', fallbackWakeTime: '07:30', timeZone: 'UTC' };
+const life = { worldDir: 'W', roomDir: 'R', diaryDir: 'D', selfFile: 'S', schedule: () => ({ review: '23:00', wake: '07:30' }), timeZone: 'UTC' };
 const names = { companion: '小鱼', partner: '伙伴' };
 const shipped = readTemplate(undefined).text;
 const user = (text: string) => createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text }] });
@@ -127,7 +127,7 @@ test('every world session carries the world prompt in its system prompt; templat
   assert.ok(!systemOf(requests.at(-1)!).includes('WORLD_INTRO'), 'sessions outside the world are untouched');
 
   await world.flush();
-  const archived = (await store.readPage({ worldId: 'fish', limit: 100 })).records.map(r => r.content).join('\n');
+  const archived = (await store.readPage({ limit: 100 })).records.map(r => r.content).join('\n');
   assert.ok(!archived.includes('WORLD_INTRO') && !archived.includes('最近有点叛逆'));
   assert.equal(errors.length, 0, errors.map(e => String((e as { error: Error }).error)).join('\n'));
 });
@@ -182,7 +182,7 @@ test('archiveScope home: only her home is archived, and every world session stil
   assert.match(textOf(requests.at(-1)!.messages), /said at home[\s\S]*earlier memory/, 'a chat window remembers what happened at home, newest first');
   assert.match(textOf(requests.at(-1)!.messages), /这是我们最近的聊天记录：我在家里（「小鱼的家」）/);
   await world.flush();
-  const archived = (await store.readPage({ worldId: 'fish', limit: 100 })).records.map(r => r.content);
+  const archived = (await store.readPage({ limit: 100 })).records.map(r => r.content);
   assert.ok(archived.includes('said at home') && !archived.includes('said in a chat window'), archived.join('|'));
   assert.deepEqual(store.sourcePage(), ['home'], 'a chat window leaves no trace in the archive');
   assert.equal(errors.length, 0);

@@ -74,7 +74,7 @@ function contextMessages(value: unknown, current: SpeakerIdentity, limit: number
 const CONVERSATION_FIELDS = ['channel', 'accountId', 'conversationId', 'conversationName', 'conversationType'] as const;
 
 /** Tells the model how to read `contextJson`; shared by every channel that renders it. */
-export const CONTEXT_IDENTITY_NOTE = 'identity 只列出每个发言人各自的来源（speakerId 等），渠道、账号和会话与触发这条消息的【消息来源】相同；speakerName 只是称呼';
+export const CONTEXT_IDENTITY_NOTE = 'identity 只列出每个发言人各自的来源（speakerId 等），渠道、账号和会话与触发这条消息开头【】里的聊天相同；speakerName 只是称呼';
 
 export function contextJson(context: readonly ChannelContextMessage[], current: SpeakerIdentity): string {
   const self = `${current.channel}:${current.accountId}`;

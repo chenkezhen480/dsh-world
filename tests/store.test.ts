@@ -23,10 +23,10 @@ test('midnight files preserve actual timestamps, turn identity and replay unique
 test('stable pagination excludes later appends including backdated records', async t => {
   const s = await setup(t); const store = s.open();
   await store.commitRecords(['a', 'b', 'c', 'd'].map(id => record(id)));
-  const first = await store.readPage({ worldId: 'fish', limit: 2 });
+  const first = await store.readPage({ limit: 2 });
   assert.deepEqual(first.records.map(r => r.recordId), ['d', 'c']);
   await store.commitRecords([record('e'), record('aa')]);
-  const second = await store.readPage({ worldId: 'fish', before: first.nextCursor, limit: 2 });
+  const second = await store.readPage({ before: first.nextCursor, limit: 2 });
   assert.deepEqual(second.records.map(r => r.recordId), ['b', 'a']);
   assert.equal(second.nextCursor, undefined);
 });
@@ -37,7 +37,7 @@ test('failed export reports error and recovers canonical records plus source pro
   await rm(s.path('2026-10-23'), { recursive: true });
   store.close(); const resumed = s.open();
   assert.equal(resumed.progress('a').nextSeq, 4);
-  assert.deepEqual((await resumed.readPage({ worldId: 'fish', limit: 10 })).records.map(r => r.recordId), ['a']);
+  assert.deepEqual((await resumed.readPage({ limit: 10 })).records.map(r => r.recordId), ['a']);
 });
 test('crash after file write before progress and partial tail recover without duplication', async t => {
   const s = await setup(t); const store = s.open();
@@ -46,7 +46,7 @@ test('crash after file write before progress and partial tail recover without du
   await rm(s.path('2026-10-23'), { recursive: true });
   await writeFile(s.path('2026-10-23'), JSON.stringify(record('a')) + '\n' + JSON.stringify(record('b')).slice(0, 30));
   store.close(); const resumed = s.open();
-  await resumed.readPage({ worldId: 'fish', limit: 10 });
+  await resumed.readPage({ limit: 10 });
   assert.equal((await readFile(s.path('2026-10-23'), 'utf8')).trim().split('\n').length, 2);
 });
 test('a shortened export is rebuilt from the database on the next write to that day', async t => {
@@ -70,7 +70,7 @@ test('a worldId that would leave the worlds directory is refused; the same world
   const s = await setup(t); await s.open().commitRecords([record('a')]);
   assert.throws(() => createArchiveStore({ root: s.root, worldId: '../other', timeZone: 'UTC', agentPreset: 'companion' }), /worldId/);
   const moved = createArchiveStore({ root: s.root, worldId: 'fish', timeZone: 'UTC', agentPreset: 'companion' });
-  try { assert.deepEqual((await moved.readPage({ worldId: 'fish', limit: 10 })).records.map(r => r.recordId), ['a']); } finally { moved.close(); }
+  try { assert.deepEqual((await moved.readPage({ limit: 10 })).records.map(r => r.recordId), ['a']); } finally { moved.close(); }
 });
 test('stats count records and distinct source sessions', async t => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-world-stats-'));

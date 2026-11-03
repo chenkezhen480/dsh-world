@@ -1,7 +1,7 @@
 import type { Context } from '@deepseek-ai/cordis';
 import { SessionId, type Session } from '@deepseek-ai/dsh-session';
 import type {} from '@deepseek-ai/dsh-session-persistence';
-import { extractConversationRecords } from './archive.ts';
+import { extractConversationRecords, isOrdinarySession } from './archive.ts';
 import type { ArchiveStore } from './store.ts';
 import type { WorldConfig } from './types.ts';
 import { wechatDeliveryPatch } from './ecosystem/wechat/archive.ts';
@@ -15,14 +15,13 @@ export function isCorruptSessionLog(error: unknown): boolean {
 }
 export function belongsToWorld(session: Pick<Session, 'header'>, config: WorldConfig): boolean {
   const header = session.header;
-  return header.agentPreset === config.agentPreset && header.origin !== 'subagent' && (header.delegationDepth ?? 0) === 0;
+  return header.agentPreset === config.agentPreset && isOrdinarySession(header);
 }
 /** One of her sessions that is also in her room's workspace; without a membership test, any of her sessions. */
 export function inWorld(session: Pick<Session, 'header' | 'id'>, config: WorldConfig, inWorkspace?: (sessionId: string) => boolean): boolean {
   return belongsToWorld(session, config) && (inWorkspace?.(session.id) ?? true);
 }
 export const isNotFound = (error: unknown) => error instanceof Error && error.name === 'SessionPersistenceNotFoundError';
-const ordinary =(header: Session['header']) => header.origin !== 'subagent' && (header.delegationDepth ?? 0) === 0;
 
 /**
  * Copies her conversations from the host's session logs into the archive. Each session is replayed from where
@@ -119,7 +118,7 @@ export function createSourceArchive(ctx: Context, config: WorldConfig, store: Ar
       const visited = new Set<string>();
       for (let offset = 0; offset < snapshots.length; offset += pageSize) {
         for (const { header } of snapshots.slice(offset, offset + pageSize)) {
-          if (!ordinary(header) || (!config.archiveScope && header.agentPreset !== config.agentPreset) || !archived(header.id)) continue;
+          if (!isOrdinarySession(header) || !archived(header.id)) continue;
           visited.add(header.id);
           await replayOne(header.id);
         }

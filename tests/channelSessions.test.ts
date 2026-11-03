@@ -71,7 +71,7 @@ test('groups receive the existing home memory while their own messages stay out 
   await channel.ask('只属于群的提问', identity);
   await world.flush();
   assert.match(JSON.stringify(requests[0].messages), /家的已有记忆/);
-  const archived = (await store.readPage({ worldId: 'test', limit: 10 })).records;
+  const archived = (await store.readPage({ limit: 10 })).records;
   assert.equal(archived.length, 1);
   assert.doesNotMatch(JSON.stringify(archived), /群内专属答复|只属于群的提问/);
   assert.match(JSON.stringify(agent.session.deriveMessages()), /群内专属答复/);

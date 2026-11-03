@@ -16,7 +16,7 @@ async function setup(t: test.TestContext) {
   t.after(async () => { for (const s of stores) s.close(); await rm(root, { recursive: true, force: true }); });
   return { root, open, db: join(root, 'worlds/fish/archive.sqlite') };
 }
-const params = (over: Partial<FindParams> = {}): FindParams => ({ history: false, order: 'newest', limit: 20, ...over });
+const params = (over: Partial<FindParams> = {}): FindParams => ({ order: 'newest', limit: 20, ...over });
 const words = (store: ReturnType<typeof createArchiveStore>, over: Partial<FindParams> = {}, sessions = ['a', 'home']) => store.memory.find(params(over), sessions, store.memory.snapshot().head, 50).map(r => r.content);
 
 test('memory adds nothing to the archive: an existing archive answers at once, with no tables, queue or rebuild', async t => {

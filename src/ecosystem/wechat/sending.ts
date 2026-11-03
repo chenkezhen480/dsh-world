@@ -4,8 +4,8 @@ import { SessionId, type Session, type SessionEvent } from '@deepseek-ai/dsh-ses
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { conversationRecordId } from '../../archive.ts';
-import { speakerIdentity } from '../shared/identity.ts';
-import { replyMessages, replyText, wechatSendTool, wechatTextOutput } from './messages.ts';
+import { chatLabel, speakerIdentity } from '../shared/identity.ts';
+import { deliveryNotice, replyMessages, wechatSendTool, wechatTextOutput } from './messages.ts';
 import type { PreparedReply, WechatReceipt } from './archive.ts';
 
 interface Target { id: string; name: string }
@@ -25,6 +25,24 @@ export function createWechatSending(deps: { ctx: Context; file: string; worldId:
   let stopped = false;
   const pending = new Set<Promise<void>>();
   const rowOf = (id: string) => db.prepare('SELECT * FROM jobs WHERE id=? LIMIT 1').get(id) as unknown as Row | undefined;
+  /**
+   * A batch that did not go out, or may have gone out only in part, is told once to the session that sent it, at its
+   * next step (it is not woken for it), so she need not check every receipt. A session that is gone keeps it in the archive.
+   */
+  function tell(id: string, outcome: Parameters<typeof deliveryNotice>[2]): void {
+    const row = rowOf(id);
+    const agent = row && deps.ctx.agents.get(SessionId(row.sessionId));
+    if (!row || !agent) return;
+    const job: Job = JSON.parse(row.body);
+    const chat = chatLabel('wechat', job.chatId.endsWith('@chatroom') ? 'group' : 'private', chats.find(chat => chat.id === job.chatId)?.name ?? job.chatId);
+    try { agent.inject(createUserMessage({ source: { kind: 'dsh-world-wechat-delivery' }, content: [{ type: 'text', text: deliveryNotice(chat, job.messages, outcome) }] })); }
+    catch (error) { deps.ctx.logger.warn('dsh-world: WeChat delivery notice not delivered:', error); }
+  }
+  /** Fails a batch that never reached the adapter; only the first failure is told. */
+  function fail(id: string, error: string, onlyStaged: boolean): void {
+    const { changes } = db.prepare(`UPDATE jobs SET status='failed',error=? WHERE id=?${onlyStaged ? " AND status='staged'" : ''}`).run(error, id);
+    if (changes) tell(id, { status: 'failed', error });
+  }
   function transaction<T>(run: () => T): T {
     db.exec('BEGIN IMMEDIATE');
     try { const result = run(); db.exec('COMMIT'); return result; }
@@ -53,7 +71,7 @@ export function createWechatSending(deps: { ctx: Context; file: string; worldId:
   const dispose = deps.ctx.on('session/event', (session, event) => {
     if (stopped || event.type !== 'user/message' || event.data.source.kind !== 'dsh-world-wechat-outgoing') return;
     const job = Promise.resolve().then(() => ready(session, event)).catch(error => {
-      db.prepare("UPDATE jobs SET status='failed',error=? WHERE id=? AND status='staged'").run(String(error), conversationRecordId(deps.worldId, session.id, event.data.id));
+      fail(conversationRecordId(deps.worldId, session.id, event.data.id), String(error), true);
       deps.ctx.logger.error(error);
     }).finally(() => pending.delete(job));
     pending.add(job);
@@ -86,7 +104,7 @@ export function createWechatSending(deps: { ctx: Context; file: string; worldId:
             if (found) break;
             next = events.at(-1)!.seq + 1;
           }
-          if (!found) db.prepare("UPDATE jobs SET status='failed',error='发送内容尚未写入会话，未发送' WHERE id=?").run(row.id);
+          if (!found) fail(row.id, '发送内容尚未写入会话，未发送', false);
         } finally { await handle.close(); }
       }
     }
@@ -112,13 +130,13 @@ export function createWechatSending(deps: { ctx: Context; file: string; worldId:
     const agent = context.agent;
     if (!agent) throw new Error('微信发送需要来源会话');
     context.signal.throwIfAborted();
-    const message = createUserMessage({ source: { kind: 'dsh-world-wechat-outgoing', form: 'recall', identity, messages }, content: [{ type: 'text', text: `微信待发送给 ${identity.conversationName}（${chatId}），以下是我已安排的正文，尚未确认发送，不要重复发送：\n${replyText(messages)}` }] });
+    const message = createUserMessage({ source: { kind: 'dsh-world-wechat-outgoing', form: 'recall', identity, messages }, content: [{ type: 'text', text: `（已排队发往${chatLabel('wechat', identity.conversationType, identity.conversationName ?? chatId)}，共 ${messages.length} 条，正文就是上面 wechat_send 里的；发送确认前不要重发）` }] });
     const id = conversationRecordId(deps.worldId, agent.id, message.id);
     transaction(() => db.prepare("INSERT INTO jobs(id,sessionId,messageId,status,body) VALUES (?,?,?,'staged',?)").run(id, agent.id, message.id, JSON.stringify({ id, accountId: boundAccount, chatId, messages } satisfies Job)));
     context.deferContext(message);
-    return JSON.stringify({ id, status: 'queued', total: messages.length, note: '会话记录写入后由适配器发送；尚未确认送达，勿重复调用。' });
+    return JSON.stringify({ id, status: 'queued', total: messages.length, note: '已排队，由适配器发送；没发出或结果不明会另有消息告诉我，不用查回执，也不要重复调用。' });
   }), defineTool({
-    name: 'wechat_delivery', description: '按 wechat_send 返回的 ID 查询排队或发送结果。sent 只代表微信服务器已确认发送，不代表对方已读；uncertain 不得自动重发。',
+    name: 'wechat_delivery', description: '按 wechat_send 返回的 ID 查询排队或发送结果，平时不用查：没发出或结果不明会另有消息告诉我。sent 只代表微信服务器已确认发送，不代表对方已读；uncertain 不得自动重发。',
     parameters: { id: { type: 'string', required: true } }, output: wechatTextOutput,
     execute: async ({ id }) => {
       if (stopped) throw new Error('微信模块已停止');
@@ -174,7 +192,9 @@ export function createWechatSending(deps: { ctx: Context; file: string; worldId:
         if (!['claimed', 'sent', 'uncertain', 'failed'].includes(row.status) || receipt.confirmed < row.confirmed || receipt.confirmed > job.messages.length || (receipt.status === 'sent') !== (receipt.confirmed === job.messages.length) || (receipt.status === 'failed' && receipt.confirmed !== 0) || (row.status === 'sent' && receipt.status !== 'sent')) throw new Error('无效或过时的微信回执');
       }
       await deps.receipt?.(receipt);
-      if (row) transaction(() => db.prepare('UPDATE jobs SET status=?,confirmed=? WHERE id=?').run(receipt.status, receipt.confirmed, receipt.id));
+      if (!row) return;
+      transaction(() => db.prepare('UPDATE jobs SET status=?,confirmed=? WHERE id=?').run(receipt.status, receipt.confirmed, receipt.id));
+      if (row.status !== receipt.status && receipt.status !== 'sent') tell(receipt.id, receipt.status === 'failed' ? { status: 'failed' } : { status: 'uncertain', confirmed: receipt.confirmed });
     },
     async stop() { if (stopped) return; stopped = true; dispose(); await settle(); db.close(); },
   };

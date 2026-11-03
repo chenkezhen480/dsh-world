@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { greetingText, earlyStopText, nextReview, formatDuration, nextLocalTime, resolveAlarmTime, wakeText } from '../src/life/alarm.ts';
+import { greetingText, earlyStopText, nextReview, reviewOf, formatDuration, nextLocalTime, resolveAlarmTime, wakeText } from '../src/life/alarm.ts';
 
 const now = new Date('2026-10-23T12:00:00.000Z');
 test('alarm time accepts exactly one of an offset timestamp or minutes, at least one minute ahead', () => {
@@ -71,6 +71,14 @@ test('the next look back is the next 23:00 in her zone, for that local day', () 
   assert.deepEqual(nextReview(new Date('2026-10-23T03:00:00Z'), 'Asia/Seoul'), { at: '2026-10-23T14:00:00.000Z', day: '2026-10-23' });
   assert.deepEqual(nextReview(new Date('2026-10-23T14:00:00Z'), 'Asia/Seoul'), { at: '2026-10-24T14:00:00.000Z', day: '2026-10-24' }, 'strictly after now');
   assert.deepEqual(nextReview(new Date('2026-10-23T15:30:00Z'), 'Asia/Seoul'), { at: '2026-10-24T14:00:00.000Z', day: '2026-10-24' }, 'after midnight it is tonight');
+  assert.deepEqual(nextReview(new Date('2026-11-03T22:00:00Z'), 'UTC', '00:30'), { at: '2026-11-04T00:30:00.000Z', day: '2026-11-03' }, 'a look back before noon is on the day before');
+});
+test('a changed review time keeps the pending day: never skipped, never twice, due at once when moved before now', () => {
+  const at = (iso: string) => new Date(iso);
+  assert.deepEqual(reviewOf('2026-11-03', at('2026-11-03T20:00:00Z'), 'UTC', '22:00'), { at: '2026-11-03T22:00:00.000Z', day: '2026-11-03' });
+  assert.deepEqual(reviewOf('2026-11-03', at('2026-11-03T22:00:00Z'), 'UTC', '00:30'), { at: '2026-11-04T00:30:00.000Z', day: '2026-11-03' }, 'later, past midnight');
+  assert.deepEqual(reviewOf('2026-11-03', at('2026-11-03T22:00:00Z'), 'UTC', '21:00'), { at: '2026-11-03T22:00:00.000Z', day: '2026-11-03' }, 'earlier than now: today is not skipped');
+  assert.deepEqual(reviewOf('2026-11-04', at('2026-11-04T00:10:00Z'), 'UTC', '00:30'), { at: '2026-11-05T00:30:00.000Z', day: '2026-11-04' }, 'the day already looked back on is not looked back on again');
 });
 test('the alarm carries what she actually did when the caller supplies it, and stays quiet when it does not', () => {
   const plan = { at: '2026-10-26T10:00:00.000Z', note: '读两篇文章', setAt: '2026-10-26T09:00:00.000Z', source: 'plan' as const };

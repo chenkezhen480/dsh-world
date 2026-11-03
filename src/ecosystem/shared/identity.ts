@@ -37,6 +37,20 @@ export function conversationKey(identity: SpeakerIdentity): string {
   return JSON.stringify([identity.channel, identity.accountId, identity.conversationType ?? 'private', identity.conversationId]);
 }
 
+const appName = (channel: string) => channel === 'wechat' ? '微信' : channel === 'qq' || channel === 'qq-bridge' ? 'QQ' : channel;
+/** A chat as she reads it: 微信「Ken」, 微信群「一家人」, QQ群「…」. */
+export function chatLabel(channel: string, conversationType: SpeakerIdentity['conversationType'], name: string): string {
+  return `${appName(channel)}${conversationType === 'group' ? '群' : ''}「${name}」`;
+}
+/** The chat's own name, or for a private chat the person it is with. */
+export const chatName = (identity: Pick<SpeakerIdentity, 'conversationName' | 'conversationType' | 'speakerName'>) =>
+  identity.conversationName ?? (identity.conversationType === 'group' ? undefined : identity.speakerName);
+
+/**
+ * Opens every channel message she receives: which chat, who in a group, and the chatId her send tools take. Kept to
+ * one short line because it stays in her context with every message; the full identity rides on the message source.
+ */
 export function identityPrefix(identity: SpeakerIdentity): string {
-  return `【消息来源 ${JSON.stringify(identity)}】\n`;
+  const speaker = identity.conversationType === 'group' ? ` ${identity.speakerName ?? identity.speakerId} 说` : '';
+  return `【${chatLabel(identity.channel, identity.conversationType, chatName(identity) ?? identity.conversationId)}${speaker}，chatId ${identity.conversationId}】\n`;
 }

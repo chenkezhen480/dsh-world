@@ -15,10 +15,11 @@ import { inWorld } from '../sourceArchive.ts';
 import type { WorldConfig } from '../types.ts';
 import { homeTitle, roomTitle, worldNames } from '../worldPrompt.ts';
 import { admit, reassembleOnChange } from '../worldScope.ts';
-import { budgetText, cancelReply, greetingText, checkReply, earlyStopText, nextLocalTime, nextReview, planReply, resolveAlarmTime, reviewText, wakeText } from './alarm.ts';
+import { budgetText, cancelReply, greetingText, checkReply, earlyStopText, nextLocalTime, nextReview, planReply, resolveAlarmTime, reviewOf, reviewText, wakeText } from './alarm.ts';
 import { summarizeSince } from './activity.ts';
 import { createAlarmTimer, realTimers, type LifeTimers } from './alarmTimer.ts';
 import { createEarlyStopWatch } from './earlyStop.ts';
+import { closedDiaryRefusal } from './diary.ts';
 import { createHome } from './home.ts';
 import type { LifeHost } from './host.ts';
 import { createJournal } from './journal.ts';
@@ -77,7 +78,8 @@ export function createLifeRuntime(deps: LifeDeps) {
     if (messages.error) faults.set('alarm-template', messages.error); else faults.clear('alarm-template');
     return messages;
   }
-  const templateValues = () => ({ name: names.companion, partner: names.partner, homeTitle: homeTitle(names), timeZone, fallbackWakeTime: options.fallbackWakeTime, example: exampleTime(timeZone) });
+  const wake = () => options.schedule().wake;
+  const templateValues = () => ({ name: names.companion, partner: names.partner, homeTitle: homeTitle(names), timeZone, fallbackWakeTime: wake(), example: exampleTime(timeZone) });
   /**
    * What she actually did between setting this alarm and hearing it, in one line.
    *
@@ -171,7 +173,7 @@ export function createLifeRuntime(deps: LifeDeps) {
     return alarm && { kind: 'alarm', at: alarm.at, alarm };
   }
   const timer = createAlarmTimer({ clock, timers, dueAlarm: () => nextJob()?.at, fire: () => void deliver() });
-  const morning = (now: Date): Alarm => ({ at: nextLocalTime(now, options.fallbackWakeTime, timeZone).toISOString(), note: '', setAt: now.toISOString(), source: 'fallback' });
+  const morning = (now: Date): Alarm => ({ at: nextLocalTime(now, wake(), timeZone).toISOString(), note: '', setAt: now.toISOString(), source: 'fallback' });
   /** A new alarm replaces a failing one, so its backoff and fault go with it. Saved or not, it is armed. */
   function setAlarm(alarm: Alarm): void {
     if (stopped) return;
@@ -201,6 +203,27 @@ export function createLifeRuntime(deps: LifeDeps) {
     const cancelled = state.alarm;
     if (cancelled?.source === 'plan') setAlarm(morning(clock())); else fallbackAlarm();
     return cancelReply(cancelled, state.alarm, timeZone);
+  }
+  /**
+   * Moves what is pending to the console's review and morning times when they differ (changed now, or while her
+   * world was stopped). The pending look back keeps its day; the plugin's morning alarm moves to the new time after
+   * it was set, at once if that has passed. An alarm of hers is left alone. True when anything moved.
+   */
+  function followSchedule(): boolean {
+    const now = clock(), { review, wake: morningTime } = options.schedule();
+    const timeOf = (at: string) => formatLocalTime(new Date(at), timeZone).slice(11, 16);
+    let moved = false;
+    if (state.review && timeOf(state.review.at) !== review) { state.review = reviewOf(state.review.day, now, timeZone, review); moved = true; }
+    if (state.alarm?.source === 'fallback' && timeOf(state.alarm.at) !== morningTime) {
+      const at = nextLocalTime(new Date(state.alarm.setAt), morningTime, timeZone);
+      state.alarm = { ...state.alarm, at: (at > now ? at : now).toISOString() }; moved = true;
+    }
+    return moved;
+  }
+  function reschedule(): void {
+    if (stopped || !followSchedule()) return;
+    record(() => store.write(state));
+    timer.reset();
   }
 
   // Delivery: one at a time, the next only once the last started a step; a failure backs off, and a newer alarm keeps its own time.
@@ -243,20 +266,30 @@ export function createLifeRuntime(deps: LifeDeps) {
    */
   const greet = (greeting: Greeting) => sayOwn(greeting.kind === 'arrival' ? '新家的第一句话' : '重新开始的那句话', greeting.kind === 'arrival' ? 'first' : 'return', greeting.at, { greeting },
     () => { delete state.greeting; }, () => { state.greeting ??= greeting; },
-    () => greetingText(greeting.kind, timeZone, options.fallbackWakeTime, alarmMessages(), templateValues()));
+    () => greetingText(greeting.kind, timeZone, wake(), alarmMessages(), templateValues()));
+  /** The day whose look back her home is in now: its diary stays open until that turn ends, even past midnight. */
+  let reviewing: string | undefined;
+  /** A day's diary is open until its look back has ended: today, and a day whose look back is still to come or under way. */
+  function openDiaryDays(today: string): Set<string> {
+    const days = new Set([today]);
+    if (state.review && state.review.day < today) days.add(state.review.day);
+    if (reviewing) days.add(reviewing);
+    return days;
+  }
   /** The evening look back on her day; her 我是谁 is kept as it was, so she can rewrite it freely. */
   function lookBack(review: Review): Promise<void> {
     let snapshot: string | undefined;
     const take = () => {
+      reviewing = review.day;
       try { snapshot = keepSelfCopy(options.selfFile, review.day); faults.clear('snapshot'); }
       catch (error) { faults.set('snapshot', `我是谁没能留底：${errorText(error)}`); ctx.logger.error(error); }
-      state.review = nextReview(clock(), timeZone);
+      state.review = nextReview(clock(), timeZone, options.schedule().review);
     };
     const existing = (dir: string) => { const file = join(options.worldDir, dir, `${review.day}.jsonl`); return existsSync(file) ? file : undefined; };
     return sayOwn('每日回顾', 'review', review.at, { review }, take, () => { state.review = review; }, now => reviewText(review, now, {
       ...withValue('conversations', existing('conversations')), ...withValue('activity', existing('activity')), ...withValue('snapshot', snapshot),
       diaryDir: options.diaryDir, selfFile: options.selfFile,
-    }, timeZone, options.fallbackWakeTime, alarmMessages(), templateValues()), () => deps.afterReview?.());
+    }, timeZone, wake(), alarmMessages(), templateValues()), () => deps.afterReview?.());
   }
   async function send(alarm: Alarm): Promise<void> {
     try {
@@ -267,7 +300,7 @@ export function createLifeRuntime(deps: LifeDeps) {
       // Cleared before steering, so a turn that ends quickly already sees "no alarm" and gets the fallback.
       delete state.alarm;
       const now = clock();
-      const text = wakeText(alarm, now, timeZone, options.fallbackWakeTime, alarmMessages(), { ...templateValues(), did: alarm.source === 'fallback' ? '' : didSince(alarm, now) });
+      const text = wakeText(alarm, now, timeZone, wake(), alarmMessages(), { ...templateValues(), did: alarm.source === 'fallback' ? '' : didSince(alarm, now) });
       const context = deps.alarmContext?.(now);
       const message = lifeMessage(context ? `${text}\n\n${context}` : text);
       expect(agent, message, '闹钟', alarm.at, alarm.source, { alarm }, now);
@@ -328,6 +361,10 @@ export function createLifeRuntime(deps: LifeDeps) {
     faults, logger: ctx.logger,
     inWorld: agent => !stopped && includes(agent.session),
     isHome: agent => agent.id === state.homeSessionId,
+    guard: ({ name, arguments: args, agent }) => {
+      const today = formatLocalTime(clock(), timeZone).slice(0, 10);
+      return closedDiaryRefusal(name, args, options.diaryDir, agent?.session.header.cwd ?? options.roomDir, openDiaryDays(today), today);
+    },
     tools: agent => [
       ...lifeTools({ planNext, checkAlarm, cancelAlarm, notifier, names, origin: () => { try { return host.origin(); } catch { return undefined; } }, descriptions: alarmDescriptions(alarmMessages(), templateValues()) }),
       ...deps.photos ? photoTools({ agent, store: deps.photos, attachments: () => ctx.get('attachments') as AttachmentStore | undefined, inside: () => !stopped && agent.id === state.homeSessionId && includes(agent.session) }) : [],
@@ -381,6 +418,7 @@ export function createLifeRuntime(deps: LifeDeps) {
           }
         }
         if (event.type !== 'turn/end') return;
+        if (state.delivering?.source !== 'review') reviewing = undefined;
         home.turnEnded(session.id);
         fallbackAlarm();
         // A stopped or failed turn is not her deciding she is done.
@@ -388,7 +426,8 @@ export function createLifeRuntime(deps: LifeDeps) {
       }),
     );
     for (const agent of ctx.agents.list()) attach(agent);
-    if (!state.review) { state.review = nextReview(clock(), timeZone); record(() => store.write(state)); }
+    if (!state.review) { state.review = nextReview(clock(), timeZone, deps.options.schedule().review); record(() => store.write(state)); }
+    if (followSchedule()) record(() => store.write(state));
     try {
       const agent = await home.open(); faults.clear('home');
       reconcile(agent);
@@ -408,7 +447,7 @@ export function createLifeRuntime(deps: LifeDeps) {
     tools.clear();
   }
   return {
-    start, stop, planNext, checkAlarm, cancelAlarm, deliver,
+    start, stop, planNext, checkAlarm, cancelAlarm, deliver, reschedule,
     snapshot: () => ({ homeSessionId: state.homeSessionId, alarm: state.alarm, review: state.review, spend: state.spend, faults: faults.list() }),
     /** Resolves once no alarm delivery is in flight (its durability flush can outlast the turn it starts). */
     settled: async () => { while (delivery) await delivery; },

@@ -12,10 +12,13 @@ export interface PreparedReply {
   identity: SpeakerIdentity; messages: WechatMessage[];
 }
 
+/** A stored WeChat reply is its delivery line, then the words she sent. */
+export const replyWords = (record: Pick<ConversationRecord, 'content'>) => record.content.slice(record.content.indexOf('\n') + 1);
+
 export function wechatDeliveryPatch(record: ConversationRecord, delivery: DeliveryState): Pick<ConversationRecord, 'content' | 'wechatDelivery'> {
   if (delivery.status === 'pending') return { content: record.content, wechatDelivery: delivery };
   const detail = delivery.status === 'sent' ? '整批已确认' : delivery.status === 'failed' ? '整批未发送' : `第 ${delivery.confirmed + 1} 条结果不明，后续未发送`;
-  return { content: `微信回复给 ${record.conversationId}（已确认发送 ${delivery.confirmed}/${delivery.total}；${detail}）：\n${record.content.slice(record.content.indexOf('\n') + 1)}`, wechatDelivery: delivery };
+  return { content: `微信回复给 ${record.conversationId}（已确认发送 ${delivery.confirmed}/${delivery.total}；${detail}）：\n${replyWords(record)}`, wechatDelivery: delivery };
 }
 
 /** Preserve the generated words, not the tool protocol; delivery is confirmed separately by the adapter. */

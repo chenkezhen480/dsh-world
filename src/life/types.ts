@@ -22,8 +22,11 @@ export interface LifeState { version: 1; homeSessionId?: string; alarm?: Alarm; 
 export interface WakeRecord { scheduledAt: string; deliveredAt: string; source: AlarmSource | 'first' | 'return' | 'review'; lateMs: number }
 export interface ActivityRecord { time: string; sessionId: string; callId: string; tool: string; summary: string; outside: boolean; gapBefore?: true; status?: 'ok' | 'error' }
 export interface CompactionRecord { time: string; sessionId: string; ok: boolean; shadowedTokens?: number; error?: string }
+export interface DailySchedule { review: string; wake: string }
 export interface LifeOptions {
-  worldDir: string; roomDir: string; diaryDir: string; selfFile: string; fallbackWakeTime: string; timeZone: string;
+  worldDir: string; roomDir: string; diaryDir: string; selfFile: string; timeZone: string;
+  /** Local HH:MM of the evening look back and of the morning wake when nothing is pending; read each time, since the console can change them. */
+  schedule(): DailySchedule;
   /** Her alarm wording; the shipped `templates/alarm.md` when absent or missing. */
   alarmFile?: string;
 }

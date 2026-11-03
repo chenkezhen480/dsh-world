@@ -27,6 +27,7 @@ import { createArchiveStore } from './store.ts';
 import type { WorldConfig } from './types.ts';
 import { DEFAULT_TEMPLATE_FILE, MEMORY_SNIPPET_FILE, memoryTemplateGaps, roomTitle, worldNames } from './worldPrompt.ts';
 import { createWorldSwitch } from './worldSwitch.ts';
+import { CLOCK_TIME, DEFAULT_REVIEW_TIME } from './life/alarm.ts';
 import { createWechatModule, type WechatModule } from './ecosystem/wechat/index.ts';
 import { createWechatRecorder } from './ecosystem/wechat/archive.ts';
 import { createAdapterSupervisor, type AdapterSupervisor } from './ecosystem/wechat/supervisor.ts';
@@ -52,7 +53,7 @@ export const Config = z.object({
   archiveScope: z.union([z.const('home').description('仅家会话'), z.const('workspace').description('家所在工作区'), z.transform(z.const('world').hidden(), () => 'workspace' as const).hidden()]).default('workspace').description('记忆归档范围，修改后重启生效'),
   // Install means the tool-free compaction: the first start rewrites the profile's stock compaction row (see README); false leaves it alone.
   replaceCompaction: z.boolean().default(true),
-  life: z.boolean().default(true), diaryDir: z.string(), fallbackWakeTime: z.string().pattern(/^([01]\d|2[0-3]):[0-5]\d$/).default('09:00'),
+  life: z.boolean().default(true), diaryDir: z.string(), fallbackWakeTime: z.string().pattern(CLOCK_TIME).default('09:00'),
   selfFile: z.string(), worldPromptFile: z.string(), alarmTemplateFile: z.string(), personaFile: z.string(),
   // Where her words go outside DSH; no app is known by name (see README for the push body).
   outlets: z.array(z.object({ name: z.string().required(), url: z.string(), urlFile: z.string(), path: z.string(), kinds: z.array(z.union([z.const('reply'), z.const('busy'), z.const('reach')])) })).default([]),
@@ -110,7 +111,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   const dshHome = resolveDshHome();
   const worldDir = join(dshHome, 'worlds', config.worldId);
   const store = createArchiveStore({ ...config, root: dshHome });
-  const power = createWorldSwitch(worldDir, config.archiveScope ?? 'workspace');
+  const power = createWorldSwitch(worldDir, config.archiveScope ?? 'workspace', config.fallbackWakeTime);
   const memoryConfig = { ...config, archiveScope: power.archiveScope() };
   const faults = new Faults();
   let photoStore: PhotoStore | undefined;
@@ -124,7 +125,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   const personaFile = config.personaFile || join(worldDir, 'persona.md');
   const worldPromptFile = config.worldPromptFile || join(worldDir, 'world-prompt.md');
   const roomDir = join(worldDir, 'room');
-  const options: LifeOptions = { worldDir, roomDir, diaryDir: config.diaryDir || join(worldDir, 'diary'), selfFile, fallbackWakeTime: config.fallbackWakeTime, timeZone: config.timeZone, alarmFile: config.alarmTemplateFile || join(worldDir, 'alarm.md') };
+  const options: LifeOptions = { worldDir, roomDir, diaryDir: config.diaryDir || join(worldDir, 'diary'), selfFile, schedule: () => ({ review: power.reviewTime(), wake: power.wakeTime() }), timeZone: config.timeZone, alarmFile: config.alarmTemplateFile || join(worldDir, 'alarm.md') };
   /** The name in her persona comes first, then the configured one. */
   const names = () => worldNames({ ...config, companionName: readPersona(personaFile).名字 || config.companionName });
   const lifeStore = (() => {
@@ -323,7 +324,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     if (config.bridge) lifeCtx.effect(() => webServer.register(compactRoute(() => bridge, () => !power.running() || !life ? '请先启动世界生活线' : homeApply.request(), config.allowedHosts)), 'dsh-world compact route');
 
     // Her album lives in her room, so the console shows it whether or not the life line is running.
-    const sources = consoleSources({ ctx: lifeCtx, config: memoryConfig, archive: store, longTerm: memoryService, names, ...(lifeStore ? { lifeStore } : {}), life: () => life, homeApply: homeApply.snapshot, compactAfterReview: power.compactAfterReview, photos, diaryDir: options.diaryDir, running: power.running, dailyBudget: power.dailyBudget, memoryTurns: power.memoryTurns, selectedArchiveScope: power.selectedArchiveScope, workspacePermissions: permissions.snapshot, wechat: () => wechat ? { ...wechat.status(), adapter: adapter?.status() ?? null } : undefined, archiveSession, native: () => qqNative?.status() ?? null,
+    const sources = consoleSources({ ctx: lifeCtx, config: memoryConfig, archive: store, longTerm: memoryService, names, ...(lifeStore ? { lifeStore } : {}), life: () => life, homeApply: homeApply.snapshot, compactAfterReview: power.compactAfterReview, ...(config.life ? { schedule: () => ({ review: power.reviewTime(), wake: power.wakeTime(), defaults: { review: DEFAULT_REVIEW_TIME, wake: config.fallbackWakeTime } }) } : {}), photos, diaryDir: options.diaryDir, running: power.running, dailyBudget: power.dailyBudget, memoryTurns: power.memoryTurns, selectedArchiveScope: power.selectedArchiveScope, workspacePermissions: permissions.snapshot, wechat: () => wechat ? { ...wechat.status(), adapter: adapter?.status() ?? null } : undefined, archiveSession, native: () => qqNative?.status() ?? null,
       modules: () => ({ wechat: { available: config.wechat, enabled: power.wechatEnabled(), running: wechat !== undefined }, qq: { available: Boolean(config.qqNative?.enabled), enabled: power.qqEnabled(), running: qqNative !== undefined, ...(qqSdk.needsRestart() ? { restartRequired: true } : {}) } }), faults: () => [...faults.list(), ...(memory?.faults() ?? []), ...(bridge?.faults() ?? []), ...memoryHealth()] });
     const actions: ConsoleActions = {
       async start() {
@@ -347,6 +348,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       setMemoryTurns: turns => { power.setMemoryTurns(turns); sources.invalidate(); },
       setWorkspacePermission: permission => { permissions.set(permission); sources.invalidate(); },
       setCompactAfterReview: on => { power.setCompactAfterReview(on); sources.invalidate(); },
+      setSchedule: next => { power.setSchedule(next); life?.reschedule(); sources.invalidate(); },
       async setModules(patch) {
         if (patch.wechat !== undefined && !config.wechat) return '没有配置微信模块（配置里 wechat: true）';
         if (patch.qq !== undefined && !config.qqNative?.enabled) return '没有配置原生 QQ 通道（配置里 qqNative.enabled）';

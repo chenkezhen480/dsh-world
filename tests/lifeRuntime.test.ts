@@ -41,7 +41,7 @@ function fakeTimers(clock: { now: Date }) {
     jump(ms: number) { clock.now = new Date(clock.now.getTime() + ms); for (const entry of pending) entry.at += ms; },
   };
 }
-interface SetupOptions { afterReview?: () => void; before?: (worldDir: string) => Promise<void>; host?: (host: LifeHost) => LifeHost; store?: (store: LifeStore) => LifeStore; notifier?: Notifier; dailyBudget?: () => number | undefined; inWorkspace?: (id: string) => boolean; alarmContext?: (now: Date) => string | undefined }
+interface SetupOptions { afterReview?: () => void; before?: (worldDir: string) => Promise<void>; host?: (host: LifeHost) => LifeHost; store?: (store: LifeStore) => LifeStore; notifier?: Notifier; dailyBudget?: () => number | undefined; inWorkspace?: (id: string) => boolean; alarmContext?: (now: Date) => string | undefined; schedule?: { review: string; wake: string } }
 async function setup(t: test.TestContext, model: (request: GenerateOptions, index: number) => AsyncIterable<StreamChunk>, setupOptions: SetupOptions = {}) {
   const requests: GenerateOptions[] = [];
   const { ctx, root, cleanup, errors } = await hostFixture(t, request => { if (request.purpose !== 'compaction') requests.push(request); return model(request, requests.length - 1); });
@@ -67,7 +67,7 @@ async function setup(t: test.TestContext, model: (request: GenerateOptions, inde
   const host = setupOptions.host?.(baseHost) ?? baseHost;
   const baseStore = createLifeStore(worldDir, config.timeZone);
   const store = setupOptions.store?.(baseStore) ?? baseStore;
-  const options = { worldDir, roomDir: join(worldDir, 'room'), diaryDir: join(worldDir, 'diary'), selfFile: join(worldDir, 'room', 'self.md'), fallbackWakeTime: '09:00', timeZone: config.timeZone, alarmFile: join(worldDir, 'alarm.md') };
+  const options = { worldDir, roomDir: join(worldDir, 'room'), diaryDir: join(worldDir, 'diary'), selfFile: join(worldDir, 'room', 'self.md'), schedule: () => setupOptions.schedule ?? { review: '23:00', wake: '09:00' }, timeZone: config.timeZone, alarmFile: join(worldDir, 'alarm.md') };
   const make = () => createLifeRuntime({ ctx, config, options, store, host, notifier: setupOptions.notifier ?? { toast: async () => {}, outlets: [] }, clock: () => clock.now, timers, ...(setupOptions.dailyBudget ? { dailyBudget: setupOptions.dailyBudget } : {}), inWorkspace: setupOptions.inWorkspace, alarmContext: setupOptions.alarmContext, ...(setupOptions.afterReview ? { afterReview: setupOptions.afterReview } : {}) });
   let life = make();
   cleanup.push(() => life.stop());
@@ -269,6 +269,15 @@ test('while she is busy, the alarm and her partner\'s message both enter the run
   assert.equal(s.requests.length, 2, 'both arrived inside the same turn, at the next step');
   assert.match(textOf(s.requests[1]), /说好做到的时间：「收工」/); assert.match(textOf(s.requests[1]), /在玩什么/);
 });
+test('her file tools may write today\'s diary but not a closed day\'s; she is told to correct it today', async t => {
+  const written: string[] = [];
+  const diary = (day: string) => join(s.worldDir, 'diary', `${day}.md`);
+  const s = await setup(t, (_request, index) => index === 0 ? toolCall('write', { file_path: diary('2026-10-22'), content: '改昨天' }, 'past') : index === 1 ? toolCall('write', { file_path: diary('2026-10-23'), content: '今天' }, 'today') : textResponse('好'));
+  s.ctx.tools.register(defineTool({ name: 'write', description: 'test', parameters: { file_path: { type: 'string' }, content: { type: 'string' } }, output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] }, execute: async args => { written.push(String((args as { file_path: string }).file_path)); return 'ok'; } }));
+  await s.start();
+  assert.deepEqual(written, [diary('2026-10-23')], 'only today\'s diary was written');
+  assert.match(JSON.stringify(s.requests[1]!.messages), /2026-10-22 的日记已经合上了.*今天（2026-10-23）的日记/);
+});
 test('an archived home is replaced, keeps the pending alarm, and the old home loses reach_out', async t => {
   const s = await setup(t, (_request, index) => index === 0 ? toolCall('plan_next', { after_minutes: 30, note: '看书' }) : textResponse('嗯'));
   await s.start();
@@ -379,6 +388,27 @@ test('every evening at 23:00 she looks back on the day: its records, her diary, 
   assert.deepEqual(s.store.wakes().map(wake => wake.source), ['review']);
   assert.deepEqual(s.alarm(), { at: '2026-10-24T00:30:00.000Z', source: 'plan' }, 'her alarm is untouched');
 });
+test('new review and morning times from the console move what is pending at once; an alarm of her own stays', async t => {
+  const schedule = { review: '23:00', wake: '09:00' };
+  const s = await setup(t, () => textResponse('好'), { schedule });
+  await s.start();
+  assert.deepEqual(s.alarm(), { at: '2026-10-24T00:00:00.000Z', source: 'fallback' });
+  Object.assign(schedule, { review: '22:00', wake: '07:30' });
+  s.life.reschedule();
+  assert.deepEqual(s.store.read().review, { at: '2026-10-23T13:00:00.000Z', day: '2026-10-23' });
+  assert.deepEqual(s.alarm(), { at: '2026-10-23T22:30:00.000Z', source: 'fallback' });
+  assert.equal(s.store.read().alarm?.at, '2026-10-23T22:30:00.000Z', 'saved, so a restart keeps it');
+  s.timers.advance(10 * 3_600_000); await s.idle();
+  assert.match(textOf(s.requests.at(-1)!), /2026-10-23 快过完了[\s\S]*休息到明早 07:30/);
+  s.life.planNext({ after_minutes: 60 }, '看书');
+  const own = s.alarm();
+  schedule.wake = '06:00'; s.life.reschedule();
+  assert.deepEqual(s.alarm(), own);
+  // Changed while her world was stopped: the next start follows it.
+  schedule.review = '21:30';
+  s.restart(); await s.life.start();
+  assert.deepEqual(s.store.read().review, { at: '2026-10-24T12:30:00.000Z', day: '2026-10-24' });
+});
 test('a look back missed while the app was closed comes late, for the day it belongs to', async t => {
   const s = await setup(t, () => textResponse('补上'), { before: async worldDir => {
     await writeFile(join(worldDir, 'life.json'), JSON.stringify({ version: 1, homeSessionId: 'home-0', review: { at: '2026-10-22T14:00:00.000Z', day: '2026-10-22' } }));
@@ -389,6 +419,24 @@ test('a look back missed while the app was closed comes late, for the day it bel
   assert.match(text, /2026-10-22 快过完了[\s\S]*今天家里没有聊天记录[\s\S]*（晚了 13 小时/);
   assert.ok(!text.includes('改之前的那份'), 'no 我是谁 yet, nothing kept');
   assert.deepEqual(s.store.read().review, { at: '2026-10-23T14:00:00.000Z', day: '2026-10-23' }, 'the next one is tonight');
+});
+test('a late look back keeps its day\'s diary open until that turn ends', async t => {
+  const written: string[] = [];
+  const s = await setup(t, request => {
+    // Write yesterday's diary in answer to the look back and to the partner's later ask; anything else is a plain reply.
+    const last = request.messages.at(-1)!, asked = last.role === 'user' ? JSON.stringify(last.content) : '';
+    const call = asked.includes('快过完了') ? 'during' : asked.includes('再改一下昨天的') ? 'after' : undefined;
+    return call ? toolCall('write', { file_path: join(s.worldDir, 'diary', '2026-10-22.md') }, call) : textResponse('好');
+  }, { before: async worldDir => {
+    await writeFile(join(worldDir, 'life.json'), JSON.stringify({ version: 1, homeSessionId: 'home-0', review: { at: '2026-10-22T14:00:00.000Z', day: '2026-10-22' } }));
+  } });
+  s.ctx.tools.register(defineTool({ name: 'write', description: 'test', parameters: { file_path: { type: 'string' } }, output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] }, execute: async args => { written.push(String((args as { file_path: string }).file_path)); return 'ok'; } }));
+  const home = await createAgent(s.ctx, 'home-0');
+  await s.start();
+  assert.equal(written.length, 1, 'written while the late look back runs');
+  home.followup(userMessage('再改一下昨天的')); await s.idle();
+  assert.equal(written.length, 1, 'closed once that turn ended');
+  assert.match(JSON.stringify(s.requests.at(-1)!.messages), /2026-10-22 的日记已经合上了/);
 });
 test('started again from the console, a home without an alarm of her own is told she is back; one with her alarm waits for it', async t => {
   const back = await setup(t, () => textResponse('回来了'), { before: existingHome() });

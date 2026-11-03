@@ -56,8 +56,6 @@ export function normalizeFind(input: Record<string, unknown>, timeZone: string):
   if (query !== undefined && (Array.from(query).length > MAX_QUERY_CHARS || query.includes('\0'))) throw new MemoryError('invalidQuery', `query 不能超过 ${MAX_QUERY_CHARS} 个字符，也不能含空字符`);
   const kindsInput = input.kinds;
   if (kindsInput !== undefined && kindsInput !== null && (!Array.isArray(kindsInput) || kindsInput.some(kind => !(MEMORY_KINDS as readonly unknown[]).includes(kind)))) throw new MemoryError('invalidQuery', `kinds 只能是 ${MEMORY_KINDS.join('、')}`);
-  const history = input.history;
-  if (history !== undefined && history !== null && typeof history !== 'boolean') throw new MemoryError('invalidQuery', 'history 必须是 true 或 false');
   const order = input.order ?? 'newest';
   if (order !== 'newest' && order !== 'oldest') throw new MemoryError('invalidQuery', 'order 只能是 newest 或 oldest');
   const fromMs = time(input, 'from', timeZone), toMs = time(input, 'to', timeZone);
@@ -65,7 +63,7 @@ export function normalizeFind(input: Record<string, unknown>, timeZone: string):
   const kinds = kindsInput?.length ? [...new Set(kindsInput as MemoryKind[])] : undefined;
   const sourceId = text(input, 'sourceId', 300), turnId = text(input, 'turnId', 300), linkedTo = text(input, 'linkedTo', 2000), cursor = text(input, 'cursor', 4000);
   return {
-    history: history === true, order, limit: whole(input, 'limit', DEFAULT_FIND_LIMIT, 1, MAX_FIND_LIMIT),
+    order, limit: whole(input, 'limit', DEFAULT_FIND_LIMIT, 1, MAX_FIND_LIMIT),
     ...(query === undefined ? {} : { query }), ...(kinds ? { kinds } : {}), ...(fromMs === undefined ? {} : { fromMs }), ...(toMs === undefined ? {} : { toMs }),
     ...(sourceId ? { sourceId } : {}), ...(turnId ? { turnId } : {}), ...(linkedTo ? { linkedTo } : {}), ...(cursor ? { cursor } : {}),
   };

@@ -127,7 +127,7 @@ export function createArchiveStore(config: WorldConfig & { root: string }) {
     });
     flushExports();
   }
-  async function readTurn(_worldId: string, turnId: string, afterSeq = -1, limit = pageSize): Promise<ConversationRecord[]> {
+  async function readTurn(turnId: string, afterSeq = -1, limit = pageSize): Promise<ConversationRecord[]> {
     flushExports();
     return (db.prepare('SELECT * FROM records WHERE turnId=? AND sourceSeq>? ORDER BY sourceSeq LIMIT ?').all(turnId, afterSeq, limit) as unknown as StoredRow[]).map(decode);
   }

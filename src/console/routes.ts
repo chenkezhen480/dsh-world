@@ -4,6 +4,7 @@ import { PERSONA_LAYERS, type Persona } from '../persona.ts';
 import { validTurns, validWechatBuffer, validWechatContext, validWorkspacePermission, MAX_WECHAT_BUFFER_SECONDS, MAX_WECHAT_CONTEXT } from '../worldSwitch.ts';
 import { validArchiveScope, type MemoryArchiveScope } from '../archiveSelection.ts';
 import type { PhotoStore } from '../life/photos.ts';
+import { validClockTime } from '../life/alarm.ts';
 import { MemoryError, type MemoryContent, type MemoryErrorCode, type MemoryPage } from '../memory.ts';
 
 export const CONSOLE_PREFIX = '/dsh-world';
@@ -38,6 +39,8 @@ export interface ConsoleActions {
   setWorkspacePermission(permission: string): void;
   /** Whether the evening look back is followed by applying and compacting her home (on unless turned off). */
   setCompactAfterReview(on: boolean): void;
+  /** Local HH:MM of the evening look back and the morning wake; a field left out stays, null goes back to its default. */
+  setSchedule(schedule: { review?: string | null; wake?: string | null }): void;
   /** A field left out stays as it is; null goes back to its default. */
   /** Turns the WeChat and QQ modules on or off now (their tools and routes come and go with the switch). Returns why it cannot, or nothing. */
   setModules(modules: { wechat?: boolean; qq?: boolean }): Promise<string | { restartRequired: true; message: string } | undefined>;
@@ -48,11 +51,11 @@ export interface ConsoleActions {
 export interface ConsoleRequest { method: string; url: string; write: boolean; body?: Record<string, unknown> | undefined }
 const MEMORY_STATUS: Record<MemoryErrorCode, number> = { invalidQuery: 400, invalidRef: 400, invalidCursor: 400, notFound: 404, outOfScope: 403, cursorExpired: 409, sourceChanged: 409, scopeChanged: 409, readFailed: 500 };
 /** Query-string values to the shape the tools take: a number that is not one stays NaN and is refused by the shared check. */
-function memoryInput(params: URLSearchParams, numbers: readonly string[], flags: readonly string[], lists: readonly string[]): Record<string, unknown> {
+function memoryInput(params: URLSearchParams, numbers: readonly string[], lists: readonly string[]): Record<string, unknown> {
   const input: Record<string, unknown> = {};
   for (const [key, value] of params) {
     if (value === '') continue;
-    input[key] = numbers.includes(key) ? Number(value) : flags.includes(key) ? value === '1' || value === 'true' : lists.includes(key) ? value.split(',') : value;
+    input[key] = numbers.includes(key) ? Number(value) : lists.includes(key) ? value.split(',') : value;
   }
   return input;
 }
@@ -112,6 +115,12 @@ async function write(actions: ConsoleActions, path: string, body: Record<string,
       if (typeof body?.on !== 'boolean') return bad('on must be true or false');
       actions.setCompactAfterReview(body.on); return ok();
     }
+    case '/console/schedule': {
+      const review = body?.review, wake = body?.wake;
+      for (const [name, value] of [['review', review], ['wake', wake]] as const) if (value !== undefined && value !== null && !validClockTime(value)) return bad(`${name} must be HH:MM (00:00–23:59), or null`);
+      if (review === undefined && wake === undefined) return bad('nothing to change');
+      actions.setSchedule({ ...(review === undefined ? {} : { review: review as string | null }), ...(wake === undefined ? {} : { wake: wake as string | null }) }); return ok();
+    }
     case '/console/workspace-permission': {
       if (!validWorkspacePermission(body?.permission)) return bad('工作区权限必须为非空字符串');
       try { actions.setWorkspacePermission(body.permission); return ok(); }
@@ -141,8 +150,8 @@ export async function handleConsole(sources: ConsoleSources, actions: ConsoleAct
       return text === undefined ? { status: 404, body: { error: 'no diary for this date' } } : ok({ date, text });
     }
     case '/console/prompts': return ok(actions.prompts());
-    case '/console/memory/find': { const input = memoryInput(url.searchParams, ['limit'], ['history'], ['kinds']); return memoryCall(sources.memoryFind && (() => sources.memoryFind!(input))); }
-    case '/console/memory/read': { const input = memoryInput(url.searchParams, ['offset', 'limit'], [], []); return memoryCall(sources.memoryRead && (() => sources.memoryRead!(input))); }
+    case '/console/memory/find': { const input = memoryInput(url.searchParams, ['limit'], ['kinds']); return memoryCall(sources.memoryFind && (() => sources.memoryFind!(input))); }
+    case '/console/memory/read': { const input = memoryInput(url.searchParams, ['offset', 'limit'], []); return memoryCall(sources.memoryRead && (() => sources.memoryRead!(input))); }
     case '/console/photos': {
       const limit = Number(url.searchParams.get('limit') ?? 20), offset = Number(url.searchParams.get('offset') ?? 0);
       if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100 || !Number.isSafeInteger(offset) || offset < 0) return bad('相册分页参数无效');

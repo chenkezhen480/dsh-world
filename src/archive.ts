@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
 import { lastAssistantStreamChunk, type ContentBlock } from '@deepseek-ai/dsh-llm';
-import { isAppendSurfaceEvent, type SessionEvent } from '@deepseek-ai/dsh-session';
+import { isAppendSurfaceEvent, type SessionEvent, type SessionHeader } from '@deepseek-ai/dsh-session';
 import type { ArchiveScope, ConversationRecord } from './types.ts';
-import { identityPrefix, speakerIdentity } from './ecosystem/shared/identity.ts';
+import { identityPrefix, speakerIdentity, type SpeakerIdentity } from './ecosystem/shared/identity.ts';
 import { replyMessages, replyText } from './ecosystem/wechat/messages.ts';
 
 export const conversationRecordId = (worldId: string, sessionId: string, messageId: string) =>
@@ -16,9 +16,15 @@ export function visibleText(content: readonly ContentBlock[]): string {
   }).join('\n');
 }
 
+/** Channel messages from 0.7.0 and earlier open with the whole identity; an upgraded log may still hold some not yet archived. */
+const legacyIdentityPrefix = (identity: SpeakerIdentity) => `【消息来源 ${JSON.stringify(identity)}】\n`;
+
+/** A session someone talks in: not a subagent, not delegated. Only these are archived or carry her world. */
+export const isOrdinarySession = (header: Pick<SessionHeader, 'origin' | 'delegationDepth'>) => header.origin !== 'subagent' && (header.delegationDepth ?? 0) === 0;
+
 export function extractConversationRecords(event: SessionEvent, scope: ArchiveScope): ConversationRecord[] {
   const { header } = scope;
-  if ((!scope.archiveScope && header.agentPreset !== scope.agentPreset) || header.origin === 'subagent' || (header.delegationDepth ?? 0) > 0 || event.seq < scope.inheritedEventCount) return [];
+  if (!isOrdinarySession(header) || event.seq < scope.inheritedEventCount) return [];
   if (event.type !== 'user/message' && event.type !== 'assistant/message') return [];
   if (!isAppendSurfaceEvent(event)) return [];
   const message = event.type === 'user/message' ? event.data : event.data.message;
@@ -28,8 +34,8 @@ export function extractConversationRecords(event: SessionEvent, scope: ArchiveSc
   const sentMessages = outgoing ? replyMessages(outgoing.messages) : undefined;
   if (outgoing && (identity?.channel !== 'wechat' || identity.speakerId !== `wechat:${identity.accountId}`)) throw new Error('Invalid WeChat outgoing identity');
   const visible = visibleText(message.content);
-  const prefix = identity ? identityPrefix(identity) : '';
-  const content = outgoing ? `微信待发送给 ${identity!.conversationId}（已生成，发送尚未确认）：\n${replyText(sentMessages!)}` : prefix && visible.startsWith(prefix) ? visible.slice(prefix.length) : visible;
+  const prefix = identity && [identityPrefix(identity), legacyIdentityPrefix(identity)].find(prefix => visible.startsWith(prefix));
+  const content = outgoing ? `微信待发送给 ${identity!.conversationId}（已生成，发送尚未确认）：\n${replyText(sentMessages!)}` : prefix ? visible.slice(prefix.length) : visible;
   if (!content) return [];
   const turn = event.type === 'assistant/message' ? event.data.turn : scope.turn;
   if (!Number.isSafeInteger(turn) || turn < 1) throw new Error(`dsh-world: no host turn for ${header.id}/${event.seq}`);

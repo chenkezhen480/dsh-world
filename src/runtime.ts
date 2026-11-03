@@ -4,11 +4,12 @@ import { createSystemMessage, createUserMessage, isAgentLoopRequest, type Stream
 import type { Session, SessionSeq } from '@deepseek-ai/dsh-session';
 import type {} from '@deepseek-ai/dsh-compaction';
 import './hostContract.ts';
+import { isOrdinarySession } from './archive.ts';
 import { Faults } from './faults.ts';
 import { createHistory, excludePresentMessages, renderHistory } from './history.ts';
 import { createWorldToolRegistry, memoryTools } from './memoryTools.ts';
 import { createPromptSections, type WorldPromptSource } from './promptSection.ts';
-import { belongsToWorld, createSourceArchive, inWorld, isCorruptSessionLog, isNotFound } from './sourceArchive.ts';
+import { belongsToWorld, createSourceArchive, inWorld } from './sourceArchive.ts';
 import type { ArchiveStore } from './store.ts';
 import type { WorldConfig } from './types.ts';
 import { worldNames } from './worldPrompt.ts';
@@ -17,10 +18,10 @@ import { DEFAULT_MEMORY_TURNS } from './worldSwitch.ts';
 
 export type { WorldPromptSource } from './promptSection.ts';
 const memorySource = 'dsh-world-history';
-const worldSources: readonly string[] = [memorySource];
+const isMemoryBlock = (event: ReturnType<Session['eventAt']>) => event?.type === 'user/message' && event.data.source.kind === memorySource;
 
 /**
- * Per session: whether the memory block must be (re)built at the next step and the current loop position.
+ * Per session: whether the memory block must be (re)built at the next step and the position of the latest request.
  */
 interface MemoryState { reload: boolean; position: { turn: number; step: number }; inScope: boolean; restart: boolean; pendingId?: string; retiring: SessionSeq[] }
 
@@ -49,7 +50,6 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
   const tools = toolSets.length ? createWorldToolRegistry({ tools: inside => toolSets.flatMap(make => make(inside)), inWorld: agent => !stopped && included(agent.session), faults, logger: ctx.logger }) : undefined;
   /** The memory tools follow world membership, whatever the life line does. */
   const syncTools = (agent: Agent): boolean => !tools ? false : included(agent.session) ? tools.attach(agent) : tools.detach(agent);
-  const attaching = new WeakMap<Session, Promise<void>>();
   const disposers: (() => void)[] = [];
   let stopping: Promise<void> | undefined;
   let stopped = false;
@@ -57,41 +57,30 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
    * Whether the session may carry her world: her preset, or a memory block inherited onto its surface (a delegated
    * child of her session). Everything else is never read from disk or tracked. The check stays in memory.
    */
-  const mayCarryWorld = (session: Session) => belongsToWorld(session, config) || memory.has(session) || session.surface.nodes.some(seq => {
-    const event = session.eventAt(seq);
-    return event?.type === 'user/message' && worldSources.includes(event.data.source.kind);
-  });
+  const mayCarryWorld = (session: Session) => belongsToWorld(session, config) || memory.has(session) || session.surface.nodes.some(seq => isMemoryBlock(session.eventAt(seq)));
 
-  /** Restore the loop position; recalled blocks are located directly on the current surface. */
-  async function readMemoryState(session: Session): Promise<MemoryState> {
-    let position = { turn: 1, step: 1 };
-    // A session the host is still creating may not be readable yet (#27); it has no step to restore.
-    const handle = await ctx.sessionPersistence.open(session.id, 'read').catch(error => { if (isNotFound(error)) return undefined; throw error; });
-    if (handle) try {
-      for (let offset = 0; ; offset += 128) {
-        const { events } = await handle.read(offset, 128);
-        if (!events.length) break;
-        for (const event of events) {
-          if (event.type === 'step/start') position = { turn: event.data.turn, step: event.data.step };
-        }
-      }
-    } finally { await handle.close(); }
+  function newMemoryState(session: Session): MemoryState {
     const inScope = included(session);
-    return { reload: true, position, retiring: [], inScope, restart: !inScope && belongsToWorld(session, config) };
+    return { reload: true, position: { turn: 1, step: 1 }, retiring: [], inScope, restart: !inScope && belongsToWorld(session, config) };
+  }
+  /**
+   * Archive failures never stop her talking: they stay in the health list, and what she said meanwhile is replayed
+   * from the host's log, from the archive's last committed position, once a later replay succeeds.
+   */
+  async function archiveNow(sessionId: string): Promise<void> {
+    if (archived(sessionId)) await faults.track(`archive:${sessionId}`, `会话 ${sessionId} 归档登记失败`, () => store.commitRecords([], store.progress(sessionId))).catch(() => {});
+    await archive.schedule(sessionId).catch(() => {});
   }
   /**
    * Marks our recalled blocks on the surface for retirement. The empty system node that retires one is accepted by
    * the host only inside an open turn and step, which pre-step and attach are not, so `flushRetired` writes it from
    * the step's request hook, after the step has started and before the request is assembled (#22).
    */
-  function retireMemory(session: Session, state: MemoryState, kinds: readonly string[] = worldSources): void {
-    const found = session.surface.nodes.filter(seq => {
-      const event = session.eventAt(seq);
-      return event?.type === 'user/message' && kinds.includes(event.data.source.kind);
-    });
+  function retireMemory(session: Session, state: MemoryState): void {
+    const found = session.surface.nodes.filter(seq => isMemoryBlock(session.eventAt(seq)));
     state.retiring = [...new Set([...state.retiring, ...found])];
     if (found.length) state.restart = true;
-    if (kinds.includes(memorySource)) { state.reload = true; state.pendingId = undefined; }
+    state.reload = true; state.pendingId = undefined;
   }
   /** Where memory blocks sit on a session's surface, for the log: positions and event types only, never message text. */
   function memoryNodesOn(session: Session): string {
@@ -101,7 +90,7 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
       if (!event) continue;
       let message: ReturnType<Session['deriveEventMessage']>;
       try { message = session.deriveEventMessage(event); } catch { continue; }
-      if (message?.source?.kind && worldSources.includes(message.source.kind)) found.push(`#${seq}(${event.type})`);
+      if (message?.source?.kind === memorySource) found.push(`#${seq}(${event.type})`);
     }
     return found.length ? found.slice(0, 8).join('、') + (found.length > 8 ? `…共 ${found.length} 个` : '') : '无';
   }
@@ -116,28 +105,17 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
   async function attach(agent: Agent): Promise<void> {
     const { session } = agent;
     if (memory.has(session) || !mayCarryWorld(session)) return;
-    const pending = attaching.get(session);
-    if (pending) return pending;
-    const job = faults.track(`memory:${session.id}`, `会话 ${session.id} 记忆初始化失败`, async () => {
-      if (included(session)) {
-        if (archived(session.id)) await store.commitRecords([], store.progress(session.id));
-        await archive.schedule(session.id);
-      }
-      const state = await readMemoryState(session);
-      // Retiring writes a system/message, which the host only accepts inside an open turn and step; attach runs
-      // between turns, so an out-of-scope block is retired by the next pre-step (before any request) instead (#22).
-      memory.set(session, state);
-    });
-    attaching.set(session, job);
-    try { await job; } finally { attaching.delete(session); }
+    // Retiring writes a system/message, which the host only accepts inside an open turn and step; attach runs
+    // between turns, so an out-of-scope block is retired by the next pre-step (before any request) instead (#22).
+    memory.set(session, newMemoryState(session));
+    if (included(session)) await archiveNow(session.id);
   }
-  /** Retire old blocks, then admit fresh memory through the host's normal append path (#21). */
+  /** Retire old blocks, then admit fresh memory through the host's normal append path (#21). The caller checks the scope after the wait. */
   async function freshBlock(session: Session, state: MemoryState): Promise<UserMessage | undefined> {
-    const turns = await history.loadRecentTurns(config.worldId, memoryTurns(), archivedByScope);
-    if (!included(session)) { retireMemory(session, state); return undefined; }
+    const turns = await history.loadRecentTurns(memoryTurns(), archivedByScope);
     const present = new Set(session.deriveMessages().map(message => message.id));
     const text = renderHistory(excludePresentMessages(turns, present), config.timeZone, names(), config.archiveScope === 'home');
-    retireMemory(session, state, [memorySource]);
+    retireMemory(session, state);
     return text ? createUserMessage({ content: [{ type: 'text', text }], source: { kind: memorySource, form: 'recall' } }) : undefined;
   }
   /** Reads what the first catch-up had to leave, once the host can say which sessions belong to her. */
@@ -152,19 +130,18 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
     try {
       disposers.push(ctx.on('session/event', (session, event) => {
         const state = memory.get(session);
-        if (state && event.type === 'step/start') state.position = { turn: event.data.turn, step: event.data.step };
         const compacted = event.type === 'compaction/end' && event.data.error === undefined;
         if (state && event.type === 'user/message' && event.data.id === state.pendingId) { state.reload = false; state.pendingId = undefined; }
         if (state && compacted) { state.reload = true; }
         if (compacted) prompts?.refresh(session);
-        if (session.header.origin === 'subagent' || (session.header.delegationDepth ?? 0) > 0 || (!config.archiveScope && !belongsToWorld(session, config))) return;
+        if (!isOrdinarySession(session.header)) return;
         if (event.type === 'assistant/message' || event.type === 'turn/end' || event.type === 'turn/start' || event.type === 'compaction/end' || (event.type === 'user/message' && event.data.source.kind === 'user')) void archive.schedule(session.id).catch(() => {});
       }));
       // The host fails the whole session creation when a creation listener rejects, leaving an empty session behind on
-      // every retry (#27). Memory is set up again before the first request, and a failure here stays in the health list.
+      // every retry (#27); attach never rejects, and its archive failures stay in the health list.
       disposers.push(ctx.on('agent/created', ({ agent }) => {
         prompts?.add(agent); syncTools(agent);
-        void attach(agent).catch(error => ctx.logger.warn(`dsh-world: 会话 ${agent.id} 记忆初始化失败，第一次请求前会再试：`, error));
+        void attach(agent);
         return undefined;
       }));
       if (tools) {
@@ -188,29 +165,30 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
         };
         if (!included(agent.session)) return leave();
         state.inScope = true;
-        await archive.schedule(agent.id); signal.throwIfAborted();
+        await archiveNow(agent.id); signal.throwIfAborted();
         if (!included(agent.session)) return leave();
         if (!state.reload) return decision;
-        let block: UserMessage | undefined;
-        await faults.track(`memory:${agent.id}`, `会话 ${agent.id} 记忆刷新失败`, async () => { block = await freshBlock(agent.session, state); });
+        // A block that cannot be built leaves the old one in place; she talks on, the fault shows, and the next step tries again.
+        let block: UserMessage | undefined, built = true;
+        await faults.track(`memory:${agent.id}`, `会话 ${agent.id} 记忆刷新失败`, async () => { block = await freshBlock(agent.session, state); }).catch(() => { built = false; });
         if (!included(agent.session)) return leave();
         signal.throwIfAborted();
-        if (!included(agent.session)) return leave();
-        if (state.reload && !block) state.reload = false;
-        if (!block) return decision;
+        if (!built) return decision;
+        if (!block) { state.reload = false; return decision; }
         state.pendingId = block.id;
         return { ...decision, messages: [block, ...decision.messages] };
       }));
       // The step is open here and its request is not built yet: the one place retired blocks can be written validly.
       disposers.push(ctx.on('agent/request', async function (payload, next) {
         const state = memory.get(payload.agent.session);
-        if (state?.retiring.length) flushRetired(payload.agent.session, state, { turn: payload.turn, step: payload.step });
+        if (state) state.position = { turn: payload.turn, step: payload.step };
+        if (state?.retiring.length) flushRetired(payload.agent.session, state, state.position);
         return next();
       }));
       disposers.push(ctx.on('llm/stream', async function* (request, next) {
         const agent = isAgentLoopRequest(request) && request.sessionId ? ctx.agents.get(request.sessionId) : undefined;
         const owned = agent && included(agent.session);
-        const inRequest = agent && !owned ? request.messages.filter(message => !!message.source?.kind && worldSources.includes(message.source.kind)).length : 0;
+        const inRequest = agent && !owned ? request.messages.filter(message => message.source?.kind === memorySource).length : 0;
         const placed = !!agent && !owned && !!prompts?.active(agent.session);
         if (agent && !owned && (placed || inRequest)) {
           const state = memory.get(agent.session);
@@ -231,11 +209,7 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
       if (options.fresh) for (const agent of ctx.agents.list()) if (belongsToWorld(agent.session, config)) await archive.skip(agent.id);
       for (const agent of ctx.agents.list()) {
         prompts?.add(agent);
-        try { await attach(agent); }
-        catch (error) {
-          if (!isCorruptSessionLog(error)) throw error;
-          ctx.logger.warn(`dsh-world: 会话 ${agent.id} 记忆初始化失败，已隔离：`, error);
-        }
+        await attach(agent);
       }
     } catch (error) { await stop(); throw error; }
   }

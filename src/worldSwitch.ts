@@ -2,8 +2,9 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { durableWrite } from './life/lifeStore.ts';
 import { validArchiveScope, type MemoryArchiveScope } from './archiveSelection.ts';
+import { DEFAULT_REVIEW_TIME, validClockTime } from './life/alarm.ts';
 
-interface WorldSettings { running: boolean; dailyBudget?: number; memoryTurns?: number; archiveScope?: MemoryArchiveScope; workspacePermission?: string; wechatContext?: number; wechatBufferSeconds?: number; wechatEnabled?: boolean; qqEnabled?: boolean; compactAfterReview?: boolean; compactionSwapped?: boolean }
+interface WorldSettings { running: boolean; dailyBudget?: number; memoryTurns?: number; archiveScope?: MemoryArchiveScope; workspacePermission?: string; wechatContext?: number; wechatBufferSeconds?: number; wechatEnabled?: boolean; qqEnabled?: boolean; compactAfterReview?: boolean; compactionSwapped?: boolean; reviewTime?: string; wakeTime?: string }
 /** How many of the newest turns the memory block carries when nothing else is set. */
 export const DEFAULT_MEMORY_TURNS = 200;
 /** WeChat group messages read before a mention, and seconds a private image waits for its companions. */
@@ -16,7 +17,7 @@ export const DEFAULT_WECHAT_BUFFER_SECONDS = 3, MAX_WECHAT_BUFFER_SECONDS = 30;
  * spend a day, and how many recent turns her memory block carries. A world that already has a life line from before the switch existed is running; a new one waits
  * for its partner to press start.
  */
-export function createWorldSwitch(worldDir: string, configuredScope: MemoryArchiveScope = 'workspace') {
+export function createWorldSwitch(worldDir: string, configuredScope: MemoryArchiveScope = 'workspace', configuredWake = '09:00') {
   const file = join(worldDir, 'world.json');
   const stored = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) as Partial<WorldSettings> : undefined;
   let settings: WorldSettings = {
@@ -31,6 +32,8 @@ export function createWorldSwitch(worldDir: string, configuredScope: MemoryArchi
     ...(typeof stored?.qqEnabled === 'boolean' ? { qqEnabled: stored.qqEnabled } : {}),
     ...(stored?.compactAfterReview === false ? { compactAfterReview: false } : {}),
     ...(stored?.compactionSwapped === true ? { compactionSwapped: true } : {}),
+    ...(validClockTime(stored?.reviewTime) ? { reviewTime: stored.reviewTime } : {}),
+    ...(validClockTime(stored?.wakeTime) ? { wakeTime: stored.wakeTime } : {}),
   };
   const activeScope = settings.archiveScope ?? configuredScope;
   function save(next: WorldSettings): void {
@@ -84,6 +87,16 @@ export function createWorldSwitch(worldDir: string, configuredScope: MemoryArchi
       const { wechatEnabled, qqEnabled, ...rest } = settings;
       const wechat = next.wechat ?? wechatEnabled ?? existsSync(join(worldDir, 'wechat-outbox.sqlite')), qq = next.qq ?? qqEnabled === true;
       save({ ...rest, wechatEnabled: wechat, ...(qq ? { qqEnabled: true } : {}) });
+    },
+    /** Her evening look back and her morning wake when nothing is pending; the configured `fallbackWakeTime` is the morning's default. */
+    reviewTime: () => settings.reviewTime ?? DEFAULT_REVIEW_TIME,
+    wakeTime: () => settings.wakeTime ?? configuredWake,
+    /** A field left out stays as it is; null goes back to its default. */
+    setSchedule(next: { review?: string | null; wake?: string | null }): void {
+      const { reviewTime: oldReview, wakeTime: oldWake, ...rest } = settings;
+      const review = next.review === undefined ? oldReview : next.review ?? undefined;
+      const wake = next.wake === undefined ? oldWake : next.wake ?? undefined;
+      save({ ...rest, ...(review === undefined || review === DEFAULT_REVIEW_TIME ? {} : { reviewTime: review }), ...(wake === undefined || wake === configuredWake ? {} : { wakeTime: wake }) });
     },
     /** Read by the WeChat adapter on its next poll; a batch already waiting keeps the value it started with. */
     wechatContext: () => settings.wechatContext ?? DEFAULT_WECHAT_CONTEXT,

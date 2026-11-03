@@ -124,14 +124,14 @@ test('a desktop turn can send to either bound chat through persistent tools and 
   assert.deepEqual(result.job.messages, words);
   assert.deepEqual((await (await post({ outbox: registration })).json()).job, result.job, 'an unacknowledged claim is returned with the same ID');
   assert.ok(agent.ctx.tools.get('wechat_send', agent), 'the tool survives the end of the turn');
-  const record = (await store.readPage({ worldId: 'test', limit: 10 })).records.find(item => item.recordId === result.job.id);
+  const record = (await store.readPage({ limit: 10 })).records.find(item => item.recordId === result.job.id);
   assert.ok(record);
   assert.match(record.content, /想跟你说句话[\s\S]*st_hello[\s\S]*晚安/);
   assert.doesNotMatch(record.content, /arguments|tool-call/);
   assert.equal(record.speakerId, 'wechat:wxid_bot');
   assert.equal((await post({ receipt: { id: result.job.id, confirmed: 3, status: 'sent' } })).status, 200);
   assert.equal((await (await post({ outbox: registration })).json()).job, undefined);
-  const confirmed = (await store.readPage({ worldId: 'test', limit: 10 })).records.find(item => item.recordId === result.job.id)!;
+  const confirmed = (await store.readPage({ limit: 10 })).records.find(item => item.recordId === result.job.id)!;
   assert.equal(confirmed.wechatDelivery?.status, 'sent');
   assert.equal((await post({ outbox: { ...registration, accountId: 'other_bot' } })).status, 400);
 });
@@ -213,17 +213,45 @@ test('restarting memory keeps retained WeChat words once and recalls the full wo
   world = createWorldRuntime(ctx, config, store); await world.start();
   agent.followup(user('重载后的下一轮')); await agent.whenIdle(); await world.flush();
   const messages = requests.at(-1)!.messages;
-  const content = messages.flatMap(message => message.content.filter(block => block.type === 'text').map(block => block.text)).join('\n');
+  // The words she sent stay once in the request: in her wechat_send call, not again in its queue note or the recalled memory.
+  const content = messages.map(message => JSON.stringify(message.content)).join('\n');
   const recalled = messages.filter(message => message.source?.kind === 'dsh-world-history').flatMap(message => message.content.filter(block => block.type === 'text').map(block => block.text)).join('\n');
   assert.equal(content.split(marker).length - 1, 1, 'retained outgoing content must not be repeated in recalled memory');
   assert.doesNotMatch(recalled, new RegExp(marker));
-  assert.match(recalled, /已确认发送 1\/1/);
+  assert.match(recalled, /"sent":"已发"/);
   const other = (await ctx.agents.create({ sessionId: SessionId('other'), meta: { agentPreset: 'test' }, agentOptions: { provider: 'test', model: 'test' } })).agent;
   other.followup(user('在另一个会话继续')); await other.whenIdle();
   const otherMemory = requests.at(-1)!.messages.filter(message => message.source?.kind === 'dsh-world-history').flatMap(message => message.content.filter(block => block.type === 'text').map(block => block.text)).join('\n');
   assert.match(otherMemory, new RegExp(marker));
-  assert.match(otherMemory, /已确认发送 1\/1/);
+  assert.match(otherMemory, /"sent":"已发"/);
   assert.deepEqual(errors, []);
+});
+
+test('a batch whose result is unknown is told once to the session that sent it, and a sent one says nothing', async t => {
+  const requests: GenerateOptions[] = [];
+  let calls = 0;
+  const { ctx, root, cleanup } = await hostFixture(t, request => {
+    requests.push(request);
+    const step = calls++;
+    return step === 0 ? call('wechat_send', { chatId: 'owner', messages: [{ type: 'text', text: '第一批' }] }) : step === 2 ? call('wechat_send', { chatId: 'owner', messages: [{ type: 'text', text: '第二批' }, { type: 'text', text: '第二批续' }] }) : textResponse('好');
+  });
+  const agent = (await ctx.agents.create({ sessionId: SessionId('home'), agentOptions: { provider: 'test', model: 'test' } })).agent;
+  const sending = createWechatSending({ ctx, file: join(root, 'outbox.sqlite'), worldId: 'test' });
+  cleanup.push(() => sending.stop());
+  for (const tool of sending.tools) cleanup.push(agent.ctx.tools.register(tool));
+  await sending.poll(registration);
+  const user = (text: string) => createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text }] });
+  const notices = () => requests.at(-1)!.messages.filter(message => message.source?.kind === 'dsh-world-wechat-delivery').map(message => message.content.map(block => block.type === 'text' ? block.text : '').join(''));
+  agent.followup(user('发第一批')); await agent.whenIdle();
+  const first = await sending.poll(registration); assert.ok(first);
+  await sending.receipt({ id: first.id, confirmed: 1, status: 'sent' });
+  agent.followup(user('发第二批')); await agent.whenIdle();
+  assert.deepEqual(notices(), [], 'a batch that went out is not reported');
+  const second = await sending.poll(registration); assert.ok(second);
+  await sending.receipt({ id: second.id, confirmed: 1, status: 'uncertain' });
+  await sending.receipt({ id: second.id, confirmed: 1, status: 'uncertain' });
+  agent.followup(user('下一轮')); await agent.whenIdle();
+  assert.deepEqual(notices(), ['【微信结果不明】发往微信「伙伴」的 2 条（开头是「第二批」）：前 1 条已发，第 2 条不知道发没发出，后面的没发。不要自动重发，先弄清对方收到了什么。']);
 });
 
 test('an unconfigured target is rejected without queuing or archiving words as sent', async t => {
@@ -271,7 +299,7 @@ test('claimed sends survive a host restart and group-origin sends respect the ho
   agent.followup(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: '从群会话主动联系伙伴' }] }));
   await agent.whenIdle(); await world.flush();
   const claimed = await sending.poll(registration); assert.ok(claimed);
-  assert.equal((await store.readPage({ worldId: 'test', limit: 10 })).records.length, 0);
+  assert.equal((await store.readPage({ limit: 10 })).records.length, 0);
   assert.match(JSON.stringify(agent.session.snapshotEvents()), /dsh-world-wechat-outgoing/);
   await sending.stop();
   sending = createWechatSending({ ctx, file, worldId: 'test', ...createWechatRecorder(store, 'test', isHome) });
@@ -279,14 +307,14 @@ test('claimed sends survive a host restart and group-origin sends respect the ho
   await sending.receipt({ id: claimed.id, confirmed: 3, status: 'sent' });
   assert.equal(await sending.poll(registration), undefined);
   assert.equal(store.delivery(claimed.id)?.status, 'sent');
-  assert.equal((await store.readPage({ worldId: 'test', limit: 10 })).records.length, 0);
+  assert.equal((await store.readPage({ limit: 10 })).records.length, 0);
   await world.stop();
   const expanded = createWorldRuntime(ctx, { ...config, archiveScope: 'workspace' }, store, { prompt: { names: { companion: '鲸鲸', partner: '伙伴' } }, isHome, archiveSession: () => true });
   await expanded.start(); cleanup.push(() => expanded.stop()); await expanded.flush();
-  let recovered = (await store.readPage({ worldId: 'test', limit: 10 })).records.find(record => record.recordId === claimed.id);
+  let recovered = (await store.readPage({ limit: 10 })).records.find(record => record.recordId === claimed.id);
   assert.equal(recovered?.wechatDelivery?.status, 'sent', 'scope expansion preserves the receipt already confirmed outside shared memory');
   await sending.receipt({ id: claimed.id, confirmed: 3, status: 'sent' });
-  recovered = (await store.readPage({ worldId: 'test', limit: 10 })).records.find(record => record.recordId === claimed.id);
+  recovered = (await store.readPage({ limit: 10 })).records.find(record => record.recordId === claimed.id);
   assert.equal(recovered?.wechatDelivery?.confirmed, 3);
 });
 

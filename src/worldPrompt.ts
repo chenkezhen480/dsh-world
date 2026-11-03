@@ -68,6 +68,6 @@ export function renderWorldPrompt(prompt: WorldPrompt, template: string, self: {
   const { life, names } = prompt;
   return renderTemplate(template, { life: Boolean(life), home, selfFile: Boolean(self), conversationsDir: Boolean(prompt.conversationsDir), memoryTools: Boolean(prompt.memoryTools) }, {
     name: names.companion, partner: names.partner, homeTitle: homeTitle(names), selfFile: self?.file ?? '', self: self?.text ?? '', conversationsDir: prompt.conversationsDir ?? '',
-    ...(life ? { roomDir: life.roomDir, diaryDir: life.diaryDir, fallbackWakeTime: life.fallbackWakeTime } : {}),
+    ...(life ? { roomDir: life.roomDir, diaryDir: life.diaryDir, fallbackWakeTime: life.schedule().wake } : {}),
   });
 }

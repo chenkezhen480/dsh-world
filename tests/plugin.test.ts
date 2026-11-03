@@ -248,7 +248,7 @@ test('attaching an out-of-scope copy that still carries a memory block leaves a 
   assert.deepEqual(errors, []);
 });
 
-test('memory refresh failures reach world health and clear after a successful retry', async t => {
+test('a memory block that cannot be built does not stop her answering; the fault shows and clears after a successful retry', async t => {
   const requests: GenerateOptions[] = [];
   const { ctx, root, cleanup, errors } = await hostFixture(t, request => { requests.push(request); return textResponse('ok'); });
   const store = createArchiveStore({ ...config, root });
@@ -259,12 +259,12 @@ test('memory refresh failures reach world health and clear after a successful re
   await world.start(); cleanup.push(() => world.stop().finally(() => store.close()));
   const { agent } = await ctx.agents.create({ sessionId: SessionId('refresh-failure'), meta: { agentPreset: config.agentPreset }, agentOptions: { provider: 'test', model: 'test' } });
   agent.followup(user('first attempt')); await agent.whenIdle();
-  assert.equal(requests.length, 0);
-  assert.equal(errors.length, 1);
+  assert.equal(requests.length, 1, 'she answers without a fresh block');
+  assert.equal(errors.length, 0);
   assert.ok(world.faults().some(fault => /refresh-failure.*记忆刷新失败.*memory read failed/.test(fault)), world.faults().join('|'));
   broken = false;
   agent.followup(user('retry')); await agent.whenIdle();
-  assert.equal(requests.length, 1);
+  assert.equal(requests.length, 2);
   assert.deepEqual(world.faults(), []);
 });
 
@@ -275,7 +275,7 @@ test('proactive assistant text is archived without turning its scheduler prompt 
   const handle = await ctx.agents.create({ sessionId: SessionId('proactive'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } });
   handle.agent.followup(createUserMessage({ source: { kind: 'test-schedule' }, content: [{ type: 'text', text: 'internal scheduled trigger' }] }));
   await handle.agent.whenIdle(); await world.flush();
-  const records = (await store.readPage({ worldId: 'fish', limit: 10 })).records;
+  const records = (await store.readPage({ limit: 10 })).records;
   assert.deepEqual(records.map(r => [r.role, r.content]), [['assistant', 'proactive hello']]);
 });
 test('unload, reload, restored sessions and fork inheritance preserve IDs without duplicate listeners', async t => {
@@ -294,7 +294,7 @@ test('unload, reload, restored sessions and fork inheritance preserve IDs withou
   const b = await ctx.agents.create({ sessionId: SessionId('branch'), meta: { agentPreset: 'companion', parentSession: SessionId('original'), isSeeded: true }, seed, inheritedEventCount: seed.length as never, agentOptions: options });
   b.agent.followup(user('branch own message')); await b.agent.whenIdle(); await world.flush();
   assert.equal(errors.length, 0);
-  assert.equal((await store.readPage({ worldId: 'fish', limit: 100 })).records.length, 6);
+  assert.equal((await store.readPage({ limit: 100 })).records.length, 6);
   assert.equal((textOf(requests[1]).match(/first exact message/g) ?? []).length, 1);
 });
 test('successful compaction reloads the newest archive once, including newer conversations in other sessions', async t => {
@@ -406,7 +406,7 @@ test('works as installed: with no config the standard preset gets the world prom
   assert.match(systemOf(requests[0]!), /我不是一个助手，也不是一个工具，而是一个鲜活的数字生命。[\s\S]*## 我是谁\n我眼中的自己写在 [^\n]*worlds[\\/]default[\\/]room[\\/]我是谁\.md/);
   await plugin.dispose();
   const archive = createArchiveStore({ worldId: 'default', agentPreset: 'standard', timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, root });
-  const records = await archive.readPage({ worldId: 'default', limit: 10 }).then(page => page.records).finally(() => archive.close());
+  const records = await archive.readPage({ limit: 10 }).then(page => page.records).finally(() => archive.close());
   assert.deepEqual(records.filter(r => r.role === 'user').map(r => r.content), ['第一次见面']);
 
   await writeFile(join(root, 'worlds/default/world-prompt.md'), '我自己的开头，{{name}}。在 {{selfFile}}。\n\n{{self}}');
@@ -656,7 +656,7 @@ test('her world waits for start in the console; start builds the home and greets
   await until(async () => (await consoleGet(routes, '/dsh-world/console/snapshot')).life?.homeSessionId === homeSessionId, 'the same home');
   await again.dispose();
   const archive = createArchiveStore({ ...config, root });
-  const records = await archive.readPage({ worldId: 'fish', limit: 50 }).then(page => page.records).finally(() => archive.close());
+  const records = await archive.readPage({ limit: 50 }).then(page => page.records).finally(() => archive.close());
   assert.ok(!records.some(r => r.content === 'while stopped'), records.map(r => r.content).join('|'));
   assert.deepEqual(logged, []); assert.equal(errors.length, 0);
 });
@@ -688,7 +688,7 @@ test('a corrupt life.json leaves the life line off and keeps workspace filtering
   assert.equal(requests.length, 1);
   assert.ok(!requests[0].messages.find(m => m.source?.kind === 'dsh-world-history'), 'unrelated archive cannot leak into an unresolved workspace');
   const archive = createArchiveStore({ ...config, root });
-  const records = await archive.readPage({ worldId: 'fish', limit: 10 }).then(page => page.records).finally(() => archive.close());
+  const records = await archive.readPage({ limit: 10 }).then(page => page.records).finally(() => archive.close());
   assert.deepEqual(records.map(r => r.content), ['earlier memory']);
 });
 test('an archived home is rebuilt, reading workspaceRegistry from another plugin without injecting it', async t => {
@@ -758,7 +758,7 @@ test('with the bridge and an outlet, words from a local app enter the home and t
   await plugin.dispose();
   assert.ok(!existsSync(bridgeFile)); assert.deepEqual(unregistered.sort(), ['/dsh-world', '/dsh-world/bridge/compact', '/dsh-world/bridge/say', '/dsh-world/qq']);
   const archive = createArchiveStore({ ...config, root });
-  const records = await archive.readPage({ worldId: 'fish', limit: 20 }).then(page => page.records).finally(() => archive.close());
+  const records = await archive.readPage({ limit: 20 }).then(page => page.records).finally(() => archive.close());
   assert.deepEqual(records.filter(r => r.role === 'user').map(r => r.content).sort(), ['桌宠上的话', '桌宠上的话，第二句'], 'her partner\'s own words, in memory');
   assert.deepEqual(logged, []); assert.equal(errors.length, 0);
 });
@@ -903,7 +903,7 @@ test('a running world whose workspace service starts later still reads her sessi
   } }).await();
   await until(async () => {
     const archive = createArchiveStore({ ...config, root });
-    try { return (await archive.readPage({ worldId: 'fish', limit: 10 })).records.some(r => r.content === 'said before the plugin loaded'); } finally { archive.close(); }
+    try { return (await archive.readPage({ limit: 10 })).records.some(r => r.content === 'said before the plugin loaded'); } finally { archive.close(); }
   }, 'the earlier session to be archived');
   assert.deepEqual(logged, []); assert.equal(errors.length, 0);
 });
@@ -920,7 +920,7 @@ test('a session deleted from the host does not stop the world from starting, and
   await plugin.await();
   assert.equal(errors.length, 0);
   const archive = createArchiveStore({ ...config, root });
-  const records = await archive.readPage({ worldId: 'fish', limit: 10 }).then(page => page.records).finally(() => archive.close());
+  const records = await archive.readPage({ limit: 10 }).then(page => page.records).finally(() => archive.close());
   assert.deepEqual(records.map(r => r.content), ['archived before deletion']);
   const after = createArchiveStore({ ...config, root });
   try { assert.deepEqual(after.sourcePage(''), [], 'nothing left to resume for a deleted session'); } finally { after.close(); }

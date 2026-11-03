@@ -2,7 +2,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent';
 import type {} from '@deepseek-ai/dsh-tools';
 import { errorText, type Faults } from '../faults.ts';
 import { scopedTool } from '../worldScope.ts';
-import type { ToolDefinition } from '@deepseek-ai/dsh-tools';
+import type { ToolDefinition, ToolGuard } from '@deepseek-ai/dsh-tools';
 
 type Registration = (() => void)[];
 const ALARM_TOOLS = ['plan_next', 'check_alarm', 'cancel_alarm'];
@@ -14,11 +14,11 @@ function undo(list: Registration): void {
 }
 
 /**
- * The alarm tools are held by every world session (she can set her alarm anywhere; it rings at home);
- * reach_out only by the current home. A registration that fails (a name clash) is a fault and never breaks
+ * The alarm tools are held by every world session (she can set her alarm anywhere; it rings at home), with `guard`
+ * checking each of its tool calls; reach_out only by the current home. A registration that fails (a name clash) is a fault and never breaks
  * agent creation; it registers all of a group or none. Each tool refuses to run once its session leaves her world.
  */
-export function createToolRegistry(deps: { faults: Faults; logger: { error(...args: unknown[]): void }; tools: (agent: Agent) => readonly ToolDefinition[]; isHome(agent: Agent): boolean; inWorld(agent: Agent): boolean }) {
+export function createToolRegistry(deps: { faults: Faults; logger: { error(...args: unknown[]): void }; tools: (agent: Agent) => readonly ToolDefinition[]; isHome(agent: Agent): boolean; inWorld(agent: Agent): boolean; guard?: ToolGuard }) {
   const alarm = new Map<Agent, Registration>();
   const home = new Map<Agent, Registration>();
   function register(agent: Agent, tools: readonly ToolDefinition[], names: string[]): Registration {
@@ -36,7 +36,13 @@ export function createToolRegistry(deps: { faults: Faults; logger: { error(...ar
       let changed = false;
       try {
         const tools = deps.tools(agent);
-        if (needsAlarm) { alarm.set(agent, register(agent, tools, ALARM_TOOLS)); changed = true; }
+        if (needsAlarm) {
+          const done = register(agent, tools, ALARM_TOOLS);
+          // The world sessions' own policy comes and goes with their alarm tools.
+          try { if (deps.guard) done.push(agent.ctx.tools.guard(execution => deps.inWorld(agent) ? deps.guard!(execution) : undefined)); }
+          catch (error) { undo(done); throw error; }
+          alarm.set(agent, done); changed = true;
+        }
         if (needsHome) { home.set(agent, register(agent, tools, HOME_TOOLS)); changed = true; }
         deps.faults.clear(`attach:${agent.id}`);
       } catch (error) { deps.faults.set(`attach:${agent.id}`, `工具挂载失败：${errorText(error)}`); deps.logger.error(error); }

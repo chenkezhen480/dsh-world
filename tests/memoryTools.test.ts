@@ -30,7 +30,7 @@ async function setup(t: test.TestContext, script: (request: GenerateOptions, ind
   const { ctx, root, cleanup, errors } = await hostFixture(t, request => { requests.push(request); return script(request, requests.length - 1); });
   const store = createArchiveStore({ ...config, root });
   const room = join(root, 'room'); await mkdir(room, { recursive: true });
-  const real = createMemory({ store: store.memory, timeZone: config.timeZone, sources: { selfFile: join(room, '我是谁.md') }, visible: () => true });
+  const real = createMemory({ store: store.memory, timeZone: config.timeZone, sources: { diaryDir: join(room, '日记') }, visible: () => true });
   const service = options.memory?.(real) ?? real;
   const world = createWorldRuntime(ctx, config, store, { prompt: { names }, isHome: () => false, ...(options.inWorkspace ? { inWorkspace: options.inWorkspace } : {}), memory: service });
   await world.start(); cleanup.push(() => world.stop().finally(() => store.close()));
