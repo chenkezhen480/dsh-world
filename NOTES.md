@@ -138,7 +138,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\enable-tool-free-c
 
 ### 微信支持版本
 
-目前仅适配 **Windows x64 微信 `4.1.15.13`、`4.1.15.56` 的指定构建**。适配器会核对 `Weixin.dll` 的文件大小和 SHA256；其他构建（包括版本号相同但文件指纹不同的构建）会在加载原生桥前被拒绝。macOS、Linux 客户端暂不支持。升级微信前请确认新构建已有适配；各版本的实测范围见 [微信模块](src/ecosystem/wechat/windows/README.md)。
+目前适配 **Windows x64 微信的指定构建**。适配器核对 `Weixin.dll` 的文件大小和 SHA256，只有两项均匹配才加载原生桥。支持的构建及各版本的实测范围见 [微信模块](src/ecosystem/wechat/windows/README.md)。
 
 ### 微信风控与账号风险
 

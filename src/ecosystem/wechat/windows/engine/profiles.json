@@ -110,5 +110,33 @@
       "contextVtable": 151871336,
       "emoticonVtable": null
     }
+  },
+  {
+    "version": "4.2.0.13",
+    "size": 205943848,
+    "sha256": "afe3d02c58bada3c35009c0cd58ee1f57b2a00fe53237d0dce649107fddb9a20",
+    "timestamp": 1793604862,
+    "imageSize": 206430208,
+    "addresses": {
+      "application": 285968,
+      "scheduler": 291600,
+      "schedule": 3228064,
+      "context": 291360,
+      "provider": 3690048,
+      "manager": 7465840,
+      "text": 91370832,
+      "image": 65862832,
+      "emoticon": null,
+      "copyWide": 636384,
+      "validateGif": null,
+      "probeGif": null,
+      "releaseProbe": null,
+      "send": 25014992,
+      "allocate": 124417292,
+      "free": 124417360,
+      "accountRoot": 198245872,
+      "contextVtable": 151879656,
+      "emoticonVtable": null
+    }
   }
 ]
