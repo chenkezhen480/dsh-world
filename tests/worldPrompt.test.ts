@@ -336,7 +336,7 @@ test('without a world prompt source nothing is added to the system prompt', asyn
   assert.ok(kinds(requests[0]!).includes('dsh-world-history'));
 });
 
-test('persona mapping follows the preset while world context stays inside the workspace', async t => {
+test('her persona, like the rest of her world, reaches only her preset inside the workspace and leaves with it (#37)', async t => {
   const requests: GenerateOptions[] = [];
   const { ctx, root, cleanup, errors } = await hostFixture(t, async function* (request) {
     if (request.purpose === 'compaction') { yield* textResponse('ordinary conversation'); return; }
@@ -359,20 +359,24 @@ test('persona mapping follows the preset while world context stays inside the wo
   const { agent } = await ctx.agents.create({ sessionId: SessionId('moving'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } });
   agent.followup(user('before attachment')); await agent.whenIdle();
   const hostSystem = systemOf(requests.at(-1)!);
-  assert.match(hostSystem, /PERSONA_SCOPE_MARKER/);
-  assert.doesNotMatch(textOf(requests.at(-1)!.messages), /MEMORY_SCOPE_MARKER|WORLD_SCOPE_MARKER|SELF_SCOPE_MARKER/);
+  assert.match(hostSystem, /You are an AI agent powered by DeepSeek Harness\./, 'a session of her preset outside the workspace keeps its own identity');
+  assert.doesNotMatch(textOf(requests.at(-1)!.messages), /PERSONA_SCOPE_MARKER|MEMORY_SCOPE_MARKER|WORLD_SCOPE_MARKER|SELF_SCOPE_MARKER/);
   membership = true;
   agent.followup(user('attached now')); await agent.whenIdle();
   for (const marker of ['MEMORY_SCOPE_MARKER', 'WORLD_SCOPE_MARKER', 'SELF_SCOPE_MARKER', 'PERSONA_SCOPE_MARKER']) assert.ok(textOf(requests.at(-1)!.messages).includes(marker), marker);
+  assert.doesNotMatch(systemOf(requests.at(-1)!), /You are an AI agent powered by DeepSeek Harness\./, 'inside, hers takes the place of the stock identity line');
   membership = false;
   agent.followup(user('moved away')); await agent.whenIdle();
-  assert.equal(systemOf(requests.at(-1)!), hostSystem);
+  assert.equal(systemOf(requests.at(-1)!), hostSystem, 'leaving takes her persona away with the rest and gives the identity line back');
   assert.doesNotMatch(textOf(requests.at(-1)!.messages), /MEMORY_SCOPE_MARKER|WORLD_SCOPE_MARKER|SELF_SCOPE_MARKER/);
   writePersona(persona, { 性格: 'PERSONA_REFRESHED_OUTSIDE' });
   assert.ok(await ctx.compaction.compactNow(agent, new AbortController().signal));
   agent.followup(user('after external compaction')); await agent.whenIdle();
-  assert.match(systemOf(requests.at(-1)!), /PERSONA_REFRESHED_OUTSIDE/);
+  assert.doesNotMatch(systemOf(requests.at(-1)!), /PERSONA_SCOPE_MARKER|PERSONA_REFRESHED_OUTSIDE/, 'a refresh outside does not bring it back');
   assert.doesNotMatch(textOf(requests.at(-1)!.messages), /MEMORY_SCOPE_MARKER|WORLD_SCOPE_MARKER|SELF_SCOPE_MARKER/);
+  membership = true;
+  agent.followup(user('back again')); await agent.whenIdle();
+  assert.match(systemOf(requests.at(-1)!), /PERSONA_REFRESHED_OUTSIDE/, 'coming back in places the persona as saved now');
   const foreign = await ctx.agents.create({ sessionId: SessionId('different-preset'), meta: { agentPreset: 'other' }, agentOptions: { provider: 'test', model: 'test' } });
   foreign.agent.followup(user('another preset')); await foreign.agent.whenIdle();
   assert.doesNotMatch(systemOf(requests.at(-1)!), /PERSONA_REFRESHED_OUTSIDE/);
