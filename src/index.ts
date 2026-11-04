@@ -1,5 +1,10 @@
 import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+// DSH's HMR reconciles the profile once at every start and drops, as failed imports, the profile modules whose import
+// has not finished (dsh-hmr `reconcileProfile`). The QQ module is imported later and is the only way to `ws`, a CommonJS
+// package: dropped halfway, Node fails it with ERR_INTERNAL_ASSERTION and QQ switched on at boot never starts. Loaded
+// with the plugin, `ws` is complete before that reconciliation runs.
+import 'ws';
 import type { Context } from '@deepseek-ai/cordis';
 import type { Session } from '@deepseek-ai/dsh-session';
 import z from '@deepseek-ai/schemastery';
