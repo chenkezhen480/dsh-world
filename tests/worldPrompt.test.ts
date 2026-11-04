@@ -9,6 +9,7 @@ import { SessionId } from '@deepseek-ai/dsh-session';
 import TokenMeter from '@deepseek-ai/dsh-token-meter';
 import { hostFixture, textResponse } from './hostFixture.ts';
 import { createWorldRuntime } from '../src/runtime.ts';
+import { DEFAULT_COLD_HOURS } from '../src/worldSwitch.ts';
 import { createArchiveStore } from '../src/store.ts';
 import { renderSelf, SELF_CAP } from '../src/self.ts';
 import { readTemplate, renderTemplate, renderWorldPrompt, worldNames } from '../src/worldPrompt.ts';
@@ -129,6 +130,44 @@ test('every world session carries the world prompt in its system prompt; templat
   await world.flush();
   const archived = (await store.readPage({ limit: 100 })).records.map(r => r.content).join('\n');
   assert.ok(!archived.includes('WORLD_INTRO') && !archived.includes('最近有点叛逆'));
+  assert.equal(errors.length, 0, errors.map(e => String((e as { error: Error }).error)).join('\n'));
+});
+test('a session that speaks again after being cold re-reads 我是谁 and her memory; one in conversation keeps its prefix (#36)', async t => {
+  const requests: GenerateOptions[] = [];
+  const { ctx, root, cleanup, errors } = await hostFixture(t, async function* (request) { requests.push(request); yield* textResponse('嗯'); });
+  const store = createArchiveStore({ ...config, root });
+  const selfFile = join(root, 'room', '我是谁.md'); await mkdir(join(root, 'room'), { recursive: true });
+  const templateFile = join(root, 'world-prompt.md'); await writeFile(templateFile, '{{self}}');
+  await writeFile(selfFile, '打开那天的我');
+  let clock = Date.parse('2026-11-04T08:00:00.000Z'), coldHours = DEFAULT_COLD_HOURS;
+  const hours = (count: number) => count * 60 * 60_000;
+  const world = createWorldRuntime(ctx, { ...config, selfFile }, store, { prompt: { file: templateFile, names, life }, isHome: () => false }, undefined, () => coldHours, () => clock);
+  await world.start(); cleanup.push(() => world.stop().finally(() => store.close()));
+  const { agent } = await ctx.agents.create({ sessionId: SessionId('qq'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } });
+  agent.followup(user('在吗')); await agent.whenIdle();
+  assert.match(systemOf(requests.at(-1)!), /打开那天的我/);
+
+  // Meanwhile she rewrote 我是谁 and talked on WeChat.
+  await writeFile(selfFile, '后来的我');
+  await store.commitRecords([record('wechat', { sourceSessionId: 'wechat', turnId: 'wechat:1', content: '微信那边刚聊的', occurredAt: '2026-11-04T09:00:00.000Z' })]);
+  clock += hours(DEFAULT_COLD_HOURS - 1);
+  agent.followup(user('还在聊')); await agent.whenIdle();
+  assert.match(systemOf(requests.at(-1)!), /打开那天的我/, 'short of the default 24 hours it is the same conversation: the prompt is left alone');
+  assert.ok(!kinds(requests.at(-1)!).slice(-3).includes('dsh-world-history'), 'and no new memory block is added');
+
+  clock += hours(DEFAULT_COLD_HOURS);
+  agent.followup(user('好久不见')); await agent.whenIdle();
+  const back = requests.at(-1)!;
+  assert.match(systemOf(back), /后来的我/); assert.doesNotMatch(systemOf(back), /打开那天的我/);
+  const blocks = back.messages.filter(message => message.source?.kind === 'dsh-world-history');
+  assert.equal(blocks.length, 1, 'the old block is retired, a fresh one takes its place');
+  assert.match(textOf(blocks), /微信那边刚聊的/);
+
+  // The console's value is read at each turn start: a shorter one takes effect without a restart.
+  coldHours = 2; await writeFile(selfFile, '又变了的我');
+  clock += hours(3);
+  agent.followup(user('又来了')); await agent.whenIdle();
+  assert.match(systemOf(requests.at(-1)!), /又变了的我/);
   assert.equal(errors.length, 0, errors.map(e => String((e as { error: Error }).error)).join('\n'));
 });
 test('after her look back one apply-and-compact makes the 我是谁 she rewrote the one in her prompt', async t => {

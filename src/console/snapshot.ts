@@ -38,6 +38,8 @@ export interface SnapshotDeps {
   dailyBudget(): number | undefined;
   /** Turns her memory block carries. */
   memoryTurns(): number;
+  /** Hours of silence after which a session re-reads her memory block and prompt. */
+  coldHours?(): number;
   selectedArchiveScope?(): MemoryArchiveScope;
   compactAfterReview?(): boolean;
   /** The evening look back and the morning wake, with what an empty field goes back to; absent without the life line. */
@@ -81,7 +83,7 @@ export function consoleSources(deps: SnapshotDeps): ConsoleSources & { invalidat
       life: life ? { homeSessionId: life.homeSessionId, status: home ? home.status : 'cold', alarm: life.alarm, review: life.review, recentWakes: lifeStore?.wakes().slice(-5).reverse() ?? [] } : null,
       homeApply: deps.homeApply?.() ?? null,
       health: [...(life?.faults ?? []), ...deps.faults()],
-      memory: { index: deps.longTerm?.status() ?? null, turns: turns.length, windowTurns: window, archiveScope, selectedArchiveScope, restartRequired: archiveScope !== selectedArchiveScope, approxTokens: estimateTokens(renderHistory(turns, config.timeZone, deps.names(), archiveScope === 'home')), oldest: turns.at(-1)?.messages[0]?.occurredAt, ...archive.stats() },
+      memory: { index: deps.longTerm?.status() ?? null, turns: turns.length, windowTurns: window, coldHours: deps.coldHours?.() ?? null, archiveScope, selectedArchiveScope, restartRequired: archiveScope !== selectedArchiveScope, approxTokens: estimateTokens(renderHistory(turns, config.timeZone, deps.names(), archiveScope === 'home')), oldest: turns.at(-1)?.messages[0]?.occurredAt, ...archive.stats() },
       wechat: deps.wechat?.() ?? null,
       compactions: lifeStore?.compactions().slice(-5).reverse() ?? [],
       diaryDates: diary.dates(), activityDays: lifeStore?.activityDays() ?? [],

@@ -27,8 +27,8 @@ const HARNESS_IDENTITY = 'harness:identity';
  * Her persona follows the configured preset; the world prompt is limited to the world's workspace.
  * Both are sections of the session's system prompt so she sees them on every
  * request. They are read when the session opens and again after each successful compaction (the host assembles
- * the system prompt before pre-step, so the refresh happens on compaction/end) or explicit console application, so the prompt
- * stays in the provider-cached prefix. Whether the session is her home is asked per request.
+ * the system prompt before pre-step, so the refresh happens on compaction/end), when a cold session speaks again
+ * (`coldHours` in `runtime.ts`, on turn/start) or on explicit console application, so the prompt stays in the provider-cached prefix. Whether the session is her home is asked per request.
  *
  * Her persona takes the place of DeepSeek Harness's stock identity line, but never of a persona someone has set: it is its own
  * section placed right after the host's persona slot, so a system persona the deployment or her preset already has stays

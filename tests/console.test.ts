@@ -7,7 +7,7 @@ import { PERSONA_LAYERS, type Persona } from '../src/persona.ts';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createWorldSwitch, DEFAULT_MEMORY_TURNS } from '../src/worldSwitch.ts';
+import { createWorldSwitch, DEFAULT_COLD_HOURS, DEFAULT_MEMORY_TURNS } from '../src/worldSwitch.ts';
 
 const sources: ConsoleSources = {
   snapshot: async () => ({ worldId: 'jingjing' }),
@@ -25,6 +25,7 @@ function fakeActions() {
     saveWorldPrompt: text => { calls.push(`world:${text}`); },
     setDailyBudget: yuan => { calls.push(`budget:${yuan}`); },
     setMemoryTurns: turns => { calls.push(`memory:${turns}`); },
+    setColdHours: hours => { calls.push(`cold:${hours}`); },
     setArchiveScope: scope => { calls.push(`scope:${scope}`); return scope === 'workspace'; },
     setWorkspacePermission: permission => { calls.push(`permission:${permission}`); },
     setCompactAfterReview: on => { calls.push(`compact-after-review:${on}`); },
@@ -252,8 +253,11 @@ test('console writes need the write mark, and change only what they name', async
   assert.equal((await post('/dsh-world/console/memory', { turns: 60 })).status, 200);
   assert.equal((await post('/dsh-world/console/memory', { turns: null })).status, 200);
   for (const turns of [0, 1.5, '60', undefined]) assert.equal((await post('/dsh-world/console/memory', { turns })).status, 400, String(turns));
+  assert.equal((await post('/dsh-world/console/memory', { coldHours: 12 })).status, 200);
+  assert.equal((await post('/dsh-world/console/memory', { coldHours: null })).status, 200);
+  for (const coldHours of [0, 721, 1.5, '12']) assert.equal((await post('/dsh-world/console/memory', { coldHours })).status, 400, String(coldHours));
   assert.equal((await post('/dsh-world/console/nope', {})).status, 404);
-  assert.deepEqual(calls, ['start', 'stop', 'persona:{"名字":"小鱼","性格":"嘴硬"}', 'world:我的模板', 'budget:5', 'budget:undefined', 'memory:60', 'memory:undefined']);
+  assert.deepEqual(calls, ['start', 'stop', 'persona:{"名字":"小鱼","性格":"嘴硬"}', 'world:我的模板', 'budget:5', 'budget:undefined', 'memory:60', 'memory:undefined', 'cold:12', 'cold:undefined']);
   const del = await handleConsole(sources, actions, { method: 'DELETE', url: '/dsh-world/console/snapshot', write: false });
   assert.equal(del.status, 405); assert.equal(del.headers?.allow, 'GET, POST');
 });
@@ -347,6 +351,19 @@ test('the memory window is kept in world.json, defaults to 200 and survives a re
   power.setMemoryTurns(undefined);
   assert.equal(createWorldSwitch(dir).memoryTurns(), 200);
   assert.equal('memoryTurns' in JSON.parse(readFileSync(join(dir, 'world.json'), 'utf8')), false, 'the default is not written out');
+});
+
+test('the cold-session hours are kept in world.json, default to 24 and survive a restart (#36)', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'dw-switch-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const power = createWorldSwitch(dir);
+  assert.equal(power.coldHours(), DEFAULT_COLD_HOURS); assert.equal(DEFAULT_COLD_HOURS, 24);
+  power.setColdHours(6);
+  assert.equal(createWorldSwitch(dir).coldHours(), 6);
+  power.setColdHours(undefined);
+  assert.equal(createWorldSwitch(dir).coldHours(), 24);
+  assert.equal('coldHours' in JSON.parse(readFileSync(join(dir, 'world.json'), 'utf8')), false, 'the default is not written out');
+  writeFileSync(join(dir, 'world.json'), JSON.stringify({ running: true, coldHours: 0 }));
+  assert.equal(createWorldSwitch(dir).coldHours(), 24, 'a value out of range in a hand-edited world.json falls back to the default');
 });
 
 test('memory lookups reach the console through the same service as the tools: parameters, paging, errors and the health of her files', async t => {

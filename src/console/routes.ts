@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { jsonObject, knownHost, readBody, sendJson, type JsonResult } from '../http.ts';
 import { PERSONA_LAYERS, type Persona } from '../persona.ts';
-import { validTurns, validWechatBuffer, validWechatContext, validWorkspacePermission, MAX_WECHAT_BUFFER_SECONDS, MAX_WECHAT_CONTEXT } from '../worldSwitch.ts';
+import { validColdHours, validTurns, validWechatBuffer, MAX_COLD_HOURS, validWechatContext, validWorkspacePermission, MAX_WECHAT_BUFFER_SECONDS, MAX_WECHAT_CONTEXT } from '../worldSwitch.ts';
 import { validArchiveScope, type MemoryArchiveScope } from '../archiveSelection.ts';
 import type { PhotoStore } from '../life/photos.ts';
 import { validClockTime } from '../life/alarm.ts';
@@ -35,6 +35,8 @@ export interface ConsoleActions {
   setDailyBudget(yuan: number | undefined): void;
   /** Turns in her memory block; undefined goes back to the default. */
   setMemoryTurns(turns: number | undefined): void;
+  /** Hours of silence after which a session re-reads her memory and prompt; undefined goes back to the default. */
+  setColdHours(hours: number | undefined): void;
   setArchiveScope(scope: MemoryArchiveScope): boolean;
   setWorkspacePermission(permission: string): void;
   /** Whether the evening look back is followed by applying and compacting her home (on unless turned off). */
@@ -88,9 +90,13 @@ async function write(actions: ConsoleActions, path: string, body: Record<string,
       actions.setDailyBudget(daily === null ? undefined : daily); return ok();
     }
     case '/console/memory': {
-      const turns = body?.turns;
-      if (turns !== null && !validTurns(turns)) return bad('turns must be a whole number of at least 1, or null');
-      actions.setMemoryTurns(turns === null ? undefined : turns); return ok();
+      const turns = body?.turns, coldHours = body?.coldHours;
+      if (turns !== undefined && turns !== null && !validTurns(turns)) return bad('turns must be a whole number of at least 1, or null');
+      if (coldHours !== undefined && coldHours !== null && !validColdHours(coldHours)) return bad(`coldHours must be a whole number from 1 to ${MAX_COLD_HOURS}, or null`);
+      if (turns === undefined && coldHours === undefined) return bad('nothing to change');
+      if (turns !== undefined) actions.setMemoryTurns(turns ?? undefined);
+      if (coldHours !== undefined) actions.setColdHours(coldHours ?? undefined);
+      return ok();
     }
     case '/console/wechat': {
       const context = body?.contextMessages, bufferSeconds = body?.bufferSeconds;
