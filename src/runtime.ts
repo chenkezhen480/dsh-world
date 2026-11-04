@@ -14,25 +14,30 @@ import type { ArchiveStore } from './store.ts';
 import type { WorldConfig } from './types.ts';
 import { worldNames } from './worldPrompt.ts';
 import { reassembleOnChange } from './worldScope.ts';
-import { DEFAULT_MEMORY_TURNS } from './worldSwitch.ts';
+import { DEFAULT_COLD_HOURS, DEFAULT_MEMORY_TURNS } from './worldSwitch.ts';
 
 export type { WorldPromptSource } from './promptSection.ts';
 const memorySource = 'dsh-world-history';
 const isMemoryBlock = (event: ReturnType<Session['eventAt']>) => event?.type === 'user/message' && event.data.source.kind === memorySource;
 
 /**
- * Per session: whether the memory block must be (re)built at the next step and the position of the latest request.
+ * Per session: whether the memory block must be (re)built at the next step, the position and time of the latest request.
  */
-interface MemoryState { reload: boolean; position: { turn: number; step: number }; inScope: boolean; restart: boolean; pendingId?: string; retiring: SessionSeq[] }
+interface MemoryState { reload: boolean; position: { turn: number; step: number }; lastRequestAt?: number; inScope: boolean; restart: boolean; pendingId?: string; retiring: SessionSeq[] }
 
 /**
  * The memory line: her conversations are archived as they happen, and every world session gets a memory
- * block of the newest turns at its start and after each successful compaction, never in between, so it stays
- * inside the provider-cached prefix. `home` archives the current home; `workspace` uses host membership. The memory block still
+ * block of the newest turns at its start, after each successful compaction and when it speaks again after being cold,
+ * never in between, so it stays inside the provider-cached prefix. `home` archives the current home; `workspace` uses host membership. The memory block still
  * goes to every world session in her workspace (`inWorkspace`), independently of the archive scope.
  * `memoryTurns` is read each time a block is built (default 200).
+ *
+ * A session silent for `coldHours` (read at each turn start, default 24) is cold (#36): its provider cache has most
+ * likely expired (DeepSeek clears an unused one "usually within a few hours to a few days", best effort), so its next
+ * turn re-reads her memory block and prompt as a newly opened session would, at the cost of at most one uncached
+ * request. A conversation in progress does not pause that long, so its cached prefix stays whole.
  */
-export function createWorldRuntime(ctx: Context, config: WorldConfig, store: ArchiveStore, world?: WorldPromptSource, memoryTurns: () => number = () => DEFAULT_MEMORY_TURNS) {
+export function createWorldRuntime(ctx: Context, config: WorldConfig, store: ArchiveStore, world?: WorldPromptSource, memoryTurns: () => number = () => DEFAULT_MEMORY_TURNS, coldHours: () => number = () => DEFAULT_COLD_HOURS, now: () => number = Date.now) {
   if (config.archiveScope === 'workspace' && !world?.archiveSession) throw new Error('Workspace archive requires the host workspace selection');
   const archivedByScope = world?.archiveSession ?? ((sessionId: string) => config.archiveScope !== 'home' || !!world?.isHome(sessionId));
   /** False while some session's workspace was unknown (the host's workspace service was not up yet); `retryCatchUp` reads those later. */
@@ -133,7 +138,10 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
         const compacted = event.type === 'compaction/end' && event.data.error === undefined;
         if (state && event.type === 'user/message' && event.data.id === state.pendingId) { state.reload = false; state.pendingId = undefined; }
         if (state && compacted) { state.reload = true; }
-        if (compacted) prompts?.refresh(session);
+        // The host assembles the system prompt after turn/start, so a cold session's first request already has both.
+        const cold = !!state && event.type === 'turn/start' && state.lastRequestAt !== undefined && now() - state.lastRequestAt >= coldHours() * 60 * 60_000;
+        if (cold) state.reload = true;
+        if (compacted || cold) prompts?.refresh(session);
         if (!isOrdinarySession(session.header)) return;
         if (event.type === 'assistant/message' || event.type === 'turn/end' || event.type === 'turn/start' || event.type === 'compaction/end' || (event.type === 'user/message' && event.data.source.kind === 'user')) void archive.schedule(session.id).catch(() => {});
       }));
@@ -181,7 +189,7 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
       // The step is open here and its request is not built yet: the one place retired blocks can be written validly.
       disposers.push(ctx.on('agent/request', async function (payload, next) {
         const state = memory.get(payload.agent.session);
-        if (state) state.position = { turn: payload.turn, step: payload.step };
+        if (state) { state.position = { turn: payload.turn, step: payload.step }; state.lastRequestAt = now(); }
         if (state?.retiring.length) flushRetired(payload.agent.session, state, state.position);
         return next();
       }));

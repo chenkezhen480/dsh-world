@@ -337,6 +337,50 @@ test('the schedule card saves the review and morning times, refuses a bad one an
   assert.equal(input('每日回顾时间').props!.value, '23:00', 'empty goes back to the default and shows it');
 });
 
+test('the memory card saves the cold-session hours, refuses a bad one and empties back to 24 (#36)', async () => {
+  type El = { type: unknown; props: Record<string, any> | null; children: unknown[] };
+  const states: unknown[] = [];
+  let at = 0, refreshed = 0;
+  const requests: { url: string; options: any }[] = [];
+  const react = {
+    createElement: (type: unknown, props: unknown, ...children: unknown[]) => ({ type, props, children }),
+    useState(init: unknown) { const index = at++; if (!(index in states)) states[index] = init; return [states[index], (value: unknown) => { states[index] = value; }]; },
+  };
+  let loaded: { factory: (require: (name: string) => unknown) => { __test: { Memory: (props: unknown) => unknown } } } | undefined;
+  runInNewContext(await readFile('client/index.js', 'utf8'), {
+    window: { __ModuleLoader__: { load: (entry: typeof loaded) => { loaded = entry; } } },
+    fetch: async (url: string, options: unknown) => { requests.push({ url, options }); return { ok: true, status: 200, json: async () => ({ ok: true }) }; },
+  });
+  const component = loaded!.factory(() => react).__test.Memory;
+  const expand = (value: unknown): El[] => {
+    if (Array.isArray(value)) return value.flatMap(expand);
+    if (!value || typeof value !== 'object') return [];
+    const el = value as El;
+    return typeof el.type === 'function' ? expand(el.type({ ...el.props, children: el.children })) : [el, ...el.children.flatMap(expand)];
+  };
+  const text = (value: unknown): string => Array.isArray(value) ? value.map(text).join('') : value && typeof value === 'object' ? text((value as El).children) : value == null || typeof value === 'boolean' ? '' : String(value);
+  const mem = { turns: 3, windowTurns: 200, coldHours: 24, archiveScope: 'workspace', selectedArchiveScope: 'workspace', approxTokens: 10, records: 3, sessions: 1 };
+  let tree: El[] = [];
+  const render = () => { at = 0; tree = expand(component({ mem, onSaved: () => { refreshed++; } })); };
+  const label = '久未开口后重新读取（小时）';
+  const input = () => tree.find(el => el.type === 'input' && el.props!['aria-label'] === label)!;
+  const save = async () => { const inputs = tree.filter(el => el.type === 'input' || el.type === 'button'); inputs[inputs.indexOf(input()) + 1]!.props!.onClick(); await new Promise(setImmediate); render(); };
+  render();
+  assert.equal(input().props!.value, '24');
+  assert.match(text(tree), /隔这么久再开口，就重新读一遍记忆块/);
+  input().props!.onChange({ target: { value: '0' } }); render();
+  await save();
+  assert.equal(requests.length, 0); assert.match(text(tree), /1 到 720/);
+  input().props!.onChange({ target: { value: '12' } }); render();
+  await save();
+  assert.equal(requests.at(-1)!.url, '/dsh-world/console/memory');
+  assert.deepEqual(JSON.parse(requests.at(-1)!.options.body), { coldHours: 12 }, 'only the hours are sent, the turns stay as they are');
+  assert.equal(refreshed, 1); assert.match(text(tree), /已保存/);
+  input().props!.onChange({ target: { value: '' } }); render();
+  await save();
+  assert.deepEqual(JSON.parse(requests.at(-1)!.options.body), { coldHours: null });
+  assert.equal(input().props!.value, '24', 'empty goes back to the default and shows it');
+});
 test('album shows metadata first, loads one selected image and paginates with the backend shape', async () => {
   type El = { type: unknown; props: Record<string, any> | null; children: unknown[] };
   const states: any[] = [], effects: { deps: unknown[] }[] = []; let at = 0, effectAt = 0;

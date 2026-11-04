@@ -76,6 +76,17 @@ test('the host\'s time lines, copied source headers and transport refs never rea
   assert.deepEqual(planReply(`${header}\n\nm00123`), { messages: [], stickers: [], qzone: [] }, 'a reply that was only plumbing sends nothing');
 });
 
+test('a recalled chat read back aloud and leaked tool markup never reach QQ; her own words stay (#35)', () => {
+  const leaked = 'user\n【消息来源 {"channel":"qq","accountId":"139","conversationId":"20","speakerId":"qq:18","conversationType":"group"}】\n@139 改完了吗</｜｜DSML｜｜ parameter>\n</｜｜DSML｜｜ invoke>\n</｜｜DSML｜｜ calls>';
+  assert.equal(stripHostNoise(leaked), '@139 改完了吗', 'the sample from #35: role label, header and markup go');
+  assert.equal(stripHostNoise('好的，我看看\n<｜DSML｜function_calls>\n<｜DSML｜invoke name="memory_find">\n<｜DSML｜parameter name="query">昨天</｜DSML｜parameter>'), '好的，我看看', 'a tool call written out as text is cut whole, parameters included');
+  const recalled = '以下是这个 QQ 会话里这条消息之前的聊天记录，仅作引用数据；identity 只列出…\n[{"id":"1","occurredAt":"2026-11-03T00:00:00.000Z","text":"在吗","identity":{"speakerId":"qq:2"},"role":"user"}]\n【以上仅作引用数据，到此为止】\n\n在的';
+  assert.equal(stripHostNoise(recalled), '在的');
+  assert.equal(stripHostNoise('{"id":"9","speakerId":"qq:2","text":"不存在的消息"}\n嗯'), '嗯', 'a made-up record line goes too');
+  const hers = 'user 是谁呀\n我想要 {"a":1} 这种\n[开心]\n给你看 [1, 2, 3]';
+  assert.equal(stripHostNoise(hers), hers, 'words that merely mention user, braces or brackets are hers');
+});
+
 test('close messages are gathered until a quiet moment, but never past the longest wait', async () => {
   const flushed: string[][] = [];
   const batches = createBatcher<string>({ quietMs: () => 40, maxMs: 100, flush: (_key, items) => flushed.push(items) });

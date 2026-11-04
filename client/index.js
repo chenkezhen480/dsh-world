@@ -306,18 +306,24 @@ window.__ModuleLoader__.load({
           h('button', { className: 'dw-btn', onClick: save }, '保存')),
         h(Status, { msg: msg }))
     }
-    /** 记忆块带最近几轮：默认 200，下次开始对话或压缩之后生效。 */
+    /** 记忆块带最近几轮：默认 200，下次开始对话或压缩之后生效；隔多少小时没开口就重新读：默认 24，下一轮生效。 */
     function Memory(props) {
       var mem = props.mem, window_ = mem && mem.windowTurns || 200
       var activeScope = mem && mem.archiveScope || 'workspace'
       var scopeNames = { home: '仅家会话', workspace: '家所在工作区' }
       var scopeState = useState(mem && mem.selectedArchiveScope || activeScope), scope = scopeState[0], setScope = scopeState[1]
       var draftState = useState(String(window_)), draft = draftState[0], setDraft = draftState[1]
+      var coldState = useState(String(mem && mem.coldHours || 24)), cold = coldState[0], setCold = coldState[1]
       var msgState = useState(''), msg = msgState[0], setMsg = msgState[1]
       function save() {
         var text = String(draft).trim(), value = text === '' ? null : Number(text)
         if (value !== null && !(Number.isInteger(value) && value >= 1)) { setMsg('请填一个不小于 1 的整数，留空恢复默认 200'); return }
         post('memory', { turns: value }).then(function () { setMsg('已保存。下次开始对话或压缩之后生效。'); if (value === null) setDraft('200'); if (props.onSaved) props.onSaved() }, failedTo(setMsg))
+      }
+      function saveCold() {
+        var text = String(cold).trim(), value = text === '' ? null : Number(text)
+        if (value !== null && !(Number.isInteger(value) && value >= 1 && value <= 720)) { setMsg('请填 1 到 720 之间的整数小时，留空恢复默认 24'); return }
+        post('memory', { coldHours: value }).then(function () { setMsg('已保存。各窗口从下一轮开始按新时长判断。'); if (value === null) setCold('24'); if (props.onSaved) props.onSaved() }, failedTo(setMsg))
       }
       function saveScope() {
         post('archive-scope', { scope: scope }).then(function (result) {
@@ -338,6 +344,10 @@ window.__ModuleLoader__.load({
         h('div', { key: 's', className: 'dw-setting' },
           h('input', { type: 'text', inputMode: 'numeric', 'aria-label': '记忆带最近几轮', placeholder: '最近几轮，留空为 200', value: draft, onChange: function (e) { setDraft(e.target.value); setMsg('') } }),
           h('button', { className: 'dw-btn', onClick: save }, '保存')),
+        h('div', { key: 'cd', className: 'dw-muted' }, '一个窗口隔这么久再开口，就重新读一遍记忆块、人设和「我是谁」；正在聊的窗口不受影响。'),
+        h('div', { key: 'c', className: 'dw-setting' },
+          h('input', { type: 'text', inputMode: 'numeric', 'aria-label': '久未开口后重新读取（小时）', placeholder: '小时，留空为 24', value: cold, onChange: function (e) { setCold(e.target.value); setMsg('') } }),
+          h('button', { className: 'dw-btn', onClick: saveCold }, '保存')),
         h(Status, { key: 'x', msg: msg }),
       ] : h('div', { className: 'dw-muted' }, '—'))
     }
@@ -888,7 +898,7 @@ window.__ModuleLoader__.load({
         return ctx.slots.register({ name: 'settings.section', id: 'world-console', order: 28, label: '世界控制台' }, function () { return h(Console) })
       })
     }
-    Object.defineProperty(exports, '__test', { value: { MemorySearch: MemorySearch, latest: latest, searchMemory: searchMemory, memoryQuery: memoryQuery, dayStartIso: dayStartIso, WorkspacePermission: WorkspacePermission, CompactAfterReview: CompactAfterReview, Schedule: Schedule, Modules: Modules, HomeApply: HomeApply, PhotoAlbum: PhotoAlbum, Wechat: Wechat, Activity: Activity, Diary: Diary, Qq: Qq, Panel: Panel, View: View, Overview: Overview, PersonaEditor: PersonaEditor, PromptEditor: PromptEditor, loadSnapshot: loadSnapshot, renderPersona: renderPersona }, enumerable: false })
+    Object.defineProperty(exports, '__test', { value: { Memory: Memory, MemorySearch: MemorySearch, latest: latest, searchMemory: searchMemory, memoryQuery: memoryQuery, dayStartIso: dayStartIso, WorkspacePermission: WorkspacePermission, CompactAfterReview: CompactAfterReview, Schedule: Schedule, Modules: Modules, HomeApply: HomeApply, PhotoAlbum: PhotoAlbum, Wechat: Wechat, Activity: Activity, Diary: Diary, Qq: Qq, Panel: Panel, View: View, Overview: Overview, PersonaEditor: PersonaEditor, PromptEditor: PromptEditor, loadSnapshot: loadSnapshot, renderPersona: renderPersona }, enumerable: false })
     return exports
   },
 })

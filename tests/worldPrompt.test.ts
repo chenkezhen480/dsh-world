@@ -9,6 +9,7 @@ import { SessionId } from '@deepseek-ai/dsh-session';
 import TokenMeter from '@deepseek-ai/dsh-token-meter';
 import { hostFixture, textResponse } from './hostFixture.ts';
 import { createWorldRuntime } from '../src/runtime.ts';
+import { DEFAULT_COLD_HOURS } from '../src/worldSwitch.ts';
 import { createArchiveStore } from '../src/store.ts';
 import { renderSelf, SELF_CAP } from '../src/self.ts';
 import { readTemplate, renderTemplate, renderWorldPrompt, worldNames } from '../src/worldPrompt.ts';
@@ -129,6 +130,44 @@ test('every world session carries the world prompt in its system prompt; templat
   await world.flush();
   const archived = (await store.readPage({ limit: 100 })).records.map(r => r.content).join('\n');
   assert.ok(!archived.includes('WORLD_INTRO') && !archived.includes('最近有点叛逆'));
+  assert.equal(errors.length, 0, errors.map(e => String((e as { error: Error }).error)).join('\n'));
+});
+test('a session that speaks again after being cold re-reads 我是谁 and her memory; one in conversation keeps its prefix (#36)', async t => {
+  const requests: GenerateOptions[] = [];
+  const { ctx, root, cleanup, errors } = await hostFixture(t, async function* (request) { requests.push(request); yield* textResponse('嗯'); });
+  const store = createArchiveStore({ ...config, root });
+  const selfFile = join(root, 'room', '我是谁.md'); await mkdir(join(root, 'room'), { recursive: true });
+  const templateFile = join(root, 'world-prompt.md'); await writeFile(templateFile, '{{self}}');
+  await writeFile(selfFile, '打开那天的我');
+  let clock = Date.parse('2026-11-04T08:00:00.000Z'), coldHours = DEFAULT_COLD_HOURS;
+  const hours = (count: number) => count * 60 * 60_000;
+  const world = createWorldRuntime(ctx, { ...config, selfFile }, store, { prompt: { file: templateFile, names, life }, isHome: () => false }, undefined, () => coldHours, () => clock);
+  await world.start(); cleanup.push(() => world.stop().finally(() => store.close()));
+  const { agent } = await ctx.agents.create({ sessionId: SessionId('qq'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } });
+  agent.followup(user('在吗')); await agent.whenIdle();
+  assert.match(systemOf(requests.at(-1)!), /打开那天的我/);
+
+  // Meanwhile she rewrote 我是谁 and talked on WeChat.
+  await writeFile(selfFile, '后来的我');
+  await store.commitRecords([record('wechat', { sourceSessionId: 'wechat', turnId: 'wechat:1', content: '微信那边刚聊的', occurredAt: '2026-11-04T09:00:00.000Z' })]);
+  clock += hours(DEFAULT_COLD_HOURS - 1);
+  agent.followup(user('还在聊')); await agent.whenIdle();
+  assert.match(systemOf(requests.at(-1)!), /打开那天的我/, 'short of the default 24 hours it is the same conversation: the prompt is left alone');
+  assert.ok(!kinds(requests.at(-1)!).slice(-3).includes('dsh-world-history'), 'and no new memory block is added');
+
+  clock += hours(DEFAULT_COLD_HOURS);
+  agent.followup(user('好久不见')); await agent.whenIdle();
+  const back = requests.at(-1)!;
+  assert.match(systemOf(back), /后来的我/); assert.doesNotMatch(systemOf(back), /打开那天的我/);
+  const blocks = back.messages.filter(message => message.source?.kind === 'dsh-world-history');
+  assert.equal(blocks.length, 1, 'the old block is retired, a fresh one takes its place');
+  assert.match(textOf(blocks), /微信那边刚聊的/);
+
+  // The console's value is read at each turn start: a shorter one takes effect without a restart.
+  coldHours = 2; await writeFile(selfFile, '又变了的我');
+  clock += hours(3);
+  agent.followup(user('又来了')); await agent.whenIdle();
+  assert.match(systemOf(requests.at(-1)!), /又变了的我/);
   assert.equal(errors.length, 0, errors.map(e => String((e as { error: Error }).error)).join('\n'));
 });
 test('after her look back one apply-and-compact makes the 我是谁 she rewrote the one in her prompt', async t => {
@@ -297,7 +336,7 @@ test('without a world prompt source nothing is added to the system prompt', asyn
   assert.ok(kinds(requests[0]!).includes('dsh-world-history'));
 });
 
-test('persona mapping follows the preset while world context stays inside the workspace', async t => {
+test('her persona, like the rest of her world, reaches only her preset inside the workspace and leaves with it (#37)', async t => {
   const requests: GenerateOptions[] = [];
   const { ctx, root, cleanup, errors } = await hostFixture(t, async function* (request) {
     if (request.purpose === 'compaction') { yield* textResponse('ordinary conversation'); return; }
@@ -320,20 +359,24 @@ test('persona mapping follows the preset while world context stays inside the wo
   const { agent } = await ctx.agents.create({ sessionId: SessionId('moving'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } });
   agent.followup(user('before attachment')); await agent.whenIdle();
   const hostSystem = systemOf(requests.at(-1)!);
-  assert.match(hostSystem, /PERSONA_SCOPE_MARKER/);
-  assert.doesNotMatch(textOf(requests.at(-1)!.messages), /MEMORY_SCOPE_MARKER|WORLD_SCOPE_MARKER|SELF_SCOPE_MARKER/);
+  assert.match(hostSystem, /You are an AI agent powered by DeepSeek Harness\./, 'a session of her preset outside the workspace keeps its own identity');
+  assert.doesNotMatch(textOf(requests.at(-1)!.messages), /PERSONA_SCOPE_MARKER|MEMORY_SCOPE_MARKER|WORLD_SCOPE_MARKER|SELF_SCOPE_MARKER/);
   membership = true;
   agent.followup(user('attached now')); await agent.whenIdle();
   for (const marker of ['MEMORY_SCOPE_MARKER', 'WORLD_SCOPE_MARKER', 'SELF_SCOPE_MARKER', 'PERSONA_SCOPE_MARKER']) assert.ok(textOf(requests.at(-1)!.messages).includes(marker), marker);
+  assert.doesNotMatch(systemOf(requests.at(-1)!), /You are an AI agent powered by DeepSeek Harness\./, 'inside, hers takes the place of the stock identity line');
   membership = false;
   agent.followup(user('moved away')); await agent.whenIdle();
-  assert.equal(systemOf(requests.at(-1)!), hostSystem);
+  assert.equal(systemOf(requests.at(-1)!), hostSystem, 'leaving takes her persona away with the rest and gives the identity line back');
   assert.doesNotMatch(textOf(requests.at(-1)!.messages), /MEMORY_SCOPE_MARKER|WORLD_SCOPE_MARKER|SELF_SCOPE_MARKER/);
   writePersona(persona, { 性格: 'PERSONA_REFRESHED_OUTSIDE' });
   assert.ok(await ctx.compaction.compactNow(agent, new AbortController().signal));
   agent.followup(user('after external compaction')); await agent.whenIdle();
-  assert.match(systemOf(requests.at(-1)!), /PERSONA_REFRESHED_OUTSIDE/);
+  assert.doesNotMatch(systemOf(requests.at(-1)!), /PERSONA_SCOPE_MARKER|PERSONA_REFRESHED_OUTSIDE/, 'a refresh outside does not bring it back');
   assert.doesNotMatch(textOf(requests.at(-1)!.messages), /MEMORY_SCOPE_MARKER|WORLD_SCOPE_MARKER|SELF_SCOPE_MARKER/);
+  membership = true;
+  agent.followup(user('back again')); await agent.whenIdle();
+  assert.match(systemOf(requests.at(-1)!), /PERSONA_REFRESHED_OUTSIDE/, 'coming back in places the persona as saved now');
   const foreign = await ctx.agents.create({ sessionId: SessionId('different-preset'), meta: { agentPreset: 'other' }, agentOptions: { provider: 'test', model: 'test' } });
   foreign.agent.followup(user('another preset')); await foreign.agent.whenIdle();
   assert.doesNotMatch(systemOf(requests.at(-1)!), /PERSONA_REFRESHED_OUTSIDE/);

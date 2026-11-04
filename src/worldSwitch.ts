@@ -4,9 +4,11 @@ import { durableWrite } from './life/lifeStore.ts';
 import { validArchiveScope, type MemoryArchiveScope } from './archiveSelection.ts';
 import { DEFAULT_REVIEW_TIME, validClockTime } from './life/alarm.ts';
 
-interface WorldSettings { running: boolean; dailyBudget?: number; memoryTurns?: number; archiveScope?: MemoryArchiveScope; workspacePermission?: string; wechatContext?: number; wechatBufferSeconds?: number; wechatEnabled?: boolean; qqEnabled?: boolean; compactAfterReview?: boolean; compactionSwapped?: boolean; reviewTime?: string; wakeTime?: string }
+interface WorldSettings { running: boolean; dailyBudget?: number; memoryTurns?: number; coldHours?: number; archiveScope?: MemoryArchiveScope; workspacePermission?: string; wechatContext?: number; wechatBufferSeconds?: number; wechatEnabled?: boolean; qqEnabled?: boolean; compactAfterReview?: boolean; compactionSwapped?: boolean; reviewTime?: string; wakeTime?: string }
 /** How many of the newest turns the memory block carries when nothing else is set. */
 export const DEFAULT_MEMORY_TURNS = 200;
+/** Hours a session stays silent before its next turn re-reads her memory block and prompt (#36); see `runtime.ts`. */
+export const DEFAULT_COLD_HOURS = 24, MAX_COLD_HOURS = 720;
 /** WeChat group messages read before a mention, and seconds a private image waits for its companions. */
 export const DEFAULT_WECHAT_CONTEXT = 5, MAX_WECHAT_CONTEXT = 20;
 export const DEFAULT_WECHAT_BUFFER_SECONDS = 3, MAX_WECHAT_BUFFER_SECONDS = 30;
@@ -24,6 +26,7 @@ export function createWorldSwitch(worldDir: string, configuredScope: MemoryArchi
     running: stored ? stored.running === true : existsSync(join(worldDir, 'life.json')),
     ...(typeof stored?.dailyBudget === 'number' ? { dailyBudget: stored.dailyBudget } : {}),
     ...(validTurns(stored?.memoryTurns) ? { memoryTurns: stored.memoryTurns } : {}),
+    ...(validColdHours(stored?.coldHours) ? { coldHours: stored.coldHours } : {}),
     ...(validArchiveScope(stored?.archiveScope) ? { archiveScope: stored.archiveScope } : {}),
     ...(validWorkspacePermission(stored?.workspacePermission) ? { workspacePermission: stored.workspacePermission } : {}),
     ...(validWechatContext(stored?.wechatContext) ? { wechatContext: stored.wechatContext } : {}),
@@ -76,6 +79,12 @@ export function createWorldSwitch(worldDir: string, configuredScope: MemoryArchi
       const { memoryTurns: _old, ...rest } = settings;
       save(turns === undefined || turns === DEFAULT_MEMORY_TURNS ? rest : { ...rest, memoryTurns: turns });
     },
+    /** Read at every turn start, so a change applies from the next turn of each session. */
+    coldHours: () => settings.coldHours ?? DEFAULT_COLD_HOURS,
+    setColdHours(hours: number | undefined): void {
+      const { coldHours: _old, ...rest } = settings;
+      save(hours === undefined || hours === DEFAULT_COLD_HOURS ? rest : { ...rest, coldHours: hours });
+    },
     /**
      * The console's switches for the WeChat and QQ modules; both are off until someone turns them on. QQ's SDK is an
      * optional dependency, so its code is not even loaded before then. WeChat used to default to on, so a world that
@@ -111,6 +120,7 @@ export function createWorldSwitch(worldDir: string, configuredScope: MemoryArchi
 }
 export type WorldSwitch = ReturnType<typeof createWorldSwitch>;
 export const validTurns = (value: unknown): value is number => typeof value === 'number' && Number.isInteger(value) && value >= 1;
+export const validColdHours = (value: unknown): value is number => typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= MAX_COLD_HOURS;
 export const validWorkspacePermission = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;
 
 export const validWechatContext = (value: unknown): value is number => typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= MAX_WECHAT_CONTEXT;

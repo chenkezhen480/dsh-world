@@ -24,11 +24,12 @@ interface Entry { text: PromptText; active: boolean; dispose: () => void; person
 const HARNESS_IDENTITY = 'harness:identity';
 
 /**
- * Her persona follows the configured preset; the world prompt is limited to the world's workspace.
- * Both are sections of the session's system prompt so she sees them on every
+ * Her persona and the world prompt both reach only sessions of her preset inside the world's workspace, and come and
+ * go together as a session enters or leaves it: the preset alone is DSH's default `standard` for most setups, so it
+ * would turn every unrelated session into her (#37). Both are sections of the session's system prompt so she sees them on every
  * request. They are read when the session opens and again after each successful compaction (the host assembles
- * the system prompt before pre-step, so the refresh happens on compaction/end) or explicit console application, so the prompt
- * stays in the provider-cached prefix. Whether the session is her home is asked per request.
+ * the system prompt before pre-step, so the refresh happens on compaction/end), when a cold session speaks again
+ * (`coldHours` in `runtime.ts`, on turn/start) or on explicit console application, so the prompt stays in the provider-cached prefix. Whether the session is her home is asked per request.
  *
  * Her persona takes the place of DeepSeek Harness's stock identity line, but never of a persona someone has set: it is its own
  * section placed right after the host's persona slot, so a system persona the deployment or her preset already has stays
@@ -49,9 +50,9 @@ export function createPromptSections(config: WorldConfig, world: WorldPromptSour
       persona, names,
     };
   }
-  /** Registers her persona when she has one and drops it when she has none. */
+  /** Registers her persona while the session is in her workspace and she has one; drops it otherwise. */
   function placePersona(agent: Agent, entry: Entry): void {
-    if (!entry.text.persona) { entry.persona?.(); delete entry.persona; return; }
+    if (!entry.active || !entry.text.persona) { entry.persona?.(); delete entry.persona; return; }
     if (entry.persona) return;
     const prompt = agent.ctx.systemPrompt;
     const order = prompt.getSectionOrder('DEPLOYMENT_PERSONA_PREFIX') ?? 0;
@@ -68,11 +69,11 @@ export function createPromptSections(config: WorldConfig, world: WorldPromptSour
     add(agent: Agent): void {
       if (entries.has(agent) || !belongsToWorld(agent.session, config)) return;
       let disposeWorld: (() => void) | undefined;
-      /** Places or removes the world prompt as the session enters or leaves her workspace; true when it did. */
+      /** Places or removes the world prompt and her persona as the session enters or leaves her workspace; true when it did. */
       const sync = (): boolean => {
         if (inWorld(agent.session, config, world.inWorkspace) === entry.active) return false;
         entry.active = !entry.active;
-        if (!entry.active) { disposeWorld?.(); disposeWorld = undefined; return true; }
+        if (!entry.active) { disposeWorld?.(); disposeWorld = undefined; placePersona(agent, entry); return true; }
         entry.text = read(true);
         disposeWorld = agent.ctx.systemPrompt.section({ name: 'dsh-world', order: 50, interpolate: false, text: () => renderWorldPrompt({ ...world.prompt, names: entry.text.names }, entry.text.template, entry.text.self, world.isHome(agent.id)) });
         placePersona(agent, entry);
@@ -82,7 +83,6 @@ export function createPromptSections(config: WorldConfig, world: WorldPromptSour
       const entry: Entry = { text: read(false), active: false, dispose: () => { disposeSync(); disposeWorld?.(); } };
       entries.set(agent, entry); agents.set(agent.session, agent);
       sync();
-      placePersona(agent, entry);
     },
     active(session: Session): boolean {
       const agent = agents.get(session);
