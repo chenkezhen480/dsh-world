@@ -153,8 +153,31 @@ test('开着自动回复：花一轮，把这轮的话发回同一个人', async
   assert.equal(channel.status().failed, 0);
 });
 
-test('这一轮完成了却没说出一个字：不发，但状态和日志里留下痕迹（#34）', async t => {
-  const { ctx, cleanup } = await hostFixture(t, () => (async function* () { yield { type: 'finish' as const, reason: { kind: 'stop' as const } }; })());
+test('这一轮完成了却没说出一个字：提醒她一次，她说出来了就照常发回去（#34）', async t => {
+  const requests: string[] = [];
+  const { ctx, cleanup } = await hostFixture(t, request => {
+    requests.push(JSON.stringify(request.messages));
+    return requests.length === 1 ? (async function* () { yield { type: 'finish' as const, reason: { kind: 'stop' as const } }; })() : textResponse('刚才走神了，在的');
+  });
+  const agent = (await ctx.agents.create({ sessionId: SessionId('home'), agentOptions: { provider: 'test', model: 'test' } })).agent;
+  const wire = fakeTransport();
+  const infos: string[] = [];
+  const channel = createQqNativeModule({ ctx, home: async () => agent, config: () => configOf(), logger: { ...quiet, info: (...args: unknown[]) => { infos.push(args.join(' ')); } }, transport: wire.factory });
+  channel.start(); cleanup.push(channel.stop);
+
+  wire.emit(incoming());
+  await settle(800);
+
+  assert.equal(requests.length, 2);
+  assert.match(requests[1]!, /dsh-world-reply-nudge/);
+  assert.deepEqual(wire.sent, [{ kind: 'private', to: '3475994805', text: '刚才走神了，在的' }]);
+  assert.equal(channel.status().failed, 0);
+  assert.ok(infos.some(line => /提醒后说出了/.test(line)), infos.join('\n'));
+});
+
+test('提醒过一次还是没说出一个字：不再追问，不发，但状态和日志里留下痕迹（#34）', async t => {
+  let turns = 0;
+  const { ctx, cleanup } = await hostFixture(t, () => { turns += 1; return (async function* () { yield { type: 'finish' as const, reason: { kind: 'stop' as const } }; })(); });
   const agent = (await ctx.agents.create({ sessionId: SessionId('home'), agentOptions: { provider: 'test', model: 'test' } })).agent;
   const wire = fakeTransport();
   const warnings: string[] = [];
@@ -162,11 +185,12 @@ test('这一轮完成了却没说出一个字：不发，但状态和日志里�
   channel.start(); cleanup.push(channel.stop);
 
   wire.emit(incoming());
-  await settle(600);
+  await settle(800);
 
+  assert.equal(turns, 2);
   assert.deepEqual(wire.sent, []);
   assert.equal(channel.status().failed, 1);
-  assert.match(channel.status().lastError!, /回复为空/);
+  assert.match(channel.status().lastError!, /回复为空：提醒过一次/);
   assert.ok(warnings.some(line => /QQ 回复 .* 为空/.test(line)), warnings.join('\n'));
 });
 
@@ -180,14 +204,16 @@ test('她把聊天记录原样念了一遍、没说别的：不往群里发，�
   channel.start(); cleanup.push(channel.stop);
 
   wire.emitGroup(incoming({ kind: 'group', groupId: '681528723', messageId: '1', text: '第一句' }));
-  await settle(600);
+  await settle(800);
   wire.emitGroup(incoming({ kind: 'group', groupId: '681528723', messageId: '2', text: '第二句' }));
-  await settle(600);
+  await settle(800);
 
   assert.deepEqual(wire.sent, []);
   assert.equal(channel.status().failed, 2);
-  assert.match(channel.status().lastError!, /过滤后没有能发的正文/);
-  const recalls = (JSON.parse(requests[1]!) as { source?: { kind?: string } }[]).filter(message => message.source?.kind === 'dsh-world-channel-context');
+  assert.match(channel.status().lastError!, /过滤后仍没有能发的正文/);
+  // 每句各问一次、提醒一次：第二句的第一次请求是第三个。
+  assert.equal(requests.length, 4);
+  const recalls = (JSON.parse(requests[2]!) as { source?: { kind?: string } }[]).filter(message => message.source?.kind === 'dsh-world-channel-context');
   assert.deepEqual(recalls, [], 'her echo did not go back into the chat context as something she said, so the next ask recalls none of it');
 });
 

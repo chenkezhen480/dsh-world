@@ -342,16 +342,17 @@ export function createQqNativeModule(deps: {
     try {
       const reply = await home.ask(text, identity, contexts.get(key) ?? []);
       const words = stripHostNoise(reply.text);
-      // 这一轮完成了却没有能发的话：不发，但要留下痕迹，分得清「她没说出话」和「路丢了」（#34）；
+      // 提醒过一次还是没有能发的话：不发，但要留下痕迹，分得清「她没说出话」和「路丢了」（#34）；
       // 只剩复述的聊天记录、工具标签这些（#35）也一样。
       if (!words) {
         stats.failed += 1;
         stats.lastError = reply.text.trim()
-          ? '回复只有复述的聊天记录、来源头或工具标签，过滤后没有能发的正文'
-          : '回复为空：这一轮完成了，但没有说出正文（可能只有思考）';
-        deps.logger.warn(`QQ 回复 ${key} ${reply.text.trim() ? '过滤后为空' : '为空'}，没有投递`);
+          ? '回复只有复述的聊天记录、来源头或工具标签，提醒过一次，过滤后仍没有能发的正文'
+          : '回复为空：提醒过一次，仍没有说出正文（可能只有思考）';
+        deps.logger.warn(`QQ 回复 ${key} ${reply.text.trim() ? '过滤后为空' : '为空'}，提醒过一次，没有投递`);
         return;
       }
+      if (reply.nudged) deps.logger.info(`QQ 回复 ${key} 第一次没有能发的话，提醒后说出了`);
       // 她那句话记成她自己说的：不然后面拿这段上下文问她「刚才聊到哪了」时，她说过的会被当成对方说的。
       // 记过滤后的：复述的记录若回到上下文里，下一轮她更容易接着念。
       const herIdentity = speakerIdentity({ channel: 'qq', accountId: identity.accountId, speakerId: `qq:${identity.accountId}`, conversationId: identity.conversationId, conversationType: identity.conversationType });
