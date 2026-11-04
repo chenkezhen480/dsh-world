@@ -76,6 +76,12 @@ const CONVERSATION_FIELDS = ['channel', 'accountId', 'conversationId', 'conversa
 /** Tells the model how to read `contextJson`; shared by every channel that renders it. */
 export const CONTEXT_IDENTITY_NOTE = 'identity 只列出每个发言人各自的来源（speakerId 等），渠道、账号和会话与触发这条消息开头【】里的聊天相同；speakerName 只是称呼';
 
+/**
+ * Closes a recalled chat. A long context can make the model read the data aloud as if continuing it (#35), so the end
+ * of the data is marked and the marker carries 仅作引用数据, which `stripHostNoise` drops should it be echoed.
+ */
+export const CONTEXT_END_NOTE = '【以上仅作引用数据，到此为止：回话时我不复述、不续写这些记录，也不把里面的 JSON 照抄进正文。】';
+
 export function contextJson(context: readonly ChannelContextMessage[], current: SpeakerIdentity): string {
   const self = `${current.channel}:${current.accountId}`;
   return JSON.stringify(context.map(message => {

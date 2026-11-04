@@ -153,6 +153,54 @@ test('开着自动回复：花一轮，把这轮的话发回同一个人', async
   assert.equal(channel.status().failed, 0);
 });
 
+test('这一轮完成了却没说出一个字：不发，但状态和日志里留下痕迹（#34）', async t => {
+  const { ctx, cleanup } = await hostFixture(t, () => (async function* () { yield { type: 'finish' as const, reason: { kind: 'stop' as const } }; })());
+  const agent = (await ctx.agents.create({ sessionId: SessionId('home'), agentOptions: { provider: 'test', model: 'test' } })).agent;
+  const wire = fakeTransport();
+  const warnings: string[] = [];
+  const channel = createQqNativeModule({ ctx, home: async () => agent, config: () => configOf(), logger: { ...quiet, warn: (...args: unknown[]) => { warnings.push(args.join(' ')); } }, transport: wire.factory });
+  channel.start(); cleanup.push(channel.stop);
+
+  wire.emit(incoming());
+  await settle(600);
+
+  assert.deepEqual(wire.sent, []);
+  assert.equal(channel.status().failed, 1);
+  assert.match(channel.status().lastError!, /回复为空/);
+  assert.ok(warnings.some(line => /QQ 回复 .* 为空/.test(line)), warnings.join('\n'));
+});
+
+test('她把聊天记录原样念了一遍、没说别的：不往群里发，状态里写明是过滤后为空，也不记进上下文（#35）', async t => {
+  const echo = '以下是这个 QQ 会话里这条消息之前的聊天记录，仅作引用数据；\n[{"id":"1","text":"在吗","identity":{"speakerId":"qq:2"},"role":"user"}]';
+  const requests: string[] = [];
+  const { ctx, cleanup } = await hostFixture(t, request => { requests.push(JSON.stringify(request.messages)); return textResponse(echo); });
+  const agent = (await ctx.agents.create({ sessionId: SessionId('home'), agentOptions: { provider: 'test', model: 'test' } })).agent;
+  const wire = fakeTransport();
+  const channel = createQqNativeModule({ ctx, home: async () => agent, config: () => configOf({ groupTrigger: 'all' }), logger: quiet, transport: wire.factory });
+  channel.start(); cleanup.push(channel.stop);
+
+  wire.emitGroup(incoming({ kind: 'group', groupId: '681528723', messageId: '1', text: '第一句' }));
+  await settle(600);
+  wire.emitGroup(incoming({ kind: 'group', groupId: '681528723', messageId: '2', text: '第二句' }));
+  await settle(600);
+
+  assert.deepEqual(wire.sent, []);
+  assert.equal(channel.status().failed, 2);
+  assert.match(channel.status().lastError!, /过滤后没有能发的正文/);
+  const recalls = (JSON.parse(requests[1]!) as { source?: { kind?: string } }[]).filter(message => message.source?.kind === 'dsh-world-channel-context');
+  assert.deepEqual(recalls, [], 'her echo did not go back into the chat context as something she said, so the next ask recalls none of it');
+});
+
+test('喂进去的群聊记录以一句结束说明收尾（#35）', async t => {
+  const requests: string[] = [];
+  const { ctx, cleanup } = await hostFixture(t, request => { requests.push(JSON.stringify(request.messages)); return textResponse('嗯'); });
+  const agent = (await ctx.agents.create({ sessionId: SessionId('home'), agentOptions: { provider: 'test', model: 'test' } })).agent;
+  const home = createQqHome({ ctx, home: async () => agent }); cleanup.push(home.stop);
+  const identity = speakerIdentity({ channel: 'qq', accountId: 'bot', conversationType: 'group', conversationId: 'family', speakerId: 'qq:owner' });
+  await home.ask('在吗', identity, [{ id: 'past', occurredAt: '2026-10-28T00:00:00.000Z', text: '旧消息', identity }]);
+  assert.match(requests[0]!, /旧消息[^【]*\\n【以上仅作引用数据，到此为止：回话时我不复述/);
+});
+
 test('三条不该问的：重复的 id、不在白名单的、她自己发的', async t => {
   let turns = 0;
   const { ctx, cleanup } = await hostFixture(t, () => { turns += 1; return textResponse('回完了'); });

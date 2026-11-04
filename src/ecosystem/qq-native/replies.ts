@@ -25,12 +25,25 @@ const HOST_LINE = /^\s*(?:Time sampled|Browser time zone|Elapsed since|Elapsed f
 const HOST_FRAGMENT = /[ \t]*text">m\d{5}\b|[ \t]*\bm\d{5}[ \t]*$/gm;
 
 /**
- * Drops the host's own bookkeeping, and any copy of an incoming message's source header, from an answer before it is
- * sent. The paragraphs it empties are removed, so a reply that was only plumbing sends nothing instead of a blank message.
+ * A tool call the model wrote out as text instead of calling (DeepSeek's `<｜DSML｜…>` markup). Everything from the
+ * first tag on is that call, not speech (#35).
+ */
+const TOOL_MARKUP = /<\/?[|｜]+\s*DSML\s*[|｜]+[\s\S]*$/;
+
+/**
+ * The plugin's own recalled chat read back aloud (#35): a framing line (each carries 仅作引用数据), a line that is the
+ * recalled JSON (a role or a speakerId inside brackets), or a bare transcript role label.
+ */
+const RECALL_LINE = /仅作引用数据|^\s*[[{].*"(?:role|speakerId)"\s*:.*[}\]]\s*$|^\s*(?:user|assistant)\s*$/;
+
+/**
+ * Drops the host's own bookkeeping, any copy of an incoming message's source header, a recalled chat read back, and
+ * tool markup from an answer before it is sent. The paragraphs it empties are removed, so a reply that was only
+ * plumbing sends nothing instead of a blank message.
  */
 export function stripHostNoise(text: string): string {
-  const kept = text.replace(/\r\n/g, '\n').replace(HOST_FRAGMENT, '').split('\n')
-    .filter(line => !HOST_LINE.test(line) && !IDENTITY_HEADER_LINE.test(line.trim()));
+  const kept = text.replace(/\r\n/g, '\n').replace(TOOL_MARKUP, '').replace(HOST_FRAGMENT, '').split('\n')
+    .filter(line => !HOST_LINE.test(line) && !IDENTITY_HEADER_LINE.test(line.trim()) && !RECALL_LINE.test(line));
   return kept.join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
