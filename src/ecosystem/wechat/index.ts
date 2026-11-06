@@ -16,7 +16,7 @@ import { createWechatReading } from './reading.ts';
 import { createStickerLibrary } from './stickerLibrary.ts';
 import { createStickerTools } from './stickerTools.ts';
 import { createWechatPresence } from './presence.ts';
-import { reassembleOnChange, scopedTool, type InWorld } from '../../worldScope.ts';
+import { reassembleOnChange, registerScopedTool, type InWorld } from '../../worldScope.ts';
 
 export const WECHAT_PATH = '/dsh-world/wechat/ask';
 
@@ -55,7 +55,7 @@ export function createWechatModule(deps: { ctx: Context; home(identity: SpeakerI
     if (attached.has(agent)) return false;
     const disposers: (() => void)[] = [];
     try {
-      for (const tool of [...sending.tools, reading.tool, reading.imageTool, ...stickerTools]) disposers.push(agent.ctx.tools.register(scopedTool(tool, () => inside(agent), () => detach(agent))));
+      for (const tool of [...sending.tools, reading.tool, reading.imageTool, ...stickerTools]) disposers.push(registerScopedTool(agent, tool, () => !stopped && inside(agent), () => detach(agent)));
       attached.set(agent, disposers);
     }
     catch (error) { for (const dispose of disposers.reverse()) dispose(); throw error; }

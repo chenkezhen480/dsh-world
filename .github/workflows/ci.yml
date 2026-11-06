@@ -15,13 +15,14 @@ concurrency:
 
 jobs:
   check:
-    name: Check / ${{ matrix.os }}
+    name: Check / ${{ matrix.os }} / ${{ matrix.dsh }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
+        dsh: [locked, 0.2.2-rc.1]
     defaults:
       run:
         shell: bash
@@ -38,11 +39,30 @@ jobs:
       - name: Install locked development dependencies without lifecycle scripts
         run: npm ci --ignore-scripts --no-audit --no-fund
 
+      - name: Install newer DSH test composition
+        if: matrix.dsh != 'locked'
+        env:
+          DSH_TEST_VERSION: ${{ matrix.dsh }}
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const file = 'package.json';
+          const manifest = JSON.parse(fs.readFileSync(file, 'utf8'));
+          for (const name of Object.keys(manifest.devDependencies)) {
+            if (name.startsWith('@deepseek-ai/dsh-')) manifest.devDependencies[name] = process.env.DSH_TEST_VERSION;
+          }
+          manifest.devDependencies['@deepseek-ai/dsh-tool-executor-native'] = process.env.DSH_TEST_VERSION;
+          manifest.devDependencies['@deepseek-ai/cordis'] = '4.1.0';
+          manifest.devDependencies['@deepseek-ai/schemastery'] = '3.19.0';
+          fs.writeFileSync(file, JSON.stringify(manifest, null, 2) + '\n');
+          NODE
+          npm install --ignore-scripts --no-audit --no-fund
+
       - name: Typecheck
         run: npm run typecheck
 
       - name: Node regression tests
-        run: npm test
+        run: npm test -- --test-concurrency=2
 
       - uses: actions/setup-python@v7
         if: runner.os == 'Windows'
@@ -74,7 +94,7 @@ jobs:
       - name: Upload tested package
         uses: actions/upload-artifact@v7
         with:
-          name: dsh-world-${{ runner.os }}-node24
+          name: dsh-world-${{ runner.os }}-${{ matrix.dsh }}-node24
           path: artifacts/*.tgz
           if-no-files-found: error
 

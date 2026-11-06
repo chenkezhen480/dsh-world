@@ -1,5 +1,5 @@
 import type { Context } from '@deepseek-ai/cordis';
-import { SessionId, type Session } from '@deepseek-ai/dsh-session';
+import { SessionId, SessionLogOffset, type Session } from '@deepseek-ai/dsh-session';
 import type {} from '@deepseek-ai/dsh-session-persistence';
 import { extractConversationRecords, isOrdinarySession } from './archive.ts';
 import type { ArchiveStore } from './store.ts';
@@ -8,17 +8,30 @@ import { wechatDeliveryPatch } from './ecosystem/wechat/archive.ts';
 import { errorText, Faults } from './faults.ts';
 
 const pageSize = 128;
+const sessionPresets = new WeakMap<Session, { nextSeq: number; preset?: string }>();
+/** The header is creation-time metadata; later selections in the log decide the current preset. */
+export function sessionPreset(session: Session): string | undefined {
+  const state = sessionPresets.get(session) ?? { nextSeq: 0, preset: session.header.agentPreset };
+  const end = session.seq;
+  for (let from = state.nextSeq; from < end; from += pageSize) {
+    for (const event of session.snapshotEvents(SessionLogOffset(from), SessionLogOffset(Math.min(from + pageSize, end)))) {
+      if (event.type === 'agent-preset/selected') state.preset = event.data.agentPreset;
+    }
+  }
+  state.nextSeq = end;
+  sessionPresets.set(session, state);
+  return state.preset;
+}
 /** Unreadable logs are isolated per source; their archive gaps remain visible until replay succeeds. */
 export function isCorruptSessionLog(error: unknown): boolean {
   const text = error instanceof Error ? `${error.name} ${error.message}` : String(error ?? '');
   return /stored log is corrupt|SessionFormatError|does not match (?:an|the) open turn/i.test(text);
 }
-export function belongsToWorld(session: Pick<Session, 'header'>, config: WorldConfig): boolean {
-  const header = session.header;
-  return header.agentPreset === config.agentPreset && isOrdinarySession(header);
+export function belongsToWorld(session: Session, config: WorldConfig): boolean {
+  return isOrdinarySession(session.header) && sessionPreset(session) === config.agentPreset;
 }
 /** One of her sessions that is also in her room's workspace; without a membership test, any of her sessions. */
-export function inWorld(session: Pick<Session, 'header' | 'id'>, config: WorldConfig, inWorkspace?: (sessionId: string) => boolean): boolean {
+export function inWorld(session: Session, config: WorldConfig, inWorkspace?: (sessionId: string) => boolean): boolean {
   return belongsToWorld(session, config) && (inWorkspace?.(session.id) ?? true);
 }
 export const isNotFound = (error: unknown) => error instanceof Error && error.name === 'SessionPersistenceNotFoundError';

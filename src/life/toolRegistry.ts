@@ -1,7 +1,7 @@
 import type { Agent } from '@deepseek-ai/dsh-agent';
 import type {} from '@deepseek-ai/dsh-tools';
 import { errorText, type Faults } from '../faults.ts';
-import { scopedTool } from '../worldScope.ts';
+import { registerScopedTool } from '../worldScope.ts';
 import type { ToolDefinition, ToolGuard } from '@deepseek-ai/dsh-tools';
 
 type Registration = (() => void)[];
@@ -23,7 +23,7 @@ export function createToolRegistry(deps: { faults: Faults; logger: { error(...ar
   const home = new Map<Agent, Registration>();
   function register(agent: Agent, tools: readonly ToolDefinition[], names: string[]): Registration {
     const done: Registration = [];
-    try { for (const tool of tools) if (names.includes(tool.name)) done.push(agent.ctx.tools.register(scopedTool(tool, () => deps.inWorld(agent)))); }
+    try { for (const tool of tools) if (names.includes(tool.name)) done.push(registerScopedTool(agent, tool, () => deps.inWorld(agent))); }
     catch (error) { undo(done); throw error; }
     return done;
   }

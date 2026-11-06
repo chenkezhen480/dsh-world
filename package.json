@@ -46,7 +46,7 @@
   ],
   "engines": {
     "node": ">=22.16.0",
-    "dsh": ">=0.2.1-rc.2 <0.3.0-0"
+    "dsh": ">=0.2.1-rc.2 <0.3.0-0 || >=0.2.2-rc.1 <0.3.0-0"
   },
   "scripts": {
     "build": "node -e \"require('fs').rmSync('lib',{recursive:true,force:true})\" && tsc -p tsconfig.build.json",
@@ -69,7 +69,8 @@
       "dshReleases": {
         "0.2.1-rc.2": "compatible",
         "0.2.1-rc.3": "compatible",
-        "0.2.1-rc.5": "compatible"
+        "0.2.1-rc.5": "compatible",
+        "0.2.2-rc.1": "compatible"
       }
     }
   },
@@ -78,19 +79,19 @@
   },
   "peerDependencies": {
     "@snowluma/sdk": "^2.2.1",
-    "@deepseek-ai/dsh-plugin-manager": ">=0.2.1-rc.3 <0.3.0-0",
-    "@deepseek-ai/dsh-atomic-write": ">=0.2.1-rc.3 <0.3.0-0",
-    "@deepseek-ai/cordis": "~4.0.5",
-    "@deepseek-ai/dsh-agent": ">=0.2.1-rc.2 <0.3.0-0",
-    "@deepseek-ai/dsh-attachment": ">=0.2.1-rc.2 <0.3.0-0",
-    "@deepseek-ai/dsh-compaction": ">=0.2.1-rc.2 <0.3.0-0",
-    "@deepseek-ai/dsh-home-paths": ">=0.2.1-rc.2 <0.3.0-0",
-    "@deepseek-ai/dsh-llm": ">=0.2.1-rc.2 <0.3.0-0",
-    "@deepseek-ai/dsh-session": ">=0.2.1-rc.2 <0.3.0-0",
-    "@deepseek-ai/dsh-session-persistence": ">=0.2.1-rc.2 <0.3.0-0",
-    "@deepseek-ai/dsh-tools": ">=0.2.1-rc.2 <0.3.0-0",
-    "@deepseek-ai/schemastery": "~3.18.5",
-    "@deepseek-ai/dsh-commands": ">=0.2.1-rc.2 <0.3.0-0"
+    "@deepseek-ai/dsh-plugin-manager": ">=0.2.1-rc.3 <0.3.0-0 || >=0.2.2-rc.1 <0.3.0-0",
+    "@deepseek-ai/dsh-atomic-write": ">=0.2.1-rc.3 <0.3.0-0 || >=0.2.2-rc.1 <0.3.0-0",
+    "@deepseek-ai/cordis": "~4.0.5 || ~4.1.0",
+    "@deepseek-ai/dsh-agent": ">=0.2.1-rc.2 <0.3.0-0 || >=0.2.2-rc.1 <0.3.0-0",
+    "@deepseek-ai/dsh-attachment": ">=0.2.1-rc.2 <0.3.0-0 || >=0.2.2-rc.1 <0.3.0-0",
+    "@deepseek-ai/dsh-compaction": ">=0.2.1-rc.2 <0.3.0-0 || >=0.2.2-rc.1 <0.3.0-0",
+    "@deepseek-ai/dsh-home-paths": ">=0.2.1-rc.2 <0.3.0-0 || >=0.2.2-rc.1 <0.3.0-0",
+    "@deepseek-ai/dsh-llm": ">=0.2.1-rc.2 <0.3.0-0 || >=0.2.2-rc.1 <0.3.0-0",
+    "@deepseek-ai/dsh-session": ">=0.2.1-rc.2 <0.3.0-0 || >=0.2.2-rc.1 <0.3.0-0",
+    "@deepseek-ai/dsh-session-persistence": ">=0.2.1-rc.2 <0.3.0-0 || >=0.2.2-rc.1 <0.3.0-0",
+    "@deepseek-ai/dsh-tools": ">=0.2.1-rc.2 <0.3.0-0 || >=0.2.2-rc.1 <0.3.0-0",
+    "@deepseek-ai/schemastery": "~3.18.5 || ~3.19.0",
+    "@deepseek-ai/dsh-commands": ">=0.2.1-rc.2 <0.3.0-0 || >=0.2.2-rc.1 <0.3.0-0"
   },
   "peerDependenciesMeta": {
     "@snowluma/sdk": {

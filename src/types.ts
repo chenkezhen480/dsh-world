@@ -45,7 +45,7 @@ export interface WorldConfig {
     mutedUntil?: string;
     /** SnowLuma 装在哪；空着就靠猜（D:\SnowLuma、C:\SnowLuma、~/SnowLuma）。 */
     snowlumaHome?: string;
-    /** 看门狗：通道开着时盯住 wsUrl 的端口，不通就按 snowlumaHome 把 SnowLuma 拉起来。默认开。 */
+    /** 看门狗：通道开着时盯住 wsUrl 的端口，不通且没有实例时按 snowlumaHome 拉起。默认开。 */
     supervise?: boolean;
     /** 阳台：让这台机器上别的程序能跟家里说话（一行一条 JSON 的 WebSocket）。port 为 0 就不开。 */
     bridge?: { port?: number; token?: string; title?: string; contextMessages?: number };

@@ -532,6 +532,7 @@ window.__ModuleLoader__.load({
       function startSnowluma() {
         change({ startSnowluma: true }, function (state) {
           var r = state && state.launch
+          if (r && r.alreadyRunning) return 'SnowLuma 已在运行或启动中，无需重复拉起'
           if (!r || !r.started) return '没起来：' + ((r && r.error) || '原因不明')
           return '已经让 SnowLuma 起来' + (r.how === 'spawn' ? '（直接起的，这条线只活到 DSH 退出）' : '') + (r.error ? '；' + r.error : '')
         })

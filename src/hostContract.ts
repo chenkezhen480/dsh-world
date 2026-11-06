@@ -1,3 +1,13 @@
+declare module '@deepseek-ai/dsh-session/types' {
+  interface SessionEventMap {
+    'agent-preset/selected': { agentPreset: string };
+  }
+}
+
+declare module '@deepseek-ai/dsh-llm/types' {
+  interface LlmRequestPurposeMap { compaction: true; }
+}
+
 declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {
     'dsh-world-history': { kind: 'dsh-world-history'; form: 'recall' };

@@ -2,7 +2,7 @@ import { connect } from 'node:net';
 import { startSnowluma, type StartResult } from './snowluma-start.ts';
 
 /**
- * SnowLuma 的看门狗：QQ 通道开着，就每隔一段时间探一次 OneBot 的端口，不通就把 SnowLuma 拉起来。
+ * SnowLuma 的看门狗：QQ 通道开着，就每隔一段时间探一次 OneBot 的端口，不通且没有实例时才拉起。
  * 拉不起来只把原因记在面板上；探活重叠时跳过这一轮，不叠着打。
  */
 export interface SnowlumaStatus {
@@ -47,13 +47,14 @@ export function createSnowlumaSupervisor(options: {
     busy = true;
     try {
       state.alive = await probe(options.host, options.port, options.probeTimeoutMs ?? 3_000);
+      if (!state.watching) return;
       state.lastCheckAt = new Date().toISOString();
       if (state.alive) { state.lastError = null; return; }
       if (!options.homeDir) { state.lastError = '没配 qqNative.snowlumaHome，不知道 SnowLuma 装在哪'; return; }
       const result = launch();
-      state.lastError = result.error ?? (result.started ? null : '拉不起来，原因不明');
+      state.lastError = result.error ?? (result.alreadyRunning ? 'SnowLuma 已在运行或启动中，等待 OneBot 端口就绪' : result.started ? null : '拉不起来，原因不明');
       if (result.started) { state.restarts += 1; state.lastRestartAt = new Date().toISOString(); }
-      options.log(`看门狗：${options.port} 不通，${result.started ? `已拉起 SnowLuma（${result.how}）` : 'SnowLuma 没起来'}${state.lastError ? `：${state.lastError}` : ''}`);
+      options.log(`看门狗：${options.port} 不通，${result.started ? `已拉起 SnowLuma（${result.how}）` : result.alreadyRunning ? '不重复拉起' : 'SnowLuma 没起来'}${state.lastError ? `：${state.lastError}` : ''}`);
     } catch (error) {
       state.lastError = error instanceof Error ? error.message : String(error);
     } finally { busy = false; }

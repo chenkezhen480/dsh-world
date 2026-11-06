@@ -12,13 +12,13 @@ export interface WorldPromptSource {
   prompt: WorldPrompt; isHome(sessionId: string): boolean; archiveSession?(sessionId: string): boolean;
   /** Resolved with the saved prompt text, so renaming does not change an existing cached prefix. */
   names?(): WorldNames;
-  /** Her room's workspace; her world (all but the persona) reaches only its sessions. Absent, every session of hers. */
+  /** Her room's workspace; her world and persona reach only its sessions. Absent, every session of hers. */
   inWorkspace?(sessionId: string): boolean;
   /** Long-term memory; its two tools are registered on world sessions. */
   memory?: import('./memory.ts').MemoryService;
 }
 interface PromptText { template: string; self?: { file: string; text: string }; persona: string; names: WorldNames }
-/** `active`: the world prompt is placed (the session is in her workspace); the persona is placed either way. */
+/** `active`: the world prompt and any written persona are placed. */
 interface Entry { text: PromptText; active: boolean; dispose: () => void; persona?: () => void }
 /** The stock "You are an AI agent powered by DeepSeek Harness." line; a section of the same name on her agent shadows it. */
 const HARNESS_IDENTITY = 'harness:identity';

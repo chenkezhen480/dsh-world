@@ -170,6 +170,49 @@ test('a session that speaks again after being cold re-reads 我是谁 and her me
   assert.match(systemOf(requests.at(-1)!), /又变了的我/);
   assert.equal(errors.length, 0, errors.map(e => String((e as { error: Error }).error)).join('\n'));
 });
+for (const failing of [false, true]) test(`a cold session ${failing ? 'whose compaction fails still re-reads her prompt and memory, and says so' : 'summarizes its old conversation before speaking again'} (#36)`, async t => {
+  const requests: GenerateOptions[] = []; let summaries = 0;
+  const { ctx, root, cleanup, errors } = await hostFixture(t, async function* (request) {
+    if (request.purpose === 'compaction') { summaries++; if (failing) throw new Error('summary refused'); yield* textResponse('COLD_SUMMARY'); return; }
+    requests.push(request); yield* textResponse('嗯');
+  });
+  await ctx.plugin(TokenMeter).await();
+  await ctx.plugin(ToolFreeCompaction, { auto: false, timeZone: 'UTC', headroomTokens: 0, maxTokens: 128 }).await();
+  const store = createArchiveStore({ ...config, root });
+  const selfFile = join(root, 'room', '我是谁.md'); await mkdir(join(root, 'room'), { recursive: true });
+  const templateFile = join(root, 'world-prompt.md'); await writeFile(templateFile, '{{self}}');
+  await writeFile(selfFile, '打开那天的我');
+  let clock = Date.parse('2026-11-04T08:00:00.000Z');
+  const world = createWorldRuntime(ctx, { ...config, selfFile }, store, { prompt: { file: templateFile, names, life }, isHome: () => false }, undefined, () => DEFAULT_COLD_HOURS, () => clock);
+  await world.start(); cleanup.push(() => world.stop().finally(() => store.close()));
+  const { agent } = await ctx.agents.create({ sessionId: SessionId('group'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } });
+  const compactions = () => agent.session.snapshotEvents().filter(event => event.type === 'compaction/end' && event.data.error === undefined).length;
+  const ownWords = (request: GenerateOptions) => request.messages.filter(m => m.source?.kind === 'user').map(m => textOf([m]));
+  for (const words of ['OLD_ONE', 'OLD_TWO']) { agent.followup(user(words)); await agent.whenIdle(); clock += 60 * 60_000; }
+  assert.equal(summaries, 0, 'a conversation an hour apart is never compacted for being cold');
+
+  // Meanwhile she rewrote 我是谁 and talked on WeChat.
+  await writeFile(selfFile, '后来的我');
+  await store.commitRecords([record('wechat', { sourceSessionId: 'wechat', turnId: 'wechat:1', content: '微信那边刚聊的', occurredAt: '2026-11-05T09:00:00.000Z' })]);
+  clock += DEFAULT_COLD_HOURS * 60 * 60_000;
+  agent.followup(user('好久不见')); await agent.whenIdle();
+  const back = requests.at(-1)!;
+  assert.equal(summaries, 1, 'one summary, before the cold turn speaks');
+  assert.match(systemOf(back), /后来的我/); assert.doesNotMatch(systemOf(back), /打开那天的我/);
+  const blocks = back.messages.filter(m => m.source?.kind === 'dsh-world-history');
+  assert.equal(blocks.length, 1, 'the memory block is rebuilt either way'); assert.match(textOf(blocks), /微信那边刚聊的/);
+  if (failing) {
+    assert.equal(compactions(), 0);
+    assert.deepEqual(ownWords(back).filter(text => /OLD_/.test(text)).length, 2, 'the old conversation stays as it was');
+    assert.ok(world.faults().some(fault => fault.includes('久未开口后的压缩失败') && fault.includes('summary refused')), world.faults().join('\n'));
+  } else {
+    assert.equal(compactions(), 1);
+    assert.deepEqual(ownWords(back).filter(text => /OLD_/.test(text)), [], 'the old conversation is carried as its summary, not word for word');
+    assert.match(textOf(back.messages), /COLD_SUMMARY/);
+    assert.deepEqual(world.faults(), []);
+    assert.deepEqual(errors, []);
+  }
+});
 test('after her look back one apply-and-compact makes the 我是谁 she rewrote the one in her prompt', async t => {
   const requests: GenerateOptions[] = [];
   const { ctx, root, cleanup, errors } = await hostFixture(t, async function* (request) {

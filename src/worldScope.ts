@@ -5,7 +5,7 @@ import type {} from '@deepseek-ai/dsh-system-prompt';
 import type { ToolDefinition } from '@deepseek-ai/dsh-tools';
 
 /**
- * Her world reaches only the sessions of her room's workspace (plus her persona, which follows the preset). A
+ * Her world and persona reach only her preset's sessions in her room's workspace. A
  * session can join or leave the workspace at any time, so every way in checks again where it matters: before an
  * injection, after every wait, and when a tool runs.
  */
@@ -21,18 +21,25 @@ export function admit(inWorld: InWorld | undefined, agent: Agent): Agent {
   return agent;
 }
 
-/** The tool, refusing to run once its agent has left her world; `left` lets the owner take it away. */
-export function scopedTool(tool: ToolDefinition, inside: () => boolean, left?: () => void): ToolDefinition {
-  return { ...tool, execute: (args, exec) => {
+/** The same scope check controls step admission and execution; older hosts ignore the registration condition. */
+export function registerScopedTool(agent: Agent, tool: ToolDefinition, inside: () => boolean, left?: () => void): () => void {
+  const register: (definition: ToolDefinition, options?: { when(): boolean }) => () => void = agent.ctx.tools.register.bind(agent.ctx.tools);
+  return register({ ...tool, execute: (args, exec) => {
     if (!inside()) { left?.(); throw new OutsideWorldError(); }
     return tool.execute(args, exec);
-  } };
+  } }, { when: inside });
 }
 
 /**
- * Membership can change after `agent/created`, so whatever a session's world providers depend on is synced as its
- * system prompt is assembled; when `sync` changed something, the prompt is assembled again to include it.
+ * DSH 0.2.2 selects tools before prompt assembly, so synchronize at turn start and between steps as well.
+ * The assembly check still catches membership changes while a request is being prepared.
  */
 export function reassembleOnChange(ctx: Context, sync: (agent: Agent) => boolean): () => void {
-  return ctx.on('system-prompt/assemble', (_assembly, context, next) => context.agent && sync(context.agent) ? context.agent.ctx.systemPrompt.assemble(context) : next());
+  const beforeStep = ctx.on('session/event', (session, event) => {
+    if (event.type !== 'turn/start' && event.type !== 'step/end') return;
+    const agent = ctx.get('agents')?.get(session.id);
+    if (agent) sync(agent);
+  });
+  const assemble = ctx.on('system-prompt/assemble', (_assembly, context, next) => context.agent && sync(context.agent) ? context.agent.ctx.systemPrompt.assemble(context) : next());
+  return () => { beforeStep(); assemble(); };
 }

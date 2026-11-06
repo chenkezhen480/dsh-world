@@ -85,7 +85,7 @@ export const Config = z.object({
     // SnowLuma 装在哪：控制台那扇门要去它的 config/runtime.json 拿地址与端口。空着就按 D:\SnowLuma、
     // C:\SnowLuma、~/SnowLuma 挨个认（认「里面有 config/runtime.json」这一条）。
     snowlumaHome: z.string().default(''),
-    // 看门狗：通道开着时每 30 秒探一次 wsUrl 的端口，不通就把 SnowLuma 拉起来。不想让插件动手就关掉，面板上的按钮照旧能用。
+    // 看门狗：每 30 秒探一次 wsUrl 的端口，不通且没有实例时才拉起。关掉后面板上的按钮照旧能用。
     supervise: z.boolean().default(true),
     // 谁和她的家会话共用一个入口。'owner'（默认）＝群各自独立、私聊用她的家；'all'＝都用她的家；
     // 'none'＝谁都不绑，每个入口各建一个 —— 开发测试 QQ 的时候填 none，回合就不会走进步话生活的家里。

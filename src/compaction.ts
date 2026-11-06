@@ -99,6 +99,9 @@ class TargetConfigError extends Error {
  * tool result, tool schema and reasoning block from the compacted span, then
  * replaces the whole conversation with one summary paragraph.
  */
+/** Whether a session's compaction service is this one, which can summarize inside a running turn; DSH's stock one cannot. */
+export const compactsWhole = (engine: unknown): engine is Pick<ToolFreeCompaction, 'compactWhole'> => typeof (engine as Partial<ToolFreeCompaction> | undefined)?.compactWhole === 'function';
+
 export default class ToolFreeCompaction extends CompactionEngine {
   static inject = ['llm', 'tokenMeter', 'sessions'];
   static Config = z.object({
@@ -185,10 +188,7 @@ export default class ToolFreeCompaction extends CompactionEngine {
     const target = routedTarget(agent.session);
     if (!target) return null;
     const meter = this.ctx.tokenMeter;
-    if (trigger === 'context-overflow') {
-      const range = selectWholeRange(agent.session, meter.measure(agent.session));
-      return range && this.compactRegion(range.start, range.end, agent, signal);
-    }
+    if (trigger === 'context-overflow') return this.compactWhole(agent, signal);
     const policy = this.policyFor(target);
     const info = await this.ctx.llm.resolveModelInfo(target.provider, target.model, signal);
     assertNoActiveCompaction(agent.session, 'automatic pressure compaction');
@@ -206,12 +206,21 @@ export default class ToolFreeCompaction extends CompactionEngine {
     try { threshold = compactionThreshold({ contextWindow, ratio: policy.thresholdRatio, reserved }); }
     catch (error) { throw new TargetConfigError(key, `dsh-world/compaction: ${key}: ${error instanceof Error ? error.message : String(error)}`); }
     if (meter.measure(agent.session).totalTokens < threshold) return null;
-    const range = selectWholeRange(agent.session, meter.measure(agent.session));
-    if (!range) return null;
-    const result = await this.compactRegion(range.start, range.end, agent, signal);
+    const result = await this.compactWhole(agent, signal);
+    if (!result) return null;
     const after = meter.measure(agent.session).totalTokens;
     if (after >= threshold) throw new Error(`compaction still above threshold after summarizing the whole conversation (${after} estimated tokens >= threshold ${threshold})`);
     return result;
+  }
+
+  /**
+   * Summarizes the whole conversation inside the running turn, before its next request; null when there is nothing to
+   * summarize. Besides pressure and overflow, the world runtime calls it on a cold session's first step (#36).
+   */
+  async compactWhole(agent: CompactionAgentContext, signal: AbortSignal): Promise<CompactionResult | null> {
+    if (!routedTarget(agent.session)) return null;
+    const range = selectWholeRange(agent.session, this.ctx.tokenMeter.measure(agent.session));
+    return range && this.compactRegion(range.start, range.end, agent, signal);
   }
 
   compactRegion(start: SessionSeq, end: SessionSeq, agent: CompactionAgentContext, signal?: AbortSignal): Promise<CompactionResult> {

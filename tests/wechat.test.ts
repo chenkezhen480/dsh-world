@@ -77,7 +77,7 @@ test('inbox insertions reconcile WeChat tools with workspace membership and reta
   assert.equal(agent.ctx.tools.get('wechat_send', agent), hostTool);
 });
 
-test('a plugin context without systemPrompt in its inject list can admit a session that enters the workspace at assembly', async t => {
+test('a plugin context without systemPrompt in its inject list admits a session that enters before tool selection', async t => {
   const requests: GenerateOptions[] = [];
   const { ctx, root, cleanup, errors } = await hostFixture(t, request => { requests.push(request); return textResponse('已收到'); });
   let inside = false;
@@ -89,8 +89,8 @@ test('a plugin context without systemPrompt in its inject list can admit a sessi
     channel.start();
   } }).await();
   cleanup.push(() => channel.stop());
-  // Membership arrives only by the time the prompt is assembled, after the inbox insertion.
-  cleanup.push(ctx.on('system-prompt/assemble', (_assembly, _context, next) => { inside = true; return next(); }, { prepend: true }));
+  // DSH 0.2.2 selects tools before assembling the prompt; membership arrives after the inbox insertion.
+  cleanup.push(ctx.on('session/event', (session, event) => { if (session === agent.session && event.type === 'turn/start') inside = true; }, { prepend: true }));
   agent.followup(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: '刚进工作区' }] }));
   await agent.whenIdle();
   assert.deepEqual(errors.map(error => String((error as { error?: unknown }).error ?? error)), []);

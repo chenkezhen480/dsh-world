@@ -162,7 +162,7 @@ node <DSH 自带 pnpm 的入口文件> add dsh-world@latest --ignore-scripts --r
       mutedUntil: ''             # 静默到这个时间（ISO）：只收不回，到点自己醒
       bindHomeSession: owner     # owner：主人私聊用家会话、群各自独立；all：都用；none：各建一个
       snowlumaHome: ''           # SnowLuma 安装目录：控制台那扇门、看门狗和「拉起 SnowLuma」都靠它
-      supervise: true            # 看门狗：端口不通就把 SnowLuma 拉起来
+      supervise: true            # 看门狗：端口不通且没有实例时才拉起 SnowLuma
 ```
 
 **压缩的配置**写在压缩那一行的 `config` 里（profile 的 `cordis.patch.yml` 中 `name: 'dsh-world/compaction'` 那一条），不是上面 `dsh-world` 这一行：

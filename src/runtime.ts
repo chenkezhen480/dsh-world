@@ -5,11 +5,13 @@ import type { Session, SessionSeq } from '@deepseek-ai/dsh-session';
 import type {} from '@deepseek-ai/dsh-compaction';
 import './hostContract.ts';
 import { isOrdinarySession } from './archive.ts';
+import { compactsWhole } from './compaction.ts';
+import { compactionFor } from './console/homeApply.ts';
 import { Faults } from './faults.ts';
 import { createHistory, excludePresentMessages, renderHistory } from './history.ts';
 import { createWorldToolRegistry, memoryTools } from './memoryTools.ts';
 import { createPromptSections, type WorldPromptSource } from './promptSection.ts';
-import { belongsToWorld, createSourceArchive, inWorld } from './sourceArchive.ts';
+import { belongsToWorld, createSourceArchive, inWorld, sessionPreset } from './sourceArchive.ts';
 import type { ArchiveStore } from './store.ts';
 import type { WorldConfig } from './types.ts';
 import { worldNames } from './worldPrompt.ts';
@@ -21,9 +23,10 @@ const memorySource = 'dsh-world-history';
 const isMemoryBlock = (event: ReturnType<Session['eventAt']>) => event?.type === 'user/message' && event.data.source.kind === memorySource;
 
 /**
- * Per session: whether the memory block must be (re)built at the next step, the position and time of the latest request.
+ * Per session: whether the memory block must be (re)built at the next step, whether this turn opened cold, and the
+ * position and time of the latest request.
  */
-interface MemoryState { reload: boolean; position: { turn: number; step: number }; lastRequestAt?: number; inScope: boolean; restart: boolean; pendingId?: string; retiring: SessionSeq[] }
+interface MemoryState { reload: boolean; cold: boolean; position: { turn: number; step: number }; lastRequestAt?: number; inScope: boolean; restart: boolean; pendingId?: string; retiring: SessionSeq[] }
 
 /**
  * The memory line: her conversations are archived as they happen, and every world session gets a memory
@@ -34,8 +37,9 @@ interface MemoryState { reload: boolean; position: { turn: number; step: number 
  *
  * A session silent for `coldHours` (read at each turn start, default 24) is cold (#36): its provider cache has most
  * likely expired (DeepSeek clears an unused one "usually within a few hours to a few days", best effort), so its next
- * turn re-reads her memory block and prompt as a newly opened session would, at the cost of at most one uncached
- * request. A conversation in progress does not pause that long, so its cached prefix stays whole.
+ * turn first summarizes the old conversation, then re-reads her memory block and prompt as a newly opened session
+ * would: that first request misses the cache anyway, and every later step carries the summary instead of the whole old
+ * conversation. A conversation in progress does not pause that long, so its cached prefix stays whole.
  */
 export function createWorldRuntime(ctx: Context, config: WorldConfig, store: ArchiveStore, world?: WorldPromptSource, memoryTurns: () => number = () => DEFAULT_MEMORY_TURNS, coldHours: () => number = () => DEFAULT_COLD_HOURS, now: () => number = Date.now) {
   if (config.archiveScope === 'workspace' && !world?.archiveSession) throw new Error('Workspace archive requires the host workspace selection');
@@ -66,7 +70,7 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
 
   function newMemoryState(session: Session): MemoryState {
     const inScope = included(session);
-    return { reload: true, position: { turn: 1, step: 1 }, retiring: [], inScope, restart: !inScope && belongsToWorld(session, config) };
+    return { reload: true, cold: false, position: { turn: 1, step: 1 }, retiring: [], inScope, restart: !inScope && belongsToWorld(session, config) };
   }
   /**
    * Archive failures never stop her talking: they stay in the health list, and what she said meanwhile is replayed
@@ -116,6 +120,20 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
     if (included(session)) await archiveNow(session.id);
   }
   /** Retire old blocks, then admit fresh memory through the host's normal append path (#21). The caller checks the scope after the wait. */
+  /**
+   * A cold turn's first step summarizes the old conversation before anything is admitted, so the host's own context
+   * admission sees the compacted surface. Only the tool-free compaction can do this inside a turn; without it, or when it
+   * fails, the memory block and prompt are still rebuilt and the failure shows in health.
+   */
+  async function compactCold(agent: Agent, step: number, pending: number, signal: AbortSignal): Promise<void> {
+    const state = memory.get(agent.session);
+    if (!state?.cold) return;
+    state.cold = false;
+    if (step !== 1 || !pending || signal.aborted || !included(agent.session)) return;
+    const engine = compactionFor(ctx, agent);
+    if (!compactsWhole(engine)) return;
+    await faults.track(`cold:${agent.id}`, `会话 ${agent.id} 久未开口后的压缩失败，已改为只重读记忆块和人设`, async () => { await engine.compactWhole(agent, signal); }).catch(() => {});
+  }
   async function freshBlock(session: Session, state: MemoryState): Promise<UserMessage | undefined> {
     const turns = await history.loadRecentTurns(memoryTurns(), archivedByScope);
     const present = new Set(session.deriveMessages().map(message => message.id));
@@ -134,13 +152,17 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
   async function start(options: { fresh?: boolean } = {}): Promise<void> {
     try {
       disposers.push(ctx.on('session/event', (session, event) => {
+        if (event.type === 'agent-preset/selected') {
+          const agent = ctx.agents.get(session.id);
+          if (agent) { prompts?.add(agent); syncTools(agent); }
+        }
         const state = memory.get(session);
         const compacted = event.type === 'compaction/end' && event.data.error === undefined;
         if (state && event.type === 'user/message' && event.data.id === state.pendingId) { state.reload = false; state.pendingId = undefined; }
         if (state && compacted) { state.reload = true; }
         // The host assembles the system prompt after turn/start, so a cold session's first request already has both.
         const cold = !!state && event.type === 'turn/start' && state.lastRequestAt !== undefined && now() - state.lastRequestAt >= coldHours() * 60 * 60_000;
-        if (cold) state.reload = true;
+        if (cold) { state.reload = true; state.cold = true; }
         if (compacted || cold) prompts?.refresh(session);
         if (!isOrdinarySession(session.header)) return;
         if (event.type === 'assistant/message' || event.type === 'turn/end' || event.type === 'turn/start' || event.type === 'compaction/end' || (event.type === 'user/message' && event.data.source.kind === 'user')) void archive.schedule(session.id).catch(() => {});
@@ -159,6 +181,7 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
       }
       // Admitted ahead of the step's new input; the host's own admission order (contexts, time-context last) is kept.
       disposers.push(ctx.on('agent/pre-step', async (payload, next) => {
+        await compactCold(payload.agent, payload.step, payload.messages.length, payload.signal);
         const decision = await next();
         const { agent, step, signal } = payload;
         // An empty first step ends the turn; any later step runs anyway, so adding to it is safe.
@@ -202,7 +225,7 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
           const state = memory.get(agent.session);
           if (state) { retireMemory(agent.session, state); flushRetired(agent.session, state, state.position); state.restart = true; }
           const reasons = [inRequest ? `请求里还带着 ${inRequest} 条世界记忆块` : '', placed ? '世界提示还挂在会话上' : ''].filter(Boolean).join('；');
-          ctx.logger.warn(`dsh-world: 阻止了会话 ${agent.id}（预设 ${agent.session.header.agentPreset ?? '无'}）的一次请求，它不在世界工作区里。原因：${reasons}。${state ? '已尝试退役记忆块' : '这个会话没有记忆状态，没法退役'}；退役后会话表面上仍有的记忆节点：${memoryNodesOn(agent.session)}。DSH_WORLD_SCOPE_CHANGED`);
+          ctx.logger.warn(`dsh-world: 阻止了会话 ${agent.id}（预设 ${sessionPreset(agent.session) ?? '无'}）的一次请求，它不在世界工作区里。原因：${reasons}。${state ? '已尝试退役记忆块' : '这个会话没有记忆状态，没法退役'}；退役后会话表面上仍有的记忆节点：${memoryNodesOn(agent.session)}。DSH_WORLD_SCOPE_CHANGED`);
           yield { type: 'finish', reason: { kind: 'error', failure: { code: 'DSH_WORLD_SCOPE_CHANGED', message: 'dsh-world: 会话已离开世界工作区，已阻止携带世界上下文的请求，请重新发送。' } } } satisfies StreamChunk;
           return;
         }
@@ -217,6 +240,7 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
       if (options.fresh) for (const agent of ctx.agents.list()) if (belongsToWorld(agent.session, config)) await archive.skip(agent.id);
       for (const agent of ctx.agents.list()) {
         prompts?.add(agent);
+        syncTools(agent);
         await attach(agent);
       }
     } catch (error) { await stop(); throw error; }

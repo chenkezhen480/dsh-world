@@ -3,7 +3,7 @@ import { defineTool, type ToolDefinition } from '@deepseek-ai/dsh-tools';
 import { errorText, type Faults } from './faults.ts';
 import type { MemoryPage, MemoryService } from './memory.ts';
 import type { MemoryOrigin } from './memoryStore.ts';
-import { OutsideWorldError, scopedTool } from './worldScope.ts';
+import { OutsideWorldError, registerScopedTool } from './worldScope.ts';
 
 const output = { schema: { type: 'string' as const }, render: (_args: unknown, value: string) => [{ type: 'text' as const, text: value }] };
 
@@ -77,7 +77,7 @@ export function createWorldToolRegistry(deps: { tools(inside: () => boolean): To
       if (registered.get(agent)?.length) return false;
       const done: (() => void)[] = [];
       try {
-        for (const tool of deps.tools(() => deps.inWorld(agent))) done.push(agent.ctx.tools.register(scopedTool(tool, () => deps.inWorld(agent))));
+        for (const tool of deps.tools(() => deps.inWorld(agent))) done.push(registerScopedTool(agent, tool, () => deps.inWorld(agent)));
         registered.set(agent, done); deps.faults.clear(key(agent));
         return true;
       } catch (error) {
