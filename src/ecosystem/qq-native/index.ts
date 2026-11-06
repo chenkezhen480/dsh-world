@@ -494,6 +494,7 @@ export function createQqNativeModule(deps: {
       startBridge(config);
       disposers.push(forwardOwnTurns());
       client.start().catch((error: unknown) => {
+        if (stopped) return;
         stats.lastError = errorText(error);
         deps.logger.warn('QQ 原生通道首次连接失败：', stats.lastError);
       });

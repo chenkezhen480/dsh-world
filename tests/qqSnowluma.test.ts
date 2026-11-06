@@ -212,3 +212,22 @@ test('start 对拒连端点 fail-loud：reject + 状态保持 connecting（SDK �
   assert.equal(bridge.getState(), 'closed');
   assert.equal(states[0], 'connecting');
 });
+
+test('握手期间关闭 QQ 连接不会抛出未处理的 WebSocket 错误', { timeout: 5000 }, async t => {
+  const server = net.createServer();
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  let socket: net.Socket | undefined;
+  t.after(async () => {
+    socket?.destroy();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  });
+  const accepted = new Promise<net.Socket>(resolve => server.once('connection', resolve));
+  const port = (server.address() as net.AddressInfo).port;
+  const bridge = createBridge({ wsUrl: `ws://127.0.0.1:${port}/` });
+  const rejected = assert.rejects(bridge.start(), /closed/);
+  socket = await accepted;
+  await bridge.stop();
+  await rejected;
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(bridge.getState(), 'closed');
+});

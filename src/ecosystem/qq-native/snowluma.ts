@@ -108,6 +108,14 @@ import {
 } from '@snowluma/sdk';
 import WebSocket from 'ws';
 
+class SnowlumaSocket extends WebSocket {
+  override close(code?: number, reason?: string): void {
+    // The SDK removes its error listener before closing, but ws emits an error when a handshake is cancelled.
+    if (this.readyState === WebSocket.CONNECTING) this.once('error', () => {});
+    super.close(code, reason);
+  }
+}
+
 /**
  * 交付物里进出的都是未知形状的 JSON。这个别名只干一件事：让字段访问合法。
  * 交付模块逐字保留，所以注解只加在参数上；真正的形状契约写在文件头那段注释里。
@@ -487,7 +495,7 @@ export function createBridge(options: Loose) {
     const bot = new SnowLumaWebSocketClient({
       url: opts.wsUrl || DEFAULT_WS_URL,
       // Node 22's built-in WebSocket can error without close; ws lets the SDK settle failed connects.
-      webSocket: WebSocket,
+      webSocket: SnowlumaSocket,
       // 空串会让鉴权头变成 `Bearer `，某些网关直接 401 —— 必须 || undefined（切片第 1 节）
       accessToken: opts.accessToken || undefined,
       requestTimeoutMs: 30000,
@@ -542,7 +550,7 @@ export function createBridge(options: Loose) {
       } catch (error) {
         // 首连失败按契约 reject 得清楚；客户端保留，SDK reconnect 会按退避自动重试
         // （closed-before-opening 属于「非用户主动关闭」，重连条件成立），状态保持 connecting
-        log('error', `首次连接失败: ${(error as Loose)?.message ?? error}（SDK 将按退避自动重连）`);
+        if (client === bot) log('error', `首次连接失败: ${(error as Loose)?.message ?? error}（SDK 将按退避自动重连）`);
         throw error;
       }
     },
