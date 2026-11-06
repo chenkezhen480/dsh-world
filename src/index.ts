@@ -108,7 +108,7 @@ export const Config = z.object({
 });
 interface WebServer { register(route: ReturnType<typeof consoleRoute> | ReturnType<typeof bridgeRoute> | ReturnType<typeof compactRoute> | ReturnType<typeof qqRoute> | ReturnType<typeof worldListRoute>): () => void }
 interface ProfileWorlds {
-  rooms: Map<string, { path: string; authorize(session: Session): symbol | undefined }>;
+  rooms: Map<string, { path: string; authorize(session: Session): symbol | false | undefined }>;
   consoles: Map<string, readonly string[]>;
   compactionSwap: Promise<void>;
   unregisterList?: () => void;
@@ -123,7 +123,7 @@ function profileWorlds(root: Context): ProfileWorlds {
     if (worldId !== undefined) return worlds.rooms.get(worldId)?.authorize(session);
     for (const room of worlds.rooms.values()) {
       const token = room.authorize(session);
-      if (token) return token;
+      if (token !== undefined) return token;
     }
   });
   return worlds;
@@ -205,7 +205,10 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   ctx.effect(() => {
     worlds.rooms.set(worldId, {
       path: roomDir,
-      authorize: session => !disposed && power.running() && memory && inWorldSession(session) ? memory.scopeToken : undefined,
+      authorize: session => {
+        if (!inWorldSession(session)) return undefined;
+        return !disposed && power.running() && memory ? memory.scopeToken : false;
+      },
     });
     return () => {
       disposed = true;

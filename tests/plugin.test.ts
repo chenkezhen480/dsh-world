@@ -7,7 +7,7 @@ import type { AddressInfo } from 'node:net';
 import { Readable } from 'node:stream';
 import type { Context } from '@deepseek-ai/cordis';
 import { join } from 'node:path';
-import { createUserMessage, isAgentLoopRequest, ToolCallId, type GenerateOptions } from '@deepseek-ai/dsh-llm';
+import { createUserMessage, isAgentLoopRequest, LlmError, ToolCallId, type GenerateOptions } from '@deepseek-ai/dsh-llm';
 import { SessionId } from '@deepseek-ai/dsh-session';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { hostFixture, mountCompaction, textResponse } from './hostFixture.ts';
@@ -711,8 +711,10 @@ for (const action of ['stop', 'unload', 'unload with another world'] as const) t
   const { agent } = await ctx.agents.create({ sessionId: SessionId('recall-stop'), meta: { agentPreset: config.agentPreset, cwd: room }, agentOptions: { provider: 'test', model: 'test' } });
   const consolePath = '/dsh-world/worlds/fish/console/';
   await consolePost(routes, consolePath + 'start');
+  agent.inject(createUserMessage({ source: { kind: 'dsh-world-channel-context', form: 'recall' }, content: [{ type: 'text', text: 'PRIVATE_CHANNEL_CONTEXT' }] }));
   agent.followup(user('before stop')); await agent.whenIdle();
   assert.match(textOf(requests.at(-1)!), /PRIVATE_RECALL/);
+  assert.match(textOf(requests.at(-1)!), /PRIVATE_CHANNEL_CONTEXT/);
   if (action === 'unload with another world') {
     const other = ctx.plugin(worldPlugin, { ...config, worldId: 'tata', life: false });
     cleanup.push(() => other.dispose());
@@ -723,9 +725,77 @@ for (const action of ['stop', 'unload', 'unload with another world'] as const) t
   else await plugin.dispose();
   agent.followup(user('after stop')); await agent.whenIdle();
   assert.match(textOf(requests.at(-1)!), /after stop/);
-  assert.doesNotMatch(textOf(requests.at(-1)!), /PRIVATE_RECALL/);
-  assert.ok(!agent.session.deriveMessages().some(message => message.source.kind === 'dsh-world-history'));
+  assert.doesNotMatch(textOf(requests.at(-1)!), /PRIVATE_RECALL|PRIVATE_CHANNEL_CONTEXT/);
+  assert.ok(!agent.session.deriveMessages().some(message => message.source.kind === 'dsh-world-history' || message.source.kind === 'dsh-world-channel-context'));
   assert.ok(agent.session.snapshotEvents().some(event => event.type === 'user/message' && event.data.source.kind === 'dsh-world-history'));
+});
+
+for (const engine of ['stock', 'tool-free'] as const) test(`${engine} compaction cannot send or save stopped world context`, async t => {
+  const summaries: GenerateOptions[] = [];
+  let releaseSummary!: () => void;
+  let summaryHeld = false;
+  const heldSummary = new Promise<void>(resolve => { releaseSummary = resolve; });
+  const { ctx, root, cleanup } = await hostFixture(t, async function* (request) {
+    if (request.purpose === 'compaction') {
+      summaries.push(request);
+      if (summaries.length === 1) {
+        // One provider may already have emitted its finish chunk when shutdown begins.
+        if (engine === 'stock') yield* textResponse('summary');
+        summaryHeld = true;
+        await heldSummary;
+        if (engine === 'stock') return;
+      }
+      yield* textResponse('summary');
+    } else yield* textResponse('reply');
+  });
+  isolateHome(t, root);
+  if (engine === 'stock') await mountCompaction(ctx);
+  else {
+    await ctx.plugin(TokenMeter).await();
+    await ctx.plugin(ToolFreeCompaction, { auto: false, headroomTokens: 0, maxTokens: 128 }).await();
+  }
+  const room = join(root, 'worlds', 'fish', 'room');
+  await mkdir(room, { recursive: true });
+  const id = SessionId('compaction-stop');
+  ctx.provide('workspaceRegistry', { list: () => [{ path: room, sessionIds: [id, 'other-session'] }] });
+  const { routes } = provideLifeHost(ctx);
+  if (engine === 'tool-free') {
+    const store = createArchiveStore({ ...config, root });
+    try { await store.commitRecords([record('seed', { sourceSessionId: 'other-session', content: 'PRIVATE_RECALL' })]); }
+    finally { store.close(); }
+  }
+  const plugin = ctx.plugin(worldPlugin, { ...config, life: false });
+  cleanup.push(() => plugin.dispose());
+  await plugin.await();
+  const consolePath = '/dsh-world/worlds/fish/console/';
+  await consolePost(routes, consolePath + 'persona', { 性格: 'PRIVATE_PERSONA' });
+  await consolePost(routes, consolePath + 'start');
+  const options = { provider: 'test', model: 'test' };
+  const handle = await ctx.agents.create({ sessionId: id, meta: { agentPreset: config.agentPreset, cwd: room }, agentOptions: options });
+  const longTurn = user('ordinary conversation to compact '.repeat(120));
+  handle.agent.followup(longTurn); await handle.agent.whenIdle();
+  const scopeChanged = (error: unknown) => error instanceof Error && error.cause instanceof LlmError && error.cause.code === 'DSH_WORLD_SCOPE_CHANGED';
+  const compact = (agent: typeof handle.agent) => ctx.compaction.compactNow(agent, new AbortController().signal);
+  const inFlight = compact(handle.agent);
+  try {
+    await until(async () => summaryHeld, 'compaction to reach the model');
+    assert.match(textOf(summaries[0]!), /PRIVATE_PERSONA/);
+    assert.equal(textOf(summaries[0]!).includes('PRIVATE_RECALL'), engine === 'tool-free');
+    await consolePost(routes, consolePath + 'stop');
+  } finally { releaseSummary(); }
+  await assert.rejects(inFlight, scopeChanged);
+  assert.ok(handle.agent.session.deriveMessages().some(message => message.id === longTurn.id));
+
+  await handle.dispose();
+  const { agent } = await ctx.agents.resume({ resumeSessionId: id, agentOptions: options });
+  await assert.rejects(compact(agent), scopeChanged);
+  assert.equal(summaries.length, 1);
+
+  const ordinary = await ctx.agents.create({ sessionId: SessionId('ordinary'), meta: { agentPreset: config.agentPreset }, agentOptions: options });
+  ordinary.agent.followup(user('separate ordinary conversation '.repeat(120))); await ordinary.agent.whenIdle();
+  assert.ok(await compact(ordinary.agent));
+  assert.equal(summaries.length, 2);
+  assert.doesNotMatch(textOf(summaries[1]!), /PRIVATE_PERSONA|PRIVATE_RECALL/);
 });
 
 test('stopping after assembly blocks a world prompt even with no recall block', { timeout: 5000 }, async t => {

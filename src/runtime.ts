@@ -1,6 +1,6 @@
 import type { Context } from '@deepseek-ai/cordis';
 import type { Agent } from '@deepseek-ai/dsh-agent';
-import { createSystemMessage, createUserMessage, isAgentLoopRequest, type StreamChunk, type UserMessage } from '@deepseek-ai/dsh-llm';
+import { createSystemMessage, createUserMessage, isAgentLoopRequest, LlmError, type StreamChunk, type UserMessage } from '@deepseek-ai/dsh-llm';
 import type { Session, SessionSeq } from '@deepseek-ai/dsh-session';
 import type {} from '@deepseek-ai/dsh-compaction';
 import './hostContract.ts';
@@ -39,18 +39,21 @@ function retireRecall(session: Session, retiring: readonly SessionSeq[], positio
   }
 }
 
-/** A session can outlive its world, so its saved recall is checked for the lifetime of the profile. */
-export function guardWorldContext(ctx: Context, authorize: (session: Session, worldId?: string) => symbol | undefined): void {
+/** A session can outlive its world. Authorization returns false for a stopped world and undefined outside it. */
+export function guardWorldContext(ctx: Context, authorize: (session: Session, worldId?: string) => symbol | false | undefined): void {
   const assemblies = new WeakMap<AbortSignal, WorldAssembly>();
   const previousPrompts = new WeakMap<Session, WorldAssembly>();
-  const revoked = (source: UserMessage['source'] | undefined, session: Session | undefined) => source?.kind === memorySource && (!session || !authorize(session, source.worldId));
+  const revoked = (source: UserMessage['source'] | undefined, session: Session | undefined) => {
+    if (source?.kind === memorySource) return !session || !authorize(session, source.worldId);
+    return source?.kind === 'dsh-world-channel-context' && (!session || !authorize(session));
+  };
   ctx.on('system-prompt/assemble', async (_assembly, context, next) => {
     const result = await next();
     if (context.signal && context.agent) {
       const section = result.sections.find(section => section.name.startsWith(WORLD_PROMPT_PREFIX));
       if (section) {
         const worldId = section.name.slice(WORLD_PROMPT_PREFIX.length).split(':', 1)[0]!;
-        assemblies.set(context.signal, { worldId, token: authorize(context.agent.session, worldId) });
+        assemblies.set(context.signal, { worldId, token: authorize(context.agent.session, worldId) || undefined });
       } else assemblies.delete(context.signal);
     }
     return result;
@@ -69,18 +72,24 @@ export function guardWorldContext(ctx: Context, authorize: (session: Session, wo
     return next();
   });
   ctx.on('llm/stream', async function* (request, next) {
-    if (isAgentLoopRequest(request)) {
-      const session = request.sessionId ? ctx.get('sessions')?.get(request.sessionId) : undefined;
-      const prompt = request.signal ? assemblies.get(request.signal) : undefined;
-      if (session && prompt) previousPrompts.set(session, prompt);
-      const stalePrompt = prompt && (!session || !prompt.token || authorize(session, prompt.worldId) !== prompt.token);
-      if (stalePrompt || request.messages.some(message => revoked(message.source, session))) {
-        yield { type: 'finish', reason: { kind: 'error', failure: { code: 'DSH_WORLD_SCOPE_CHANGED', message: 'dsh-world: 世界权限已变化，已阻止携带旧世界上下文的请求，请重新发送。' } } } satisfies StreamChunk;
-        return;
-      }
-      if (session && !prompt) previousPrompts.delete(session);
+    const compaction = request.purpose === 'compaction';
+    if (!compaction && !isAgentLoopRequest(request)) { yield* next(); return; }
+    const session = request.sessionId ? ctx.get('sessions')?.get(request.sessionId) : undefined;
+    // Both compaction engines replay the saved prompt without assembling a new one.
+    const prompt = compaction ? session && previousPrompts.get(session) : request.signal && assemblies.get(request.signal);
+    if (!compaction && session && prompt) previousPrompts.set(session, prompt);
+    const scope = session && (compaction || prompt) ? authorize(session, prompt?.worldId) : undefined;
+    const stalePrompt = prompt && (!scope || (!compaction && scope !== prompt.token));
+    const failure = { code: 'DSH_WORLD_SCOPE_CHANGED', message: compaction
+      ? 'dsh-world: 世界已停止或会话已离开世界工作区，已取消压缩。'
+      : 'dsh-world: 世界权限已变化，已阻止携带旧世界上下文的请求，请重新发送。' };
+    if (scope === false || stalePrompt || request.messages.some(message => revoked(message.source, session))) {
+      yield { type: 'finish', reason: { kind: 'error', failure } } satisfies StreamChunk;
+      return;
     }
+    if (!compaction && session && !prompt) previousPrompts.delete(session);
     yield* next();
+    if (compaction && session && scope && authorize(session, prompt?.worldId) !== scope) throw new LlmError(failure.message, failure.code);
   });
 }
 
