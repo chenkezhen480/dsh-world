@@ -18,8 +18,8 @@ function worldDir() {
 try {
   const file = join(worldDir(), 'bridge.json');
   if (!existsSync(file)) throw new Error(`没有 ${file}：世界没有在运行，或者没有开启 bridge`);
-  const { origin, token } = JSON.parse(readFileSync(file, 'utf8'));
-  const response = await fetch(new URL('/dsh-world/bridge/compact', origin), { method: 'POST', headers: { 'x-dsh-world-token': token }, signal: AbortSignal.timeout(15000) });
+  const { origin, compactPath, token } = JSON.parse(readFileSync(file, 'utf8'));
+  const response = await fetch(new URL(compactPath, origin), { method: 'POST', headers: { 'x-dsh-world-token': token }, signal: AbortSignal.timeout(15000) });
   const body = await response.json().catch(() => ({}));
   if (response.status === 202) console.log('已请求压缩家会话；她正在忙的话会等这一轮结束后再压缩。');
   else { console.error(`没有受理（${response.status}）：${body.error ?? '未知原因'}`); process.exitCode = 1; }

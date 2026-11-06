@@ -10,11 +10,13 @@ import { realTimers, type LifeTimers } from '../../life/alarmTimer.ts';
 import { busyText, pushOf, type Outlet, type Push, type PushKind } from '../shared/outlets.ts';
 import { admit, type InWorld } from '../../worldScope.ts';
 
+export const bridgePaths = (prefix: string) => ({ sayPath: prefix + '/bridge/say', compactPath: prefix + '/bridge/compact' });
 export const REPLY_TIMEOUT_MS = 3 * 60_000;
 /** The words could not be handed to her home; the route answers 503. */
 export class HomeUnavailable extends Error {}
 export interface BridgeDeps {
   ctx: Context;
+  prefix: string;
   /** The current home, resolving or rebuilding it (the life line's own). */
   home(): Promise<Agent>;
   inWorld?: InWorld;
@@ -80,7 +82,7 @@ export function createBridge(deps: BridgeDeps) {
       send(reply);
     }));
     try {
-      durableWrite(deps.file, JSON.stringify({ origin: deps.origin(), token, pid: process.pid, startedAt: clock().toISOString(), name }, null, 2));
+      durableWrite(deps.file, JSON.stringify({ origin: deps.origin(), ...bridgePaths(deps.prefix), token, pid: process.pid, startedAt: clock().toISOString(), name }, null, 2));
       faults.clear('file');
     } catch (error) { faults.set('file', `bridge.json 没能写入，外面的程序找不到家：${errorText(error)}`); ctx.logger.error(error); }
   }

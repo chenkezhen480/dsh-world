@@ -1,12 +1,13 @@
 /**
  * dsh-world — 浏览器半侧：设置里的「世界控制台」。
- * 模块 id 必须等于 bundle 行名 dsh-world；数据来自宿主半侧的 /dsh-world/console/* 路由。
+ * 模块 id 必须等于 bundle 行名 dsh-world；数据来自当前世界的路由。
  * 读取是 GET；会改变东西的（开始、停止、人设、世界提示词、额度、记忆轮数）是带 x-dsh-world 头的 JSON POST。
  */
-window.__ModuleLoader__.load({
-  id: 'dsh-world',
-  factory: (require) => {
-    var react = require('react')
+;(function () {
+  var worldsPath = '/dsh-world/worlds'
+
+  function worldConsole(react, worldId) {
+    var prefix = worldsPath + '/' + encodeURIComponent(worldId)
     var h = react.createElement
     var useState = react.useState
     var useEffect = react.useEffect
@@ -24,11 +25,11 @@ window.__ModuleLoader__.load({
     function postTo(base, path, body) {
       return fetch(base + path, { method: 'POST', cache: 'no-store', headers: { 'content-type': 'application/json', 'x-dsh-world': '1' }, body: JSON.stringify(body || {}) }).then(settle)
     }
-    function api(path) { return getFrom('/dsh-world/console/', path) }
-    function post(path, body) { return postTo('/dsh-world/console/', path, body) }
-    /** QQ 那几扇门在自己的前缀下（/dsh-world/qq/*），不和 console 混在一起。 */
-    function qqGet(path) { return getFrom('/dsh-world/qq/', path) }
-    function qqPost(path, body) { return postTo('/dsh-world/qq/', path, body) }
+    function api(path) { return getFrom(prefix + '/console/', path) }
+    function post(path, body) { return postTo(prefix + '/console/', path, body) }
+    /** QQ 那几扇门在自己的前缀下（…/qq/*），不和 console 混在一起。 */
+    function qqGet(path) { return getFrom(prefix + '/qq/', path) }
+    function qqPost(path, body) { return postTo(prefix + '/qq/', path, body) }
     /** 保存没成时的那句话。 */
     function failedTo(setMsg) { return function (e) { setMsg('保存失败：' + (e.message || e)) } }
     /** 设置卡下面那行状态：没成（失败、请填…）标红，其余灰色。 */
@@ -206,7 +207,7 @@ window.__ModuleLoader__.load({
             return h('div', { className: 'dw-setting', key: photo.id },
               h('span', { style: { flex: '1 1 180px', overflowWrap: 'anywhere' } }, photo.description || '未写说明', ' · ', photo.width + '×' + photo.height, ' · ', local(photo.savedAt, props.zone), photo.tags.length ? ' · ' + photo.tags.join('、') : ''),
               h('button', { className: 'dw-btn', onClick: function () { setOpen(open === photo.id ? null : photo.id) } }, open === photo.id ? '收起照片' : '查看照片'),
-              open === photo.id ? h('img', { src: '/dsh-world/console/photo?id=' + encodeURIComponent(photo.id), alt: photo.description || '收藏的照片', style: { display: 'block', width: '100%', maxHeight: 480, objectFit: 'contain' }, onError: function () { setError('照片读取失败，请刷新后重试。') } }) : null)
+              open === photo.id ? h('img', { src: prefix + '/console/photo?id=' + encodeURIComponent(photo.id), alt: photo.description || '收藏的照片', style: { display: 'block', width: '100%', maxHeight: 480, objectFit: 'contain' }, onError: function () { setError('照片读取失败，请刷新后重试。') } }) : null)
           }) : h('div', { className: 'dw-muted' }, '她还没有收藏照片。'),
           h('div', { className: 'dw-setting' },
             h('button', { className: 'dw-btn', disabled: offset === 0, onClick: function () { setOffset(Math.max(0, offset - 12)); setOpen(null) } }, '上一页'),
@@ -470,7 +471,7 @@ window.__ModuleLoader__.load({
       var busyState = useState(false), busy = busyState[0], setBusy = busyState[1]
       var msgState = useState(''), msg = msgState[0], setMsg = msgState[1]
       // 两个控制台都带 X-Frame-Options: DENY，塞不进 iframe，所以交给系统浏览器开。
-      // 地址和令牌由宿主半侧现给（/dsh-world/qq/console），所以打开就是登录态。
+      // 地址和令牌由宿主半侧现给（…/qq/console），所以打开就是登录态。
       function openDoor(kind) {
         var label = 'SnowLuma'
         setBusy(true); setMsg('')
@@ -892,14 +893,59 @@ window.__ModuleLoader__.load({
       return h(View, { snap: snap, error: error, tick: tick, refresh: function () { if (loadRef.current) loadRef.current() } })
     }
 
-    var exports = { inject: ['slots'] }
-    Object.defineProperty(exports, Symbol.toStringTag, { value: 'Module' })
-    exports.apply = function (ctx) {
-      ctx.slots.inject('settings.section', function () {
-        return ctx.slots.register({ name: 'settings.section', id: 'world-console', order: 28, label: '世界控制台' }, function () { return h(Console) })
-      })
+    return { Console: Console, test: { Memory: Memory, MemorySearch: MemorySearch, latest: latest, searchMemory: searchMemory, memoryQuery: memoryQuery, dayStartIso: dayStartIso, WorkspacePermission: WorkspacePermission, CompactAfterReview: CompactAfterReview, Schedule: Schedule, Modules: Modules, HomeApply: HomeApply, PhotoAlbum: PhotoAlbum, Wechat: Wechat, Activity: Activity, Diary: Diary, Qq: Qq, Panel: Panel, View: View, Overview: Overview, PersonaEditor: PersonaEditor, PromptEditor: PromptEditor, loadSnapshot: loadSnapshot, renderPersona: renderPersona } }
+  }
+
+  async function loadWorldIds() {
+    var ids = [], offset = 0
+    do {
+      var response = await fetch(worldsPath + '?limit=100&offset=' + offset, { cache: 'no-store' })
+      if (!response.ok) throw new Error('HTTP ' + response.status)
+      var page = await response.json()
+      ids.push.apply(ids, page.worldIds)
+      offset = page.nextOffset
+    } while (offset !== null)
+    return ids
+  }
+
+  window.__ModuleLoader__.load({
+    id: 'dsh-world',
+    factory: function (require) {
+      var react = require('react')
+      var h = react.createElement
+      function SelectedWorld(props) {
+        var components = react.useState(function () { return worldConsole(react, props.worldId) })[0]
+        return h(components.Console)
+      }
+      function WorldSettings() {
+        var idsState = react.useState(null), ids = idsState[0], setIds = idsState[1]
+        var selectedState = react.useState(''), selected = selectedState[0], select = selectedState[1]
+        var errorState = react.useState(''), error = errorState[0], setError = errorState[1]
+        react.useEffect(function () {
+          var alive = true
+          loadWorldIds().then(function (items) {
+            if (alive) { setIds(items); select(items[0] || '') }
+          }, function (e) { if (alive) setError(String(e.message || e)) })
+          return function () { alive = false }
+        }, [])
+        if (error) return h('p', { role: 'alert' }, '读取世界列表失败：' + error)
+        if (!ids) return h('p', null, '读取中…')
+        if (!selected) return h('p', null, '没有已加载的世界')
+        return h('div', null,
+          ids.length > 1 ? h('label', null, '世界 ', h('select', { value: selected, onChange: function (event) { select(event.target.value) } },
+            ids.map(function (id) { return h('option', { key: id, value: id }, id) }))) : null,
+          h(SelectedWorld, { key: selected, worldId: selected }))
+      }
+
+      var exports = { inject: ['slots'] }
+      Object.defineProperty(exports, Symbol.toStringTag, { value: 'Module' })
+      exports.apply = function (ctx) {
+        ctx.slots.inject('settings.section', function () {
+          return ctx.slots.register({ name: 'settings.section', id: 'world-console', order: 28, label: '世界控制台' }, function () { return h(WorldSettings) })
+        })
+      }
+      Object.defineProperty(exports, '__test', { value: function (worldId) { return worldConsole(react, worldId).test } })
+      return exports
     }
-    Object.defineProperty(exports, '__test', { value: { Memory: Memory, MemorySearch: MemorySearch, latest: latest, searchMemory: searchMemory, memoryQuery: memoryQuery, dayStartIso: dayStartIso, WorkspacePermission: WorkspacePermission, CompactAfterReview: CompactAfterReview, Schedule: Schedule, Modules: Modules, HomeApply: HomeApply, PhotoAlbum: PhotoAlbum, Wechat: Wechat, Activity: Activity, Diary: Diary, Qq: Qq, Panel: Panel, View: View, Overview: Overview, PersonaEditor: PersonaEditor, PromptEditor: PromptEditor, loadSnapshot: loadSnapshot, renderPersona: renderPersona }, enumerable: false })
-    return exports
-  },
-})
+  })
+})()

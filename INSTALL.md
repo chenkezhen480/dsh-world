@@ -172,8 +172,8 @@ node <pnpm.cjs 路径> add @snowluma/sdk@^2.2.1
 
 | 检查 | 怎么验 | 期望 |
 |---|---|---|
-| dsh-world 已加载 | 浏览器打开 `http://127.0.0.1:<DSH 端口>/dsh-world/console/snapshot` | 返回 JSON，有 `worldId`、`life`、`native`。`qq` 那个字段现在恒为 `null`（拆掉的桥留下的），不用管它，看 `native` |
-| 通道认了配置 | `http://127.0.0.1:<DSH 端口>/dsh-world/qq/native` | 返回的 `url` 是你填的 `wsUrl`；没连上时 `connected: false`、`lastError` 里写着原因。通道没开时这个端点返回 `null` |
+| dsh-world 已加载 | 浏览器打开 `http://127.0.0.1:<DSH 端口>/dsh-world/worlds/<worldId>/console/snapshot` | 返回 JSON，有 `worldId`、`life`、`native` |
+| 通道认了配置 | `http://127.0.0.1:<DSH 端口>/dsh-world/worlds/<worldId>/qq/native` | 返回的 `url` 是你填的 `wsUrl`；没连上时 `connected: false`、`lastError` 里写着原因。通道没开时这个端点返回 `null` |
 | 世界在跑 | 控制台右上角是「停止」状态 | 通道跟着生活线一起起，世界没开始它不连 |
 
 > 用浏览器而不是 curl：DSH 的 webServer 会校验 Host 头，curl 直接打会被挡。同源请求不受影响。
@@ -285,7 +285,7 @@ node <pnpm.cjs 路径> add @snowluma/sdk@^2.2.1
 
 按顺序过一遍，哪条不过就查下表：
 
-1. `http://127.0.0.1:<DSH 端口>/dsh-world/qq/native` → `connected: true`，`url` 是你填的那个 ws 地址
+1. `http://127.0.0.1:<DSH 端口>/dsh-world/worlds/<worldId>/qq/native` → `connected: true`，`url` 是你填的那个 ws 地址
 2. DSH 里「世界控制台」→ QQ 卡：`● 她自己连着 ws://…`，`挡下 0`
 3. QQ 上用一个在白名单里的号给她私聊发一条 → 她回
 4. 群里 @ 她 → 她回；群里说一句没叫她的 → 她**不回**，但卡上的会话计数和上下文在走

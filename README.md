@@ -125,6 +125,8 @@ node <DSH 自带 pnpm 的入口文件> add dsh-world@latest --ignore-scripts --r
 
 ## 设置
 
+同一个 DSH profile 可以加载多个世界。每个世界用不同的 `worldId`，在「世界控制台」选择要管理的世界。它们可以共用预设，使用各自的房间工作区、家会话和记忆。接入 QQ 或微信时，每个世界配置自己的通道。
+
 大多数东西在世界控制台里改。其余的写在 profile 的 `cordis.patch.yml` 里，按 id 覆盖插件那一行，只写想改的项：
 
 ```yaml
@@ -133,7 +135,7 @@ node <DSH 自带 pnpm 的入口文件> add dsh-world@latest --ignore-scripts --r
   config:
     companionName: 小鱼          # 她的名字（控制台人设里写了名字时以人设为准），默认 TA
     partnerName: 伙伴            # 她对你的称呼，默认 伙伴
-    worldId: default             # 世界名；换一个就是另一个世界、另一份记忆
+    worldId: default             # 当前 profile 使用的世界目录名
     agentPreset: standard        # 她所在的预设
     timeZone: Asia/Seoul         # 默认系统时区
     life: true                   # 生活线，默认开启
@@ -164,6 +166,18 @@ node <DSH 自带 pnpm 的入口文件> add dsh-world@latest --ignore-scripts --r
       snowlumaHome: ''           # SnowLuma 安装目录：控制台那扇门、看门狗和「拉起 SnowLuma」都靠它
       supervise: true            # 看门狗：端口不通且没有实例时才拉起 SnowLuma
 ```
+
+添加第二个世界时，用另一条插入配置：
+
+```yaml
+- insert:
+    - id: dsh-world-tata
+      name: dsh-world
+      config:
+        worldId: tata
+```
+
+控制台和接入地址以 `/dsh-world/worlds/<worldId>/` 开头。外部桥接调用方从 `bridge.json` 读取路径，微信适配器与插件一起升级。
 
 **压缩的配置**写在压缩那一行的 `config` 里（profile 的 `cordis.patch.yml` 中 `name: 'dsh-world/compaction'` 那一条），不是上面 `dsh-world` 这一行：
 
@@ -218,7 +232,7 @@ node <DSH 自带 pnpm 的入口文件> add dsh-world@latest --ignore-scripts --r
 
 给桌宠等本地程序用。
 
-**把话送进她的家**（`bridge: true`）：插件启动时写出 `<世界目录>/bridge.json`，内容是 `{ origin, token, name, ... }`。向 `POST {origin}/dsh-world/bridge/say` 发 `{ "text": "..." }`，请求头带 `x-dsh-world-token: <token>`，会立即返回 `202`。这句话会作为你本人说的话进入她的家和记忆。
+**把话送进她的家**（`bridge: true`）：插件启动时写出 `<世界目录>/bridge.json`，内容是 `{ origin, sayPath, compactPath, token, name, ... }`。向 `POST {origin}{sayPath}` 发 `{ "text": "..." }`，请求头带 `x-dsh-world-token: <token>`，会立即返回 `202`。这句话会作为你本人说的话进入她的家和记忆。
 
 **接收她的话**（`outlets`）：每个目标写一个 `name`，地址用 `url`（其中 `{origin}` 会被替换），或者用 `urlFile` + `path`（端口会变的程序用这个）；再用 `kinds` 选择要接收哪些：`reply` 是桥上那句话的回复，`busy` 表示她正忙，`reach` 是她主动找你。插件会向目标 `POST`：
 

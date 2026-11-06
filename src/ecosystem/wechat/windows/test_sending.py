@@ -52,7 +52,7 @@ class SendingTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); store = MessageStore(root / 'state.sqlite'); store.baseline('private', 10)
             file = root / 'wechat.json'
-            file.write_text('{"origin":"http://127.0.0.1:1234","path":"/dsh-world/wechat/ask","token":"secret"}', encoding='utf-8')
+            file.write_text('{"origin":"http://127.0.0.1:1234","path":"/dsh-world/worlds/default/wechat/ask","token":"secret"}', encoding='utf-8')
             config = dict(selfId='bot', moduleFile=str(file), chats=[dict(id='private', name='伙伴')], pollSeconds=0.001)
             row = dict(local_id=11, shard='m.db', sort_seq=11, type='文本', sender_username='owner', content='在吗')
             database = Mock(); database.get_messages.side_effect = lambda _chat, limit, offset=0: [row][offset:offset + limit]

@@ -18,9 +18,10 @@ import { createStickerTools } from './stickerTools.ts';
 import { createWechatPresence } from './presence.ts';
 import { reassembleOnChange, registerScopedTool, type InWorld } from '../../worldScope.ts';
 
-export const WECHAT_PATH = '/dsh-world/wechat/ask';
+import { worldPath } from '../../worldRoutes.ts';
 
 export function createWechatModule(deps: { ctx: Context; home(identity: SpeakerIdentity): Promise<Agent>; file: string; worldId?: string; inWorld?: InWorld; incomingDir?: string; origin(): string; allowedHosts: readonly string[]; settings?(): { contextMessages: number; bufferSeconds: number }; record?(reply: PreparedReply): Promise<string>; receipt?(receipt: WechatReceipt): Promise<void> }) {
+  const path = worldPath(deps.worldId ?? 'default') + '/wechat/ask';
   const token = randomBytes(32).toString('hex');
   const stickerDir = join(dirname(deps.file), 'stickers');
   const stickers = createStickerLibrary(stickerDir);
@@ -119,7 +120,7 @@ export function createWechatModule(deps: { ctx: Context; home(identity: SpeakerI
     presence: (now: Date) => !stopped && accountState === 'online' ? presence.summary(now) : undefined,
     status() { return { ...sending.status(), lastContactAt: lastContactAt ?? null, account: accountState ?? null, ...settings() }; },
     start() {
-      durableWrite(deps.file, JSON.stringify({ origin: deps.origin(), token, path: WECHAT_PATH, pid: process.pid, protocol: 4, references: true }, null, 2));
+      durableWrite(deps.file, JSON.stringify({ origin: deps.origin(), token, path, pid: process.pid, protocol: 4, references: true }, null, 2));
       if (inWorld) for (const agent of deps.ctx.agents.list()) attach(agent);
     },
     stop() {
@@ -130,7 +131,7 @@ export function createWechatModule(deps: { ctx: Context; home(identity: SpeakerI
       try { if (JSON.parse(readFileSync(deps.file, 'utf8')).token === token) rmSync(deps.file, { force: true }); } catch { /* already absent, or a newer module owns the file */ }
       return closing = Promise.allSettled([...requests]).then(() => sending.stop());
     },
-    route: { kind: 'exact' as const, path: WECHAT_PATH, handler: async (req: IncomingMessage, res: ServerResponse) => {
+    route: { kind: 'exact' as const, path, handler: async (req: IncomingMessage, res: ServerResponse) => {
       let result: JsonResult;
       const request = handle(req); requests.add(request);
       try { result = await request; } catch { result = { status: 500, body: { error: 'internal error' } }; }

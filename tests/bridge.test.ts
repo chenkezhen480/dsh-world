@@ -8,10 +8,11 @@ import { createUserMessage, ToolCallId, type GenerateOptions, type StreamChunk }
 import { SessionId } from '@deepseek-ai/dsh-session';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { hostFixture, textResponse } from './hostFixture.ts';
-import { createBridge, HomeUnavailable, REPLY_TIMEOUT_MS, type Bridge } from '../src/ecosystem/bridge/bridge.ts';
-import { BRIDGE_PATH, COMPACT_PATH, bridgeRoute, compactRoute } from '../src/ecosystem/bridge/route.ts';
+import { bridgePaths, createBridge, HomeUnavailable, REPLY_TIMEOUT_MS, type Bridge } from '../src/ecosystem/bridge/bridge.ts';
+import { bridgeRoute, compactRoute } from '../src/ecosystem/bridge/route.ts';
 import type { Push } from '../src/ecosystem/shared/outlets.ts';
 
+const { sayPath: BRIDGE_PATH, compactPath: COMPACT_PATH } = bridgePaths('/dsh-world/worlds/fish');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const userMessage = (text: string) => createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text }] });
 const userTexts = (request: GenerateOptions) => request.messages.filter(m => m.role === 'user' && m.source?.kind === 'user').map(m => m.content.filter(b => b.type === 'text').map(b => b.text).join(''));
@@ -50,7 +51,7 @@ async function setup(t: test.TestContext, model: (request: GenerateOptions, inde
   const pushes: Omit<Push, 'name'>[] = []; const names: string[] = []; const reachOnly: Push[] = []; const control = { pushFails: false, homeFails: undefined as string | undefined };
   const file = join(root, 'world', 'bridge.json'); await mkdir(join(root, 'world'), { recursive: true });
   const make = (bridgeFile = file) => createBridge({
-    ctx, file: bridgeFile, origin: () => 'http://127.0.0.1:5173', timers, clock: () => clock.now,
+    ctx, prefix: '/dsh-world/worlds/fish', file: bridgeFile, origin: () => 'http://127.0.0.1:5173', timers, clock: () => clock.now,
     home: async () => { if (control.homeFails) throw new Error(control.homeFails); return home; },
     outlets: [
       { name: '桌面桌宠', kinds: ['reply', 'busy', 'reach'], send: async ({ name, ...push }) => { names.push(name); pushes.push(push); if (control.pushFails) throw new Error('connect ECONNREFUSED'); } },
@@ -148,7 +149,7 @@ test('the bridge rechecks workspace membership after resolving an idle or runnin
     const messages: string[] = [];
     s.ctx.on('session/event', (session, event) => { if (session.id === s.home.id && event.type === 'user/message') messages.push(event.data.id); });
     const bridge = createBridge({
-      ctx: s.ctx, home: async () => { resolving(); await gate; return s.home; },
+      ctx: s.ctx, prefix: '/dsh-world/worlds/fish', home: async () => { resolving(); await gate; return s.home; },
       inWorld: agent => members.has(agent.id),
       outlets: [], origin: () => 'http://127.0.0.1:5173', file: join(s.root, 'guarded-bridge.json'),
     });
@@ -169,7 +170,8 @@ test('the bridge rechecks workspace membership after resolving an idle or runnin
 test('bridge.json carries the origin, a fresh token, the pid and the start time, and is removed on stop', async t => {
   const s = await setup(t, () => textResponse('嗯'));
   const written = JSON.parse(await readFile(s.file, 'utf8'));
-  assert.deepEqual(Object.keys(written).sort(), ['name', 'origin', 'pid', 'startedAt', 'token']); assert.equal(written.name, 'TA');
+  assert.deepEqual(Object.keys(written).sort(), ['compactPath', 'name', 'origin', 'pid', 'sayPath', 'startedAt', 'token']); assert.equal(written.name, 'TA');
+  assert.equal(written.sayPath, BRIDGE_PATH); assert.equal(written.compactPath, COMPACT_PATH);
   assert.equal(written.origin, 'http://127.0.0.1:5173'); assert.equal(written.pid, process.pid);
   assert.equal(written.startedAt, '2026-10-23T03:00:00.000Z'); assert.match(written.token, /^[0-9a-f]{64}$/);
   assert.ok(s.bridge.checkToken(written.token)); assert.ok(!s.bridge.checkToken(written.token.slice(1))); assert.ok(!s.bridge.checkToken(undefined));
@@ -199,15 +201,15 @@ function fakeBridge(say: (text: string) => Promise<{ id: string }> = async () =>
 async function call(bridge: Bridge | undefined, request: { method?: string; url?: string; headers?: Record<string, string>; body?: string }) {
   const req = Object.assign(Readable.from(request.body === undefined ? [] : [Buffer.from(request.body)]), { method: request.method ?? 'POST', url: request.url ?? BRIDGE_PATH, headers: { host: '127.0.0.1:3080', ...request.headers } });
   let status = 0; let headers: Record<string, string> = {}; let body = '';
-  await bridgeRoute(() => bridge).handler(req as never, { writeHead: (code: number, extra: Record<string, string>) => { status = code; headers = extra; }, end: (text: string) => { body = text; } } as never);
+  await bridgeRoute('/dsh-world/worlds/fish', () => bridge).handler(req as never, { writeHead: (code: number, extra: Record<string, string>) => { status = code; headers = extra; }, end: (text: string) => { body = text; } } as never);
   return { status, headers, body: JSON.parse(body) };
 }
 const ok = { 'x-dsh-world-token': 'secret', 'content-type': 'application/json' };
 
 test('the say route accepts trimmed text with the right token and answers 202 without waiting', async () => {
   const bridge = fakeBridge();
-  const route = bridgeRoute(() => bridge);
-  assert.deepEqual({ kind: route.kind, path: route.path }, { kind: 'exact', path: '/dsh-world/bridge/say' });
+  const route = bridgeRoute('/dsh-world/worlds/fish', () => bridge);
+  assert.deepEqual({ kind: route.kind, path: route.path }, { kind: 'exact', path: '/dsh-world/worlds/fish/bridge/say' });
   assert.deepEqual(await call(bridge, { headers: ok, body: JSON.stringify({ text: '  在吗  ' }) }), { status: 202, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }, body: { accepted: true, id: 'm1' } });
   assert.deepEqual(bridge.said, ['在吗']);
   assert.equal((await call(bridge, { headers: ok, body: JSON.stringify({ text: '鲸'.repeat(2000) }) })).status, 202);
@@ -241,7 +243,7 @@ test('the say route answers 503 when the home is unavailable and never echoes in
 async function callCompact(bridge: Bridge | undefined, request: () => string | undefined, init: { method?: string; headers?: Record<string, string> }) {
   const req = Object.assign(Readable.from([]), { method: init.method ?? 'POST', url: COMPACT_PATH, headers: { host: '127.0.0.1:3080', ...init.headers } });
   let status = 0; let body = '';
-  await compactRoute(() => bridge, request).handler(req as never, { writeHead: (code: number) => { status = code; }, end: (text: string) => { body = text; } } as never);
+  await compactRoute('/dsh-world/worlds/fish', () => bridge, request).handler(req as never, { writeHead: (code: number) => { status = code; }, end: (text: string) => { body = text; } } as never);
   return { status, body: JSON.parse(body) };
 }
 test('the compact route asks for one compaction with the right token, and says why when it cannot', async () => {

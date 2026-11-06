@@ -9,7 +9,8 @@ test('the client registers the world console settings section under the bundle i
   let loaded: { id: string; factory: (require: (name: string) => unknown) => { inject: string[]; apply(ctx: unknown): void } } | undefined;
   const react = { createElement: (type: unknown, props: unknown, ...children: unknown[]) => ({ type, props, children }), useState: (value: unknown) => [typeof value === 'function' ? (value as () => unknown)() : value, () => {}], useEffect: () => {}, useRef: (current: unknown) => ({ current }) };
   let reply: () => Promise<unknown> = async () => { throw new Error('no fetch'); };
-  runInNewContext(source, { fetch: () => reply(), window: { __ModuleLoader__: { load: (entry: typeof loaded) => { loaded = entry; } } } });
+  const fetched: string[] = [];
+  runInNewContext(source, { fetch: (url: string) => { fetched.push(url); return reply(); }, window: { __ModuleLoader__: { load: (entry: typeof loaded) => { loaded = entry; } } } });
   assert.equal(loaded?.id, 'dsh-world');
   const plugin = loaded!.factory(name => { assert.equal(name, 'react'); return react; });
   assert.deepEqual([...plugin.inject], ['slots']); // spread: the array comes from the vm realm
@@ -28,13 +29,14 @@ test('the client registers the world console settings section under the bundle i
     return text(el.children);
   };
   assert.match(text(registered[0].render()), /读取中/);
-  const tested = (plugin as unknown as { __test: { Activity: unknown; Diary: unknown; Qq: unknown; View: unknown; loadSnapshot: unknown; renderPersona: (p: Record<string, string>) => string } }).__test;
+  const forWorld = (plugin as unknown as { __test: (worldId: string) => { Activity: unknown; Diary: unknown; Qq: unknown; View: unknown; loadSnapshot: () => Promise<unknown>; renderPersona: (p: Record<string, string>) => string } }).__test;
+  const tested = forWorld('fish');
   assert.doesNotThrow(() => text(react.createElement(tested.Activity, { days: ['2026-10-23'], zone: 'Asia/Tokyo', tick: 1 })));
   assert.match(text(react.createElement(tested.Activity, { days: [], zone: 'UTC', tick: 0 })), /还没有活动记录/);
   assert.doesNotThrow(() => text(react.createElement(tested.Diary, { dates: ['2026-10-23'] })));
   assert.match(text(react.createElement(tested.Diary, { dates: [] })), /还没有日记/);
   const respond = (status: number, json: () => Promise<unknown>) => { reply = async () => ({ ok: status >= 200 && status < 300, status, json }); };
-  const load = tested.loadSnapshot as () => Promise<unknown>;
+  const load = tested.loadSnapshot;
   respond(404, async () => ({ error: 'not found' })); assert.equal(await load(), null);
   respond(200, async () => { throw new SyntaxError('Unexpected token <'); }); assert.equal(await load(), null, 'a non-JSON page counts as off');
   respond(200, async () => ({ worldId: 'fish' })); assert.equal(await load(), null, 'a snapshot without life counts as off');
@@ -42,6 +44,8 @@ test('the client registers the world console settings section under the bundle i
   respond(500, async () => ({ error: 'internal error' })); await assert.rejects(load(), /internal error/);
   const degraded = { worldId: 'fish', timeZone: 'UTC', now: '2026-10-23T00:00:00.000Z', life: null, health: ['生活线没能启动：life.json is not valid JSON'], memory: { turns: 0, windowTurns: 200, approxTokens: 0, records: 1, sessions: 1 }, compactions: [], diaryDates: [], activityDays: [] };
   respond(200, async () => degraded); assert.equal(((await load()) as { life: unknown }).life, null);
+  await forWorld('tata').loadSnapshot();
+  assert.deepEqual(fetched.slice(-2), ['/dsh-world/worlds/fish/console/snapshot', '/dsh-world/worlds/tata/console/snapshot']);
   const shown = text(react.createElement(tested.View, { snap: degraded, error: null, tick: 0, refresh: () => {} }));
   assert.match(shown, /生活线没能启动：life\.json is not valid JSON/); assert.match(shown, /1 条/); assert.doesNotMatch(shown, /生活线未开启/);
   assert.doesNotMatch(shown, /工作区权限/, 'old snapshots omit the workspace permission card');
@@ -92,9 +96,9 @@ test('WeChat and QQ controls open on separate pages and stay out of the overview
     },
     useEffect() {}, useRef: () => ({ current: null }),
   };
-  let loaded: { factory: (require: (name: string) => unknown) => { __test: Record<string, any> } } | undefined;
+  let loaded: { factory: (require: (name: string) => unknown) => { __test: (worldId: string) => Record<string, any> } } | undefined;
   runInNewContext(await readFile('client/index.js', 'utf8'), { window: { __ModuleLoader__: { load: (entry: typeof loaded) => { loaded = entry; } } } });
-  const ui = loaded!.factory(() => react).__test;
+  const ui = loaded!.factory(() => react).__test('fish');
   const nodes = (node: unknown): El[] => {
     if (Array.isArray(node)) return node.flatMap(nodes);
     if (!node || typeof node !== 'object') return [];
@@ -152,14 +156,14 @@ test('workspace permissions render host options, preserve dirty drafts on polls 
       if (!previous || deps.some((value, i) => !Object.is(value, previous[i]))) { effectDeps[index] = deps; pending.push(effect); }
     },
   };
-  let loaded: { factory: (require: (name: string) => unknown) => { __test: { WorkspacePermission: (props: unknown) => unknown } } } | undefined;
+  let loaded: { factory: (require: (name: string) => unknown) => { __test: (worldId: string) => { WorkspacePermission: (props: unknown) => unknown } } } | undefined;
   const requests: { url: string; options: any }[] = [];
   let error: string | undefined, refreshed = 0;
   runInNewContext(await readFile('client/index.js', 'utf8'), {
     fetch: async (url: string, options: unknown) => { requests.push({ url, options }); return { ok: !error, status: error ? 400 : 200, json: async () => error ? { error } : { ok: true } }; },
     window: { __ModuleLoader__: { load: (entry: typeof loaded) => { loaded = entry; } } },
   });
-  const component = loaded!.factory(() => react).__test.WorkspacePermission;
+  const component = loaded!.factory(() => react).__test('fish').WorkspacePermission;
   assert.equal(typeof component, 'function');
   const options = [{ value: 'custom-read-only', name: '我的只读', description: '可读取工作区' }, { value: 'workspace-write', name: '工作区写入' }, { value: 'danger-full-access', name: '全部权限' }];
   let workspace: { defaultPermission: string; options: typeof options } | null = { defaultPermission: 'custom-read-only', options };
@@ -199,7 +203,7 @@ test('workspace permissions render host options, preserve dirty drafts on polls 
   workspace = { ...workspace, defaultPermission: 'custom-read-only' }; render();
   assert.equal(select().props!.value, 'workspace-write', 'polls do not overwrite an unsaved selection');
   button().props!.onClick(); await new Promise(setImmediate); render();
-  assert.equal(requests.length, 1); assert.equal(requests[0].url, '/dsh-world/console/workspace-permission');
+  assert.equal(requests.length, 1); assert.equal(requests[0].url, '/dsh-world/worlds/fish/console/workspace-permission');
   assert.equal(requests[0].options.method, 'POST');
   assert.equal(requests[0].options.headers['x-dsh-world'], '1');
   assert.equal(requests[0].options.headers['content-type'], 'application/json');
@@ -223,12 +227,12 @@ test('home apply submits only the explicit action and shows backend progress and
     createElement: (type: unknown, props: unknown, ...children: unknown[]) => ({ type, props, children }),
     useState(init: unknown) { const index = at++; if (!(index in states)) states[index] = init; return [states[index], (value: unknown) => { states[index] = value; }]; },
   };
-  let loaded: { factory: (require: (name: string) => unknown) => { __test: { HomeApply: (props: unknown) => unknown } } } | undefined;
+  let loaded: { factory: (require: (name: string) => unknown) => { __test: (worldId: string) => { HomeApply: (props: unknown) => unknown } } } | undefined;
   runInNewContext(await readFile('client/index.js', 'utf8'), {
     window: { __ModuleLoader__: { load: (entry: typeof loaded) => { loaded = entry; } } },
     fetch: async (url: string, options: unknown) => { requests.push({ url, options }); return { ok: !error, status: error ? 400 : 200, json: async () => error ? { error } : { ok: true } }; },
   });
-  const component = loaded!.factory(() => react).__test.HomeApply;
+  const component = loaded!.factory(() => react).__test('fish').HomeApply;
   const expand = (value: unknown): El[] => {
     if (Array.isArray(value)) return value.flatMap(expand);
     if (!value || typeof value !== 'object') return [];
@@ -245,7 +249,7 @@ test('home apply submits only the explicit action and shows backend progress and
   button().props!.onClick(); render(); assert.equal(button().props!.disabled, true);
   await new Promise(setImmediate); render();
   assert.equal(refreshed, 1); assert.equal(requests.length, 1);
-  assert.equal(requests[0].url, '/dsh-world/console/apply-home'); assert.equal(requests[0].options.headers['x-dsh-world'], '1');
+  assert.equal(requests[0].url, '/dsh-world/worlds/fish/console/apply-home'); assert.equal(requests[0].options.headers['x-dsh-world'], '1');
   assert.deepEqual(JSON.parse(requests[0].options.body), {}, 'the action does not save drafts');
   for (const status of ['waiting', 'compacting']) { snap = { ...snap, homeApply: { status, message: '' } }; render(); assert.equal(button().props!.disabled, true); }
   snap = { ...snap, homeApply: { status: 'failed', message: '应用并压缩失败：summary unavailable' } }; render();
@@ -264,12 +268,12 @@ test('the compact-after-review switch saves at once, says what it does and shows
     createElement: (type: unknown, props: unknown, ...children: unknown[]) => ({ type, props, children }),
     useState(init: unknown) { const index = at++; if (!(index in states)) states[index] = init; return [states[index], (value: unknown) => { states[index] = value; }]; },
   };
-  let loaded: { factory: (require: (name: string) => unknown) => { __test: { CompactAfterReview: (props: unknown) => unknown } } } | undefined;
+  let loaded: { factory: (require: (name: string) => unknown) => { __test: (worldId: string) => { CompactAfterReview: (props: unknown) => unknown } } } | undefined;
   runInNewContext(await readFile('client/index.js', 'utf8'), {
     window: { __ModuleLoader__: { load: (entry: typeof loaded) => { loaded = entry; } } },
     fetch: async (url: string, options: unknown) => { requests.push({ url, options }); return { ok: !error, status: error ? 400 : 200, json: async () => error ? { error } : { ok: true } }; },
   });
-  const component = loaded!.factory(() => react).__test.CompactAfterReview;
+  const component = loaded!.factory(() => react).__test('fish').CompactAfterReview;
   const expand = (value: unknown): El[] => {
     if (Array.isArray(value)) return value.flatMap(expand);
     if (!value || typeof value !== 'object') return [];
@@ -284,7 +288,7 @@ test('the compact-after-review switch saves at once, says what it does and shows
   assert.equal(box().props!.checked, false); assert.match(text(tree), /自动应用并压缩一次家会话[\s\S]*我是谁/); assert.match(text(tree), /已关闭/);
   box().props!.onChange({ target: { checked: true } }); render(); assert.equal(box().props!.disabled, true, 'busy while saving');
   await new Promise(setImmediate); render();
-  assert.equal(requests.length, 1); assert.equal(requests[0].url, '/dsh-world/console/compact-after-review');
+  assert.equal(requests.length, 1); assert.equal(requests[0].url, '/dsh-world/worlds/fish/console/compact-after-review');
   assert.equal(requests[0].options.method, 'POST'); assert.equal(requests[0].options.headers['x-dsh-world'], '1');
   assert.deepEqual(JSON.parse(requests[0].options.body), { on: true });
   assert.equal(refreshed, 1); assert.match(text(tree), /已开启/);
@@ -302,12 +306,12 @@ test('the schedule card saves the review and morning times, refuses a bad one an
     createElement: (type: unknown, props: unknown, ...children: unknown[]) => ({ type, props, children }),
     useState(init: unknown) { const index = at++; if (!(index in states)) states[index] = init; return [states[index], (value: unknown) => { states[index] = value; }]; },
   };
-  let loaded: { factory: (require: (name: string) => unknown) => { __test: { Schedule: (props: unknown) => unknown } } } | undefined;
+  let loaded: { factory: (require: (name: string) => unknown) => { __test: (worldId: string) => { Schedule: (props: unknown) => unknown } } } | undefined;
   runInNewContext(await readFile('client/index.js', 'utf8'), {
     window: { __ModuleLoader__: { load: (entry: typeof loaded) => { loaded = entry; } } },
     fetch: async (url: string, options: unknown) => { requests.push({ url, options }); return { ok: true, status: 200, json: async () => ({ ok: true }) }; },
   });
-  const component = loaded!.factory(() => react).__test.Schedule;
+  const component = loaded!.factory(() => react).__test('fish').Schedule;
   const expand = (value: unknown): El[] => {
     if (Array.isArray(value)) return value.flatMap(expand);
     if (!value || typeof value !== 'object') return [];
@@ -328,7 +332,7 @@ test('the schedule card saves the review and morning times, refuses a bad one an
   assert.equal(requests.length, 0); assert.match(text(tree), /HH:MM/);
   input('早上醒来时间').props!.onChange({ target: { value: '07:00' } }); render();
   await save();
-  assert.equal(requests.at(-1)!.url, '/dsh-world/console/schedule');
+  assert.equal(requests.at(-1)!.url, '/dsh-world/worlds/fish/console/schedule');
   assert.deepEqual(JSON.parse(requests.at(-1)!.options.body), { review: '00:30', wake: '07:00' });
   assert.equal(refreshed, 1); assert.match(text(tree), /已保存/);
   input('每日回顾时间').props!.onChange({ target: { value: '' } }); render();
@@ -346,12 +350,12 @@ test('the memory card saves the cold-session hours, refuses a bad one and emptie
     createElement: (type: unknown, props: unknown, ...children: unknown[]) => ({ type, props, children }),
     useState(init: unknown) { const index = at++; if (!(index in states)) states[index] = init; return [states[index], (value: unknown) => { states[index] = value; }]; },
   };
-  let loaded: { factory: (require: (name: string) => unknown) => { __test: { Memory: (props: unknown) => unknown } } } | undefined;
+  let loaded: { factory: (require: (name: string) => unknown) => { __test: (worldId: string) => { Memory: (props: unknown) => unknown } } } | undefined;
   runInNewContext(await readFile('client/index.js', 'utf8'), {
     window: { __ModuleLoader__: { load: (entry: typeof loaded) => { loaded = entry; } } },
     fetch: async (url: string, options: unknown) => { requests.push({ url, options }); return { ok: true, status: 200, json: async () => ({ ok: true }) }; },
   });
-  const component = loaded!.factory(() => react).__test.Memory;
+  const component = loaded!.factory(() => react).__test('fish').Memory;
   const expand = (value: unknown): El[] => {
     if (Array.isArray(value)) return value.flatMap(expand);
     if (!value || typeof value !== 'object') return [];
@@ -373,7 +377,7 @@ test('the memory card saves the cold-session hours, refuses a bad one and emptie
   assert.equal(requests.length, 0); assert.match(text(tree), /1 到 720/);
   input().props!.onChange({ target: { value: '12' } }); render();
   await save();
-  assert.equal(requests.at(-1)!.url, '/dsh-world/console/memory');
+  assert.equal(requests.at(-1)!.url, '/dsh-world/worlds/fish/console/memory');
   assert.deepEqual(JSON.parse(requests.at(-1)!.options.body), { coldHours: 12 }, 'only the hours are sent, the turns stay as they are');
   assert.equal(refreshed, 1); assert.match(text(tree), /已保存/);
   input().props!.onChange({ target: { value: '' } }); render();
@@ -390,12 +394,12 @@ test('album shows metadata first, loads one selected image and paginates with th
     useState(init: unknown) { const index = at++; if (!(index in states)) states[index] = init; return [states[index], (value: unknown) => { states[index] = value; }]; },
     useEffect(effect: () => unknown, deps: unknown[]) { const index = effectAt++; if (!effects[index] || deps.some((value, i) => value !== effects[index].deps[i])) { effects[index] = { deps }; effect(); } },
   };
-  let loaded: { factory: (require: (name: string) => unknown) => { __test: { PhotoAlbum: (props: unknown) => unknown } } } | undefined;
+  let loaded: { factory: (require: (name: string) => unknown) => { __test: (worldId: string) => { PhotoAlbum: (props: unknown) => unknown } } } | undefined;
   runInNewContext(await readFile('client/index.js', 'utf8'), {
     window: { __ModuleLoader__: { load: (entry: typeof loaded) => { loaded = entry; } } },
     fetch: async (url: string) => { calls.push(url); return { ok: true, json: async () => ({ photos: [{ id: 'photo-1', description: '窗边', width: 2, height: 2, savedAt: '2026-10-29T00:00:00Z', tags: ['家'] }], total: 13, hasMore: true }) }; },
   });
-  const component = loaded!.factory(() => react).__test.PhotoAlbum;
+  const component = loaded!.factory(() => react).__test('fish').PhotoAlbum;
   const expand = (value: unknown): El[] => {
     if (Array.isArray(value)) return value.flatMap(expand);
     if (!value || typeof value !== 'object') return [];
@@ -409,17 +413,17 @@ test('album shows metadata first, loads one selected image and paginates with th
   assert.match(calls[0], /photos\?limit=12&offset=0/); assert.match(text(tree), /窗边/);
   assert.equal(tree.some(el => el.type === 'img'), false);
   tree.find(el => el.type === 'button' && text(el) === '查看照片')!.props!.onClick(); render();
-  assert.equal(tree.find(el => el.type === 'img')!.props!.src, '/dsh-world/console/photo?id=photo-1');
+  assert.equal(tree.find(el => el.type === 'img')!.props!.src, '/dsh-world/worlds/fish/console/photo?id=photo-1');
   tree.find(el => el.type === 'button' && text(el) === '下一页')!.props!.onClick(); render();
   assert.match(calls.at(-1)!, /offset=12/); assert.equal(tree.some(el => el.type === 'img'), false);
 });
 
 test('the module switches say what is on, what is off and what the config does not provide', async () => {
   const source = await readFile('client/index.js', 'utf8');
-  let loaded: { factory: (require: (name: string) => unknown) => { __test: { Modules: unknown } } } | undefined;
+  let loaded: { factory: (require: (name: string) => unknown) => { __test: (worldId: string) => { Modules: unknown } } } | undefined;
   const react = { createElement: (type: unknown, props: unknown, ...children: unknown[]) => ({ type, props, children }), useState: (value: unknown) => [value, () => {}], useEffect: () => {}, useRef: (current: unknown) => ({ current }) };
   runInNewContext(source, { fetch: () => Promise.reject(new Error('no fetch')), window: { __ModuleLoader__: { load: (entry: typeof loaded) => { loaded = entry; } } } });
-  const { Modules } = loaded!.factory(() => react).__test;
+  const { Modules } = loaded!.factory(() => react).__test('fish');
   type El = { type: unknown; props: Record<string, unknown> | null; children: unknown[] };
   const text = (node: unknown): string => {
     if (node == null || typeof node === 'boolean') return '';
@@ -439,12 +443,12 @@ test('the module switches say what is on, what is off and what the config does n
 
 test('the archive tab builds its query in the configured zone, drops a late answer to an old query and keeps the error code', async () => {
   const source = await readFile('client/index.js', 'utf8');
-  type Plugin = { __test: Record<string, (...args: never[]) => unknown> };
+  type Plugin = { __test: (worldId: string) => Record<string, (...args: never[]) => unknown> };
   let loaded: { factory: (require: (name: string) => unknown) => Plugin } | undefined;
   const react = { createElement: (type: unknown, props: unknown, ...children: unknown[]) => ({ type, props, children }), useState: (value: unknown) => [typeof value === 'function' ? (value as () => unknown)() : value, () => {}], useEffect: () => {}, useRef: (current: unknown) => ({ current }) };
   const replies: { resolve: (value: unknown) => void; url: string }[] = [];
   runInNewContext(source, { fetch: (url: string) => new Promise(resolve => { replies.push({ url, resolve: (value: unknown) => resolve(value) }); }), window: { __ModuleLoader__: { load: (entry: typeof loaded) => { loaded = entry; } } } });
-  const t = loaded!.factory(() => react).__test as unknown as { memoryQuery: (f: object, zone: string, cursor?: string) => string; dayStartIso: (d: string, z: string, plus?: number) => string; latest: () => { next(): number; current(id: number): boolean }; searchMemory: (guard: unknown, path: string, query: string, done: (b: unknown) => void, fail: (e: Error & { code?: string }) => void) => Promise<void>; MemorySearch: unknown };
+  const t = loaded!.factory(() => react).__test('fish') as unknown as { memoryQuery: (f: object, zone: string, cursor?: string) => string; dayStartIso: (d: string, z: string, plus?: number) => string; latest: () => { next(): number; current(id: number): boolean }; searchMemory: (guard: unknown, path: string, query: string, done: (b: unknown) => void, fail: (e: Error & { code?: string }) => void) => Promise<void>; MemorySearch: unknown };
   assert.equal(t.dayStartIso('2026-10-23', 'Asia/Seoul'), '2026-10-22T15:00:00.000Z');
   assert.equal(t.dayStartIso('2026-10-23', 'America/New_York'), '2026-10-23T04:00:00.000Z', 'daylight time');
   const filters = { query: '潮汐', kinds: ['diary', 'self'], from: '2026-10-23', to: '2026-10-23', sourceId: 'self', turnId: '', linkedTo: '', order: 'oldest' };
@@ -455,7 +459,7 @@ test('the archive tab builds its query in the configured zone, drops a late answ
   const guard = t.latest(); const seen: string[] = [];
   const first = t.searchMemory(guard, 'memory/find', 'query=old', b => seen.push('old:' + JSON.stringify(b)), e => seen.push('old-error:' + e.message));
   const second = t.searchMemory(guard, 'memory/find', 'query=new', b => seen.push('new:' + JSON.stringify(b)), e => seen.push('new-error:' + e.message));
-  assert.deepEqual(replies.map(reply => reply.url), ['/dsh-world/console/memory/find?query=old', '/dsh-world/console/memory/find?query=new']);
+  assert.deepEqual(replies.map(reply => reply.url), ['/dsh-world/worlds/fish/console/memory/find?query=old', '/dsh-world/worlds/fish/console/memory/find?query=new']);
   const ok = (body: unknown) => ({ ok: true, status: 200, json: async () => body });
   replies[1]!.resolve(ok({ items: ['n'] })); await second;
   replies[0]!.resolve(ok({ items: ['o'] })); await first;

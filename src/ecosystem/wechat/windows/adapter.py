@@ -3,6 +3,7 @@ import argparse
 from contextlib import contextmanager
 from http.client import IncompleteRead
 import json
+import re
 import sqlite3
 import sys
 import time
@@ -368,9 +369,10 @@ def postHomeOnce(moduleFile, message, timeout):
     if message.get('media') and connection.get('protocol', 0) < 3:
         raise RuntimeError('私聊图片需要新版宿主协议，请更新并重载 DSH 的 dsh-world 插件')
     origin = urlparse(connection['origin'])
-    if origin.scheme != 'http' or origin.hostname not in ('127.0.0.1', 'localhost', '::1') or connection.get('path') != '/dsh-world/wechat/ask':
+    path = connection.get('path', '')
+    if origin.scheme != 'http' or origin.hostname not in ('127.0.0.1', 'localhost', '::1') or not isinstance(path, str) or not re.fullmatch(r'/dsh-world/worlds/[A-Za-z0-9][A-Za-z0-9_-]{0,63}/wechat/ask', path):
         raise ValueError('微信模块地址必须是本机 DSH 的独立接口')
-    request = Request(connection['origin'].rstrip('/') + connection['path'],
+    request = Request(connection['origin'].rstrip('/') + path,
                       data=json.dumps(message, ensure_ascii=False).encode(),
                       headers={'Content-Type': 'application/json', 'x-dsh-world-token': connection['token']}, method='POST')
     with urlopen(request, timeout=timeout) as response:

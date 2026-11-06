@@ -404,7 +404,7 @@ test('the independent WeChat endpoint authenticates and validates before enterin
   const other = (await ctx.agents.create({ sessionId: SessionId('other'), agentOptions: { provider: 'test', model: 'test' } })).agent;
   assert.equal(other.ctx.tools.get('wechat_history', other), undefined);
   const { token, path } = JSON.parse(await readFile(file, 'utf8'));
-  assert.equal(path, '/dsh-world/wechat/ask');
+  assert.equal(path, '/dsh-world/worlds/default/wechat/ask');
   const server = createServer((req, res) => { void channel.route.handler(req, res); });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   cleanup.push(() => new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())));

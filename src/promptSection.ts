@@ -8,6 +8,8 @@ import type { WorldConfig } from './types.ts';
 import { readTemplate, renderWorldPrompt, type WorldNames, type WorldPrompt } from './worldPrompt.ts';
 import { reassembleOnChange } from './worldScope.ts';
 
+export const WORLD_PROMPT_PREFIX = 'dsh-world:';
+
 export interface WorldPromptSource {
   prompt: WorldPrompt; isHome(sessionId: string): boolean; archiveSession?(sessionId: string): boolean;
   /** Resolved with the saved prompt text, so renaming does not change an existing cached prefix. */
@@ -36,6 +38,7 @@ const HARNESS_IDENTITY = 'harness:identity';
  * where it is and hers follows it.
  */
 export function createPromptSections(config: WorldConfig, world: WorldPromptSource, deps: { logger: { warn(...args: unknown[]): void } }) {
+  const sectionName = WORLD_PROMPT_PREFIX + config.worldId;
   const entries = new Map<Agent, Entry>();
   const agents = new WeakMap<Session, Agent>();
   function read(includeWorld: boolean): PromptText {
@@ -57,7 +60,7 @@ export function createPromptSections(config: WorldConfig, world: WorldPromptSour
     const prompt = agent.ctx.systemPrompt;
     const order = prompt.getSectionOrder('DEPLOYMENT_PERSONA_PREFIX') ?? 0;
     const text = () => entry.text.persona;
-    const persona = prompt.section({ name: 'dsh-world-persona', order: order + 1, interpolate: false, text });
+    const persona = prompt.section({ name: sectionName + ':persona', order: order + 1, interpolate: false, text });
     // DeepSeek Harness's own identity line gives way to hers; a persona someone set in DSH sits in its own slot and is left alone.
     // If a preset already put its own words on that identity slot for this agent, they stay exactly as written.
     let identity: (() => void) | undefined;
@@ -75,7 +78,7 @@ export function createPromptSections(config: WorldConfig, world: WorldPromptSour
         entry.active = !entry.active;
         if (!entry.active) { disposeWorld?.(); disposeWorld = undefined; placePersona(agent, entry); return true; }
         entry.text = read(true);
-        disposeWorld = agent.ctx.systemPrompt.section({ name: 'dsh-world', order: 50, interpolate: false, text: () => renderWorldPrompt({ ...world.prompt, names: entry.text.names }, entry.text.template, entry.text.self, world.isHome(agent.id)) });
+        disposeWorld = agent.ctx.systemPrompt.section({ name: sectionName, order: 50, interpolate: false, text: () => renderWorldPrompt({ ...world.prompt, names: entry.text.names }, entry.text.template, entry.text.self, world.isHome(agent.id)) });
         placePersona(agent, entry);
         return true;
       };

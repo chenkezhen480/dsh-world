@@ -36,18 +36,18 @@ function fakeActions() {
   };
   return { actions, calls };
 }
-const get = (url: string, actions = fakeActions().actions) => handleConsole(sources, actions, { method: 'GET', url, write: false });
+const get = (url: string, actions = fakeActions().actions) => handleConsole('/dsh-world/worlds/fish', sources, actions, { method: 'GET', url, write: false });
 
 test('album metadata is paginated and image bytes stay in a same-origin no-store endpoint', async () => {
   const image = { ref: { mediaType: 'image/png' }, data: new Uint8Array([1, 2, 3, 4]) };
   const view = { ...sources, photos: (limit: number, offset: number) => ({ photos: [], total: 0, hasMore: false, limit, offset }), photo: (id: string) => id === 'kept' ? image as never : undefined };
-  const request = { method: 'GET', url: '/dsh-world/console/photos?limit=12&offset=24', write: false };
-  assert.deepEqual((await handleConsole(view, fakeActions().actions, request)).body, { photos: [], total: 0, hasMore: false, limit: 12, offset: 24 });
-  for (const query of ['limit=0', 'limit=101', 'offset=-1']) assert.equal((await handleConsole(view, fakeActions().actions, { ...request, url: '/dsh-world/console/photos?' + query })).status, 400);
-  const route = consoleRoute(view, fakeActions().actions);
+  const request = { method: 'GET', url: '/dsh-world/worlds/fish/console/photos?limit=12&offset=24', write: false };
+  assert.deepEqual((await handleConsole('/dsh-world/worlds/fish', view, fakeActions().actions, request)).body, { photos: [], total: 0, hasMore: false, limit: 12, offset: 24 });
+  for (const query of ['limit=0', 'limit=101', 'offset=-1']) assert.equal((await handleConsole('/dsh-world/worlds/fish', view, fakeActions().actions, { ...request, url: '/dsh-world/worlds/fish/console/photos?' + query })).status, 400);
+  const route = consoleRoute('/dsh-world/worlds/fish', view, fakeActions().actions);
   for (const cross of [false, true]) {
     let status = 0, headers: Record<string, unknown> = {}, bytes: unknown;
-    await route.handler({ method: 'GET', url: '/dsh-world/console/photo?id=kept', headers: { host: 'localhost', ...(cross ? { 'sec-fetch-site': 'cross-site' } : {}) } } as never,
+    await route.handler({ method: 'GET', url: '/dsh-world/worlds/fish/console/photo?id=kept', headers: { host: 'localhost', ...(cross ? { 'sec-fetch-site': 'cross-site' } : {}) } } as never,
       { writeHead(code: number, value: Record<string, unknown>) { status = code; headers = value; }, end(value: unknown) { bytes = value; } } as never);
     assert.equal(status, cross ? 403 : 200);
     if (!cross) { assert.equal(headers['content-type'], 'image/png'); assert.equal(headers['cache-control'], 'no-store'); assert.deepEqual(bytes, image.data); }
@@ -55,13 +55,13 @@ test('album metadata is paginated and image bytes stay in a same-origin no-store
 });
 
 test('QQ dependency preparation can report a successful installation requiring restart', async () => {
-  const reply = await handleConsole(sources, { ...fakeActions().actions, setModules: async () => ({ restartRequired: true, message: 'SDK 已安装，请重启 DSH' }) }, { method: 'POST', url: '/dsh-world/console/modules', write: true, body: { qq: true } });
+  const reply = await handleConsole('/dsh-world/worlds/fish', sources, { ...fakeActions().actions, setModules: async () => ({ restartRequired: true, message: 'SDK 已安装，请重启 DSH' }) }, { method: 'POST', url: '/dsh-world/worlds/fish/console/modules', write: true, body: { qq: true } });
   assert.equal(reply.status, 200); assert.deepEqual(reply.body, { ok: true, restartRequired: true, message: 'SDK 已安装，请重启 DSH' });
 });
 
 test('applying home prompts requires the write header and reports an unavailable home or compaction service', async () => {
   const { actions, calls } = fakeActions();
-  const request = { method: 'POST', url: '/dsh-world/console/apply-home', headers: { 'x-dsh-world': '1', 'content-type': 'application/json' }, body: '{}' };
+  const request = { method: 'POST', url: '/dsh-world/worlds/fish/console/apply-home', headers: { 'x-dsh-world': '1', 'content-type': 'application/json' }, body: '{}' };
   for (const headers of [{ 'content-type': 'application/json' }, { ...request.headers, 'sec-fetch-site': 'cross-site' }]) {
     assert.equal((await run(sources, { ...request, headers }, actions)).status, 403);
   }
@@ -73,18 +73,18 @@ test('applying home prompts requires the write header and reports an unavailable
 });
 
 test('console reads are JSON views', async () => {
-  assert.deepEqual(await get('/dsh-world/console/snapshot'), { status: 200, body: { worldId: 'jingjing' } });
-  assert.deepEqual(await get('/dsh-world/console/activity?day=2026-10-23&outside=1'), { status: 200, body: [{ day: '2026-10-23', outsideOnly: true }] });
-  assert.equal((await get('/dsh-world/console/diary')).status, 404);
-  assert.deepEqual(await get('/dsh-world/console/diary?date=2026-10-23'), { status: 200, body: { date: '2026-10-23', text: '他去上班了。' } });
-  assert.equal((await get('/dsh-world/console/diary?date=../x')).status, 404);
-  assert.equal(((await get('/dsh-world/console/prompts')).body as { worldPrompt: { text: string } }).worldPrompt.text, 'T');
-  for (const url of ['/dsh-world/console/nope', '/dsh-worldX/console/snapshot', '/other']) assert.equal((await get(url)).status, 404, url);
+  assert.deepEqual(await get('/dsh-world/worlds/fish/console/snapshot'), { status: 200, body: { worldId: 'jingjing' } });
+  assert.deepEqual(await get('/dsh-world/worlds/fish/console/activity?day=2026-10-23&outside=1'), { status: 200, body: [{ day: '2026-10-23', outsideOnly: true }] });
+  assert.equal((await get('/dsh-world/worlds/fish/console/diary')).status, 404);
+  assert.deepEqual(await get('/dsh-world/worlds/fish/console/diary?date=2026-10-23'), { status: 200, body: { date: '2026-10-23', text: '他去上班了。' } });
+  assert.equal((await get('/dsh-world/worlds/fish/console/diary?date=../x')).status, 404);
+  assert.equal(((await get('/dsh-world/worlds/fish/console/prompts')).body as { worldPrompt: { text: string } }).worldPrompt.text, 'T');
+  for (const url of ['/dsh-world/worlds/fish/console/nope', '/dsh-world/worlds/fishX/console/snapshot', '/other']) assert.equal((await get(url)).status, 404, url);
 });
 
 test('archive scope exposes only home and workspace and returns restart status', async () => {
   const { actions, calls } = fakeActions();
-  const post = (scope: unknown) => handleConsole(sources, actions, { method: 'POST', url: '/dsh-world/console/archive-scope', write: true, body: { scope } });
+  const post = (scope: unknown) => handleConsole('/dsh-world/worlds/fish', sources, actions, { method: 'POST', url: '/dsh-world/worlds/fish/console/archive-scope', write: true, body: { scope } });
   assert.deepEqual(await post('workspace'), { status: 200, body: { ok: true, restartRequired: true } });
   assert.deepEqual(await post('home'), { status: 200, body: { ok: true, restartRequired: false } });
   for (const scope of ['all', 'world', '', null, undefined]) assert.equal((await post(scope)).status, 400);
@@ -94,7 +94,7 @@ test('archive scope exposes only home and workspace and returns restart status',
 test('the compact-after-review switch is a boolean write that survives a restart and is on until turned off', async t => {
   const dir = mkdtempSync(join(tmpdir(), 'dw-compact-review-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
   const { actions, calls } = fakeActions();
-  const post = (on: unknown) => handleConsole(sources, actions, { method: 'POST', url: '/dsh-world/console/compact-after-review', write: true, body: { on } });
+  const post = (on: unknown) => handleConsole('/dsh-world/worlds/fish', sources, actions, { method: 'POST', url: '/dsh-world/worlds/fish/console/compact-after-review', write: true, body: { on } });
   assert.equal((await post(true)).status, 200); assert.equal((await post(false)).status, 200);
   for (const bad of ['true', 1, null, undefined]) assert.equal((await post(bad)).status, 400, String(bad));
   assert.deepEqual(calls, ['compact-after-review:true', 'compact-after-review:false']);
@@ -111,7 +111,7 @@ test('the compact-after-review switch is a boolean write that survives a restart
 test('the review and morning times are HH:MM writes that survive a restart; empty goes back to 23:00 and the configured morning', async t => {
   const dir = mkdtempSync(join(tmpdir(), 'dw-schedule-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
   const { actions, calls } = fakeActions();
-  const post = (body: Record<string, unknown>) => handleConsole(sources, actions, { method: 'POST', url: '/dsh-world/console/schedule', write: true, body });
+  const post = (body: Record<string, unknown>) => handleConsole('/dsh-world/worlds/fish', sources, actions, { method: 'POST', url: '/dsh-world/worlds/fish/console/schedule', write: true, body });
   assert.equal((await post({ review: '00:30', wake: '07:15' })).status, 200);
   assert.equal((await post({ wake: null })).status, 200);
   for (const bad of [{}, { review: '24:00' }, { review: '9:00' }, { wake: '07:60' }, { wake: 730 }, { review: '' }]) assert.equal((await post(bad)).status, 400, JSON.stringify(bad));
@@ -138,7 +138,7 @@ test('workspace permission writes accept the host catalog and reject invalid or 
     if (!['danger-full-access', 'custom-read-only'].includes(permission)) throw new Error(`未知工作区权限：${permission}`);
     power.setWorkspacePermission(permission);
   } };
-  const request = { method: 'POST', url: '/dsh-world/console/workspace-permission', headers: { 'x-dsh-world': '1', 'content-type': 'application/json' }, body: JSON.stringify({ permission: 'custom-read-only' }) };
+  const request = { method: 'POST', url: '/dsh-world/worlds/fish/console/workspace-permission', headers: { 'x-dsh-world': '1', 'content-type': 'application/json' }, body: JSON.stringify({ permission: 'custom-read-only' }) };
   for (const headers of [{ 'content-type': 'application/json' }, { ...request.headers, 'content-type': 'text/plain' }, { ...request.headers, 'sec-fetch-site': 'cross-site' }, { ...request.headers, host: 'rebind.example' }]) {
     assert.equal((await run(sources, { ...request, headers }, actions)).status, 403);
   }
@@ -181,15 +181,15 @@ test('workspace permission defaults to the existing home permission, persists an
 });
 test('the console can restart the plugin-managed adapter, and says so when there is none', async () => {
   const { actions, calls } = fakeActions();
-  const post = (a: ConsoleActions) => handleConsole(sources, a, { method: 'POST', url: '/dsh-world/console/wechat-adapter', write: true, body: {} });
+  const post = (a: ConsoleActions) => handleConsole('/dsh-world/worlds/fish', sources, a, { method: 'POST', url: '/dsh-world/worlds/fish/console/wechat-adapter', write: true, body: {} });
   assert.equal((await post(actions)).status, 200);
   assert.deepEqual(calls, ['adapter-restart']);
   assert.equal((await post({ ...actions, restartWechatAdapter: async () => false })).status, 400);
-  assert.equal((await handleConsole(sources, actions, { method: 'POST', url: '/dsh-world/console/wechat-adapter', write: false, body: {} })).status, 403);
+  assert.equal((await handleConsole('/dsh-world/worlds/fish', sources, actions, { method: 'POST', url: '/dsh-world/worlds/fish/console/wechat-adapter', write: false, body: {} })).status, 403);
 });
 test('the module switches take booleans, say what they change, and report why a module cannot be switched', async () => {
   const { actions, calls } = fakeActions();
-  const post = (body: Record<string, unknown>, a: ConsoleActions = actions) => handleConsole(sources, a, { method: 'POST', url: '/dsh-world/console/modules', write: true, body });
+  const post = (body: Record<string, unknown>, a: ConsoleActions = actions) => handleConsole('/dsh-world/worlds/fish', sources, a, { method: 'POST', url: '/dsh-world/worlds/fish/console/modules', write: true, body });
   assert.equal((await post({ wechat: false })).status, 200);
   assert.equal((await post({ wechat: true, qq: false })).status, 200);
   for (const body of [{}, { wechat: 'yes' }, { qq: 1 }]) assert.equal((await post(body)).status, 400, JSON.stringify(body));
@@ -199,7 +199,7 @@ test('the module switches take booleans, say what they change, and report why a 
 });
 test('wechat settings validate their range and keep omitted fields', async () => {
   const { actions, calls } = fakeActions();
-  const post = (body: Record<string, unknown>) => handleConsole(sources, actions, { method: 'POST', url: '/dsh-world/console/wechat', write: true, body });
+  const post = (body: Record<string, unknown>) => handleConsole('/dsh-world/worlds/fish', sources, actions, { method: 'POST', url: '/dsh-world/worlds/fish/console/wechat', write: true, body });
   assert.equal((await post({ contextMessages: 12, bufferSeconds: 1.5 })).status, 200);
   assert.equal((await post({ contextMessages: null })).status, 200);
   for (const body of [{}, { contextMessages: 0 }, { contextMessages: 21 }, { contextMessages: 2.5 }, { bufferSeconds: -1 }, { bufferSeconds: 31 }, { bufferSeconds: '3' }]) assert.equal((await post(body)).status, 400, JSON.stringify(body));
@@ -237,28 +237,28 @@ test('wechat settings default to 8 and 3, persist, and return to default', t => 
 });
 test('console writes need the write mark, and change only what they name', async () => {
   const { actions, calls } = fakeActions();
-  const post = (url: string, body?: Record<string, unknown>, write = true) => handleConsole(sources, actions, { method: 'POST', url, write, body });
-  assert.equal((await post('/dsh-world/console/start', {}, false)).status, 403);
+  const post = (url: string, body?: Record<string, unknown>, write = true) => handleConsole('/dsh-world/worlds/fish', sources, actions, { method: 'POST', url, write, body });
+  assert.equal((await post('/dsh-world/worlds/fish/console/start', {}, false)).status, 403);
   assert.deepEqual(calls, []);
-  assert.equal((await post('/dsh-world/console/start', {})).status, 200);
-  assert.equal((await post('/dsh-world/console/stop', {})).status, 200);
-  assert.equal((await post('/dsh-world/console/persona', { 名字: '小鱼', 性格: '嘴硬' })).status, 200);
-  assert.equal((await post('/dsh-world/console/persona', { 名字: 3 })).status, 400);
-  assert.equal((await post('/dsh-world/console/persona', { 年龄: '3' })).status, 400, 'only known layers');
-  assert.equal((await post('/dsh-world/console/world-prompt', { text: '我的模板' })).status, 200);
-  assert.equal((await post('/dsh-world/console/world-prompt', {})).status, 400);
-  assert.equal((await post('/dsh-world/console/budget', { daily: 5 })).status, 200);
-  assert.equal((await post('/dsh-world/console/budget', { daily: null })).status, 200);
-  for (const daily of [-1, '5', undefined]) assert.equal((await post('/dsh-world/console/budget', { daily })).status, 400, String(daily));
-  assert.equal((await post('/dsh-world/console/memory', { turns: 60 })).status, 200);
-  assert.equal((await post('/dsh-world/console/memory', { turns: null })).status, 200);
-  for (const turns of [0, 1.5, '60', undefined]) assert.equal((await post('/dsh-world/console/memory', { turns })).status, 400, String(turns));
-  assert.equal((await post('/dsh-world/console/memory', { coldHours: 12 })).status, 200);
-  assert.equal((await post('/dsh-world/console/memory', { coldHours: null })).status, 200);
-  for (const coldHours of [0, 721, 1.5, '12']) assert.equal((await post('/dsh-world/console/memory', { coldHours })).status, 400, String(coldHours));
-  assert.equal((await post('/dsh-world/console/nope', {})).status, 404);
+  assert.equal((await post('/dsh-world/worlds/fish/console/start', {})).status, 200);
+  assert.equal((await post('/dsh-world/worlds/fish/console/stop', {})).status, 200);
+  assert.equal((await post('/dsh-world/worlds/fish/console/persona', { 名字: '小鱼', 性格: '嘴硬' })).status, 200);
+  assert.equal((await post('/dsh-world/worlds/fish/console/persona', { 名字: 3 })).status, 400);
+  assert.equal((await post('/dsh-world/worlds/fish/console/persona', { 年龄: '3' })).status, 400, 'only known layers');
+  assert.equal((await post('/dsh-world/worlds/fish/console/world-prompt', { text: '我的模板' })).status, 200);
+  assert.equal((await post('/dsh-world/worlds/fish/console/world-prompt', {})).status, 400);
+  assert.equal((await post('/dsh-world/worlds/fish/console/budget', { daily: 5 })).status, 200);
+  assert.equal((await post('/dsh-world/worlds/fish/console/budget', { daily: null })).status, 200);
+  for (const daily of [-1, '5', undefined]) assert.equal((await post('/dsh-world/worlds/fish/console/budget', { daily })).status, 400, String(daily));
+  assert.equal((await post('/dsh-world/worlds/fish/console/memory', { turns: 60 })).status, 200);
+  assert.equal((await post('/dsh-world/worlds/fish/console/memory', { turns: null })).status, 200);
+  for (const turns of [0, 1.5, '60', undefined]) assert.equal((await post('/dsh-world/worlds/fish/console/memory', { turns })).status, 400, String(turns));
+  assert.equal((await post('/dsh-world/worlds/fish/console/memory', { coldHours: 12 })).status, 200);
+  assert.equal((await post('/dsh-world/worlds/fish/console/memory', { coldHours: null })).status, 200);
+  for (const coldHours of [0, 721, 1.5, '12']) assert.equal((await post('/dsh-world/worlds/fish/console/memory', { coldHours })).status, 400, String(coldHours));
+  assert.equal((await post('/dsh-world/worlds/fish/console/nope', {})).status, 404);
   assert.deepEqual(calls, ['start', 'stop', 'persona:{"名字":"小鱼","性格":"嘴硬"}', 'world:我的模板', 'budget:5', 'budget:undefined', 'memory:60', 'memory:undefined', 'cold:12', 'cold:undefined']);
-  const del = await handleConsole(sources, actions, { method: 'DELETE', url: '/dsh-world/console/snapshot', write: false });
+  const del = await handleConsole('/dsh-world/worlds/fish', sources, actions, { method: 'DELETE', url: '/dsh-world/worlds/fish/console/snapshot', write: false });
   assert.equal(del.status, 405); assert.equal(del.headers?.allow, 'GET, POST');
 });
 test('token estimate weights CJK characters and fullwidth forms separately', () => {
@@ -274,11 +274,11 @@ function fakeRes() {
 async function run(src: ConsoleSources, req: { method?: string; url?: string; headers?: Record<string, string>; body?: string }, actions = fakeActions().actions) {
   const { out, res } = fakeRes();
   const stream = Object.assign(Readable.from(req.body === undefined ? [] : [Buffer.from(req.body)]), { method: req.method ?? 'GET', url: req.url ?? '/', headers: { host: 'localhost:3080', ...req.headers } });
-  await consoleRoute(src, actions).handler(stream as never, res);
+  await consoleRoute('/dsh-world/worlds/fish', src, actions).handler(stream as never, res);
   return out;
 }
 test('consoleRoute sets JSON, no-store and no CORS headers', async () => {
-  const out = await run(sources, { url: '/dsh-world/console/snapshot' });
+  const out = await run(sources, { url: '/dsh-world/worlds/fish/console/snapshot' });
   assert.equal(out.status, 200);
   assert.equal(out.headers!['content-type'], 'application/json; charset=utf-8');
   assert.equal(out.headers!['cache-control'], 'no-store');
@@ -287,27 +287,27 @@ test('consoleRoute sets JSON, no-store and no CORS headers', async () => {
 });
 test('consoleRoute rejects cross-site requests, and writes without the header or a JSON body', async () => {
   const { actions, calls } = fakeActions();
-  assert.equal((await run(sources, { url: '/dsh-world/console/snapshot', headers: { 'sec-fetch-site': 'cross-site' } })).status, 403);
-  assert.equal((await run(sources, { url: '/dsh-world/console/snapshot', headers: { host: 'rebind.example' } })).status, 403, 'DNS rebinding: same-origin to the browser, another name');
-  for (const host of ['127.0.0.1:3080', 'LOCALHOST', '[::1]:3080']) assert.equal((await run(sources, { url: '/dsh-world/console/snapshot', headers: { host } })).status, 200, host);
+  assert.equal((await run(sources, { url: '/dsh-world/worlds/fish/console/snapshot', headers: { 'sec-fetch-site': 'cross-site' } })).status, 403);
+  assert.equal((await run(sources, { url: '/dsh-world/worlds/fish/console/snapshot', headers: { host: 'rebind.example' } })).status, 403, 'DNS rebinding: same-origin to the browser, another name');
+  for (const host of ['127.0.0.1:3080', 'LOCALHOST', '[::1]:3080']) assert.equal((await run(sources, { url: '/dsh-world/worlds/fish/console/snapshot', headers: { host } })).status, 200, host);
   const { out, res } = fakeRes();
-  await consoleRoute(sources, fakeActions().actions, ['dsh.lan']).handler(Object.assign(Readable.from([]), { method: 'GET', url: '/dsh-world/console/snapshot', headers: { host: 'DSH.lan:8443' } }) as never, res);
+  await consoleRoute('/dsh-world/worlds/fish', sources, fakeActions().actions, ['dsh.lan']).handler(Object.assign(Readable.from([]), { method: 'GET', url: '/dsh-world/worlds/fish/console/snapshot', headers: { host: 'DSH.lan:8443' } }) as never, res);
   assert.equal(out.status, 200, 'a name listed in allowedHosts, behind a proxy');
   const write = { 'x-dsh-world': '1', 'content-type': 'application/json' };
-  assert.equal((await run(sources, { method: 'POST', url: '/dsh-world/console/start', headers: { 'content-type': 'application/json' }, body: '{}' }, actions)).status, 403, 'no write header');
-  assert.equal((await run(sources, { method: 'POST', url: '/dsh-world/console/start', headers: { 'x-dsh-world': '1', 'content-type': 'text/plain' }, body: '{}' }, actions)).status, 403, 'a form post');
-  assert.equal((await run(sources, { method: 'POST', url: '/dsh-world/console/start', headers: { ...write, 'sec-fetch-site': 'cross-site' }, body: '{}' }, actions)).status, 403);
-  assert.equal((await run(sources, { method: 'POST', url: '/dsh-world/console/start', headers: write, body: '[]' }, actions)).status, 400);
+  assert.equal((await run(sources, { method: 'POST', url: '/dsh-world/worlds/fish/console/start', headers: { 'content-type': 'application/json' }, body: '{}' }, actions)).status, 403, 'no write header');
+  assert.equal((await run(sources, { method: 'POST', url: '/dsh-world/worlds/fish/console/start', headers: { 'x-dsh-world': '1', 'content-type': 'text/plain' }, body: '{}' }, actions)).status, 403, 'a form post');
+  assert.equal((await run(sources, { method: 'POST', url: '/dsh-world/worlds/fish/console/start', headers: { ...write, 'sec-fetch-site': 'cross-site' }, body: '{}' }, actions)).status, 403);
+  assert.equal((await run(sources, { method: 'POST', url: '/dsh-world/worlds/fish/console/start', headers: write, body: '[]' }, actions)).status, 400);
   assert.deepEqual(calls, []);
-  assert.equal((await run(sources, { method: 'POST', url: '/dsh-world/console/start', headers: write, body: '{}' }, actions)).status, 200);
+  assert.equal((await run(sources, { method: 'POST', url: '/dsh-world/worlds/fish/console/start', headers: write, body: '{}' }, actions)).status, 200);
   assert.deepEqual(calls, ['start']);
 });
 test('consoleRoute hides errors behind a generic 500', async () => {
-  const out = await run({ ...sources, snapshot: async () => { throw new Error('secret C:\\path'); } }, { url: '/dsh-world/console/snapshot' });
+  const out = await run({ ...sources, snapshot: async () => { throw new Error('secret C:\\path'); } }, { url: '/dsh-world/worlds/fish/console/snapshot' });
   assert.equal(out.status, 500);
   assert.deepEqual(JSON.parse(out.body!), { error: 'internal error' });
   const failing = { ...fakeActions().actions, start: async () => { throw new Error('boom'); } };
-  assert.equal((await run(sources, { method: 'POST', url: '/dsh-world/console/start', headers: { 'x-dsh-world': '1', 'content-type': 'application/json' }, body: '{}' }, failing)).body, '{"error":"internal error"}');
+  assert.equal((await run(sources, { method: 'POST', url: '/dsh-world/worlds/fish/console/start', headers: { 'x-dsh-world': '1', 'content-type': 'application/json' }, body: '{}' }, failing)).body, '{"error":"internal error"}');
 });
 test('the snapshot is cached and shared between concurrent polls until invalidated, and has the same shape while stopped', async () => {
   let computed = 0; let running = true;
@@ -381,7 +381,7 @@ test('memory lookups reach the console through the same service as the tools: pa
     ctx: { agents: { get: () => undefined } } as never, config: { worldId: 'w', timeZone: 'Asia/Seoul' } as never, archive: store as never, longTerm,
     names: () => ({ companion: '小鱼', partner: '伙伴' }), life: () => undefined, diaryDir: join(root, 'diary'), running: () => false, dailyBudget: () => undefined, memoryTurns: () => 200, faults: () => [],
   });
-  const find = (query: string) => handleConsole(src, fakeActions().actions, { method: 'GET', url: `/dsh-world/console/memory/find?${query}`, write: false });
+  const find = (query: string) => handleConsole('/dsh-world/worlds/fish', src, fakeActions().actions, { method: 'GET', url: `/dsh-world/worlds/fish/console/memory/find?${query}`, write: false });
   const first = await find('query=' + encodeURIComponent('潮汐') + '&kinds=conversation,diary&limit=2');
   const page = first.body as { items: { ref: string; sourceId: string; excerpt: string; kind: string }[]; nextCursor: string; coverage: { state: string } };
   assert.equal(first.status, 200); assert.equal(page.items.length, 2); assert.equal(page.coverage.state, 'ready');
@@ -392,12 +392,12 @@ test('memory lookups reach the console through the same service as the tools: pa
   assert.deepEqual((await find('limit=0')).status, 400); assert.equal((await find('limit=abc')).status, 400); assert.equal((await find('from=2026-10-23')).status, 400);
   assert.equal(((await find('limit=0')).body as { code: string }).code, 'invalidQuery');
   assert.equal((await find('turnId=home:1&order=oldest')).status, 200);
-  const read = await handleConsole(src, fakeActions().actions, { method: 'GET', url: `/dsh-world/console/memory/read?ref=${encodeURIComponent(page.items[0]!.ref)}&limit=3`, write: false });
+  const read = await handleConsole('/dsh-world/worlds/fish', src, fakeActions().actions, { method: 'GET', url: `/dsh-world/worlds/fish/console/memory/read?ref=${encodeURIComponent(page.items[0]!.ref)}&limit=3`, write: false });
   assert.equal(read.status, 200); assert.equal((read.body as { content: string }).content.length > 0, true);
-  assert.equal((await handleConsole(src, fakeActions().actions, { method: 'GET', url: '/dsh-world/console/memory/read?ref=junk', write: false })).status, 400);
-  assert.equal((await handleConsole(src, fakeActions().actions, { method: 'GET', url: '/dsh-world/console/memory/read?ref=' + encodeURIComponent('m1.' + Buffer.from('["a","diary:nope.md","abc"]').toString('base64url')), write: false })).status, 404);
-  assert.equal((await handleConsole(sources, fakeActions().actions, { method: 'GET', url: '/dsh-world/console/memory/find', write: false })).status, 404, 'a console without long-term memory says so');
-  assert.equal((await handleConsole(src, fakeActions().actions, { method: 'POST', url: '/dsh-world/console/memory/find', write: true, body: {} })).status, 404, 'lookups are reads only');
+  assert.equal((await handleConsole('/dsh-world/worlds/fish', src, fakeActions().actions, { method: 'GET', url: '/dsh-world/worlds/fish/console/memory/read?ref=junk', write: false })).status, 400);
+  assert.equal((await handleConsole('/dsh-world/worlds/fish', src, fakeActions().actions, { method: 'GET', url: '/dsh-world/worlds/fish/console/memory/read?ref=' + encodeURIComponent('m1.' + Buffer.from('["a","diary:nope.md","abc"]').toString('base64url')), write: false })).status, 404);
+  assert.equal((await handleConsole('/dsh-world/worlds/fish', sources, fakeActions().actions, { method: 'GET', url: '/dsh-world/worlds/fish/console/memory/find', write: false })).status, 404, 'a console without long-term memory says so');
+  assert.equal((await handleConsole('/dsh-world/worlds/fish', src, fakeActions().actions, { method: 'POST', url: '/dsh-world/worlds/fish/console/memory/find', write: true, body: {} })).status, 404, 'lookups are reads only');
   const snapshot = await src.snapshot() as { memory: { index: { state: string; failures: unknown[] } } };
   assert.equal(snapshot.memory.index.state, 'ready'); assert.deepEqual(snapshot.memory.index.failures, []);
 });

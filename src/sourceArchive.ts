@@ -68,7 +68,7 @@ export function createSourceArchive(ctx: Context, config: WorldConfig, store: Ar
       let { nextSeq, turn } = store.progress(id);
       while (true) {
         const { events } = await handle.read(nextSeq, pageSize);
-        if (!events.length) break;
+        if (!events.length || (!skip && !archived(sessionId))) break;
         const records = events.flatMap(event => {
           if (event.type === 'turn/start') turn = event.data.turn;
           return skip ? [] : extractConversationRecords(event, { ...config, header: handle.header, inheritedEventCount: handle.inheritedEventCount, turn }).map(record => {
