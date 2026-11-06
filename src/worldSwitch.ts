@@ -118,7 +118,6 @@ export function createWorldSwitch(worldDir: string, configuredScope: MemoryArchi
     },
   };
 }
-export type WorldSwitch = ReturnType<typeof createWorldSwitch>;
 export const validTurns = (value: unknown): value is number => typeof value === 'number' && Number.isInteger(value) && value >= 1;
 export const validColdHours = (value: unknown): value is number => typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= MAX_COLD_HOURS;
 export const validWorkspacePermission = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;

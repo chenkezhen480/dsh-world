@@ -56,7 +56,6 @@ export function memoryTools(service: MemoryService, inside: () => boolean): Tool
     }),
   ];
 }
-export const MEMORY_TOOL_NAMES = ['memory_find', 'memory_read'] as const;
 
 /**
  * Gives world sessions their tools (long-term memory), whatever the life line does: a session has them

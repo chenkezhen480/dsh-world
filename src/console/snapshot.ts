@@ -49,14 +49,12 @@ export interface SnapshotDeps {
   wechat?(): unknown;
   /** Whose conversations her archive keeps; the memory block shown is read through it. */
   archiveSession?(id: string): boolean;
-  /** Faults outside the life line: the memory line, the bridge, the QQ bridge, starting and stopping. */
+  /** Faults outside the life line: the memory line, the bridge, starting and stopping. */
   faults(): string[];
   /** Which modules the config allows, whether their console switch is on, and whether they are running now. */
   modules?(): unknown;
   /** The OneBot channel she runs herself; null while it is off. */
   native?(): unknown;
-  /** The QQ bridge, when the module is on; absent leaves that card out of the console. */
-  qq?: () => Promise<unknown>;
 }
 /** Read-only views for the console; repeated polling within a few seconds reuses one snapshot until `invalidate`. */
 export function consoleSources(deps: SnapshotDeps): ConsoleSources & { invalidate(): void } {
@@ -71,8 +69,6 @@ export function consoleSources(deps: SnapshotDeps): ConsoleSources & { invalidat
     const turns = await history.loadRecentTurns(window, deps.archiveSession);
     const archiveScope = config.archiveScope ?? 'workspace';
     const selectedArchiveScope = deps.selectedArchiveScope?.() ?? archiveScope;
-    // Never let a dead bridge take the whole console down with it: a broken QQ module shows as "not running".
-    const qq = deps.qq ? await deps.qq().catch(() => null) : null;
     const native = deps.native?.() ?? null;
     return {
       worldId: config.worldId, timeZone: config.timeZone, now: new Date().toISOString(), running: deps.running(), name: deps.names().companion,
@@ -87,7 +83,6 @@ export function consoleSources(deps: SnapshotDeps): ConsoleSources & { invalidat
       wechat: deps.wechat?.() ?? null,
       compactions: lifeStore?.compactions().slice(-5).reverse() ?? [],
       diaryDates: diary.dates(), activityDays: lifeStore?.activityDays() ?? [],
-      qq: deps.qq ? qq : null,
       native,
       modules: deps.modules?.() ?? null,
     };

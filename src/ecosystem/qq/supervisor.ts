@@ -75,5 +75,3 @@ export function createSnowlumaSupervisor(options: {
     status: (): SnowlumaStatus => ({ ...state }),
   };
 }
-
-export type SnowlumaSupervisor = ReturnType<typeof createSnowlumaSupervisor>;

@@ -132,4 +132,3 @@ export function createAuthorFiles(sources: MemorySources, timeZone: string) {
   }
   return { docs, failures: () => [...failures].map(([sourceId, message]) => ({ sourceId, message })) };
 }
-export type AuthorFiles = ReturnType<typeof createAuthorFiles>;
