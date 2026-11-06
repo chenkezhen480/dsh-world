@@ -254,10 +254,11 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
       // Admitted ahead of the step's new input; the host's own admission order (contexts, time-context last) is kept.
       disposers.push(ctx.on('agent/pre-step', async (payload, next) => {
         await compactCold(payload.agent, payload.step, payload.messages.length, payload.signal);
-        const decision = await next();
+        let decision = await next();
         const { agent, step, signal } = payload;
         // An empty first step ends the turn; any later step runs anyway, so adding to it is safe.
         if (decision.kind !== 'enter' || (step === 1 && !decision.messages.length) || signal.aborted || !mayCarryWorld(agent.session)) return decision;
+        if (prompts?.takeRestart(agent.session)) decision = { ...decision, startsRequestSeries: true };
         await attach(agent);
         const state = memory.get(agent.session)!;
         const leave = () => {

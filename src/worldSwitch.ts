@@ -56,7 +56,7 @@ export function createWorldSwitch(worldDir: string, configuredScope: MemoryArchi
       if (!validWorkspacePermission(permission)) throw new Error('工作区权限必须为非空字符串');
       save({ ...settings, workspacePermission: permission });
     },
-    /** After each evening look back her home is applied and compacted, so the 我是谁 she has just rewritten takes effect; on unless the partner turns it off. */
+    /** Compact the home after the evening look back unless the partner turns it off. */
     compactAfterReview: () => settings.compactAfterReview !== false,
     setCompactAfterReview(on: boolean): void {
       const { compactAfterReview: _old, ...rest } = settings;

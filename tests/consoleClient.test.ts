@@ -245,7 +245,7 @@ test('home apply submits only the explicit action and shows backend progress and
   const render = () => { at = 0; tree = expand(component({ snap, refresh: () => { refreshed++; } })); };
   const button = () => tree.find(el => el.type === 'button')!;
   render(); assert.equal(requests.length, 0); assert.equal(button().props!.disabled, false);
-  assert.match(text(tree), /先保存人设和世界提示词/);
+  assert.match(text(tree), /保存的提示词会在下一轮对话生效/);
   button().props!.onClick(); render(); assert.equal(button().props!.disabled, true);
   await new Promise(setImmediate); render();
   assert.equal(refreshed, 1); assert.equal(requests.length, 1);
@@ -285,7 +285,7 @@ test('the compact-after-review switch saves at once, says what it does and shows
   const render = () => { at = 0; tree = expand(component({ on, onSaved: () => { refreshed++; } })); };
   const box = () => tree.find(el => el.type === 'input')!;
   render();
-  assert.equal(box().props!.checked, false); assert.match(text(tree), /自动应用并压缩一次家会话[\s\S]*我是谁/); assert.match(text(tree), /已关闭/);
+  assert.equal(box().props!.checked, false); assert.match(text(tree), /自动压缩一次家会话[\s\S]*我是谁.*下一轮对话生效/); assert.match(text(tree), /已关闭/);
   box().props!.onChange({ target: { checked: true } }); render(); assert.equal(box().props!.disabled, true, 'busy while saving');
   await new Promise(setImmediate); render();
   assert.equal(requests.length, 1); assert.equal(requests[0].url, '/dsh-world/worlds/fish/console/compact-after-review');

@@ -228,7 +228,7 @@
       function set(key, value) { var next = Object.assign({}, persona); next[key] = value; setPersona(next); setMsg('') }
       function save() {
         setBusy(true)
-        post('persona', persona).then(function () { setSaved(persona); setMsg('已保存。新会话或下次压缩后生效，也可点击「应用并压缩家会话」。'); if (props.onSaved) props.onSaved() },
+        post('persona', persona).then(function () { setSaved(persona); setMsg('已保存。下一轮对话生效。'); if (props.onSaved) props.onSaved() },
           failedTo(setMsg)).then(function () { setBusy(false) })
       }
       var preview = renderPersona(persona)
@@ -265,7 +265,7 @@
           h('div', { className: 'dw-muted' }, '你自己的这份没有用到：' + list(prompt.memory.missing).join('、') + '。工具照样可用，但她在提示里读不到它们的来历。想加的话，把下面这段贴进去；插件不会自动改你的模板。'),
           h('pre', { className: 'dw-diary' }, prompt.memory.snippet)) : null,
         h('div', { className: 'dw-bar' },
-          h('button', { className: 'dw-btn primary', disabled: text === prompt.text, onClick: function () { save(text, '已保存。新会话或下次压缩后生效，也可点击「应用并压缩家会话」。') } }, '保存'),
+          h('button', { className: 'dw-btn primary', disabled: text === prompt.text, onClick: function () { save(text, '已保存。下一轮对话生效。') } }, '保存'),
           prompt.custom ? h('button', { className: 'dw-btn', onClick: function () { if (window.confirm('删掉你自己的这份，换回插件自带的模板？')) save('', '已换回插件自带的模板。') } }, '恢复默认') : null,
           h('span', { className: msg.indexOf('失败') >= 0 ? 'dw-bad' : 'dw-muted' }, msg)))
     }
@@ -280,7 +280,7 @@
         post('apply-home').then(function () { props.refresh() }, function (e) { setError(String(e.message || e)) }).then(function () { setSending(false) })
       }
       return h(Card, { title: '应用已保存配置' },
-        h('div', { className: 'dw-muted' }, '先保存人设和世界提示词，再提交。等待家空闲后压缩一次；压缩会调用模型并重建上下文缓存。'),
+        h('div', { className: 'dw-muted' }, '保存的提示词会在下一轮对话生效。此操作等待家空闲后调用模型压缩聊天历史，并重建上下文缓存。'),
         h('div', { className: 'dw-setting' },
           h('button', { className: 'dw-btn', disabled: sending || waiting || compacting || !snap.running || !snap.life || !snap.homeApply, onClick: apply }, waiting ? '等待家空闲…' : compacting ? '正在压缩家会话…' : sending ? '提交中…' : '应用并压缩家会话'),
           h('span', { role: 'status', 'aria-live': 'polite', className: error || state.status === 'failed' ? 'dw-bad' : 'dw-muted' }, error || (waiting ? '已排队，不打断当前对话。' : compacting ? '正在执行，请稍候。' : state.message) || (!snap.running || !snap.life ? '请先启动世界生活线。' : ''))))
@@ -385,12 +385,12 @@
       function toggle(on) {
         setBusy(true)
         post('compact-after-review', { on: on }).then(function () {
-          setMsg(on ? '已开启。每晚回顾后会自动应用并压缩家会话。' : '已关闭。“我是谁”要等下一次压缩才生效。')
+          setMsg(on ? '已开启。每晚回顾后会自动压缩家会话。' : '已关闭。')
           if (props.onSaved) props.onSaved()
         }, failedTo(setMsg)).then(function () { setBusy(false) })
       }
       return h(Card, { title: '回顾后自动压缩' },
-        h('div', { className: 'dw-muted' }, '每晚回顾结束、家空闲后，自动应用并压缩一次家会话，让她刚改写的“我是谁”生效；压缩后最近的聊天会重新放回她眼前。'),
+        h('div', { className: 'dw-muted' }, '每晚回顾结束、家空闲后，自动压缩一次家会话，随后重读近期聊天。“我是谁”的改动在下一轮对话生效。'),
         h('label', { className: 'dw-setting' },
           h('input', { type: 'checkbox', checked: props.on, disabled: busy, 'aria-label': '回顾后自动压缩', onChange: function (e) { toggle(e.target.checked) } }),
           ' ', props.on ? '已开启' : '已关闭'),

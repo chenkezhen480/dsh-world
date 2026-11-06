@@ -60,9 +60,8 @@ export function renderTemplate(template: string, flags: Record<string, boolean>,
 }
 
 /**
- * The one world prompt every world session carries in its system prompt. `template` and `self` are read at
- * session start, after compaction or on explicit console application, so ordinary saves keep the cached prefix. The world
- * line's tools live in the home alone; the template tells other sessions where to find them.
+ * The one world prompt every world session carries in its system prompt. The world line's tools live in the home alone;
+ * the template tells other sessions where to find them.
  */
 export function renderWorldPrompt(prompt: WorldPrompt, template: string, self: { file: string; text: string } | undefined, home: boolean): string {
   const { life, names } = prompt;
