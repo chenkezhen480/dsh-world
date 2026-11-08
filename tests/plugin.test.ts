@@ -845,8 +845,9 @@ test('a module the config does not provide cannot be switched on from the consol
   await until(async () => routes.length === 2, 'console');
   const result = await routeCall(routes, '/dsh-world', '/dsh-world/console/modules', { 'x-dsh-world': '1', 'content-type': 'application/json' }, JSON.stringify({ wechat: true }));
   assert.equal(result.status, 400);
-  assert.deepEqual((await consoleGet(routes, '/dsh-world/console/snapshot')).modules, { wechat: { available: false, enabled: false, running: false }, qq: { available: false, enabled: false, running: false } });
+  assert.deepEqual((await consoleGet(routes, '/dsh-world/console/snapshot')).modules, { wechat: { available: false, enabled: false, running: false }, qq: { available: false, enabled: false, running: false }, computer: { available: false, enabled: false, running: false } });
   assert.equal((await routeCall(routes, '/dsh-world', '/dsh-world/console/modules', { 'x-dsh-world': '1', 'content-type': 'application/json' }, JSON.stringify({ qq: true }))).status, 400);
+  assert.equal((await routeCall(routes, '/dsh-world', '/dsh-world/console/modules', { 'x-dsh-world': '1', 'content-type': 'application/json' }, JSON.stringify({ computer: true }))).status, 400);
 });
 
 test('QQ stays off until switched on; the off switch survives world restart and plugin reload, and re-enabling opens one connection', async t => {

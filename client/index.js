@@ -667,7 +667,20 @@ window.__ModuleLoader__.load({
       return h(Card, { title: '接入', delay: 270 },
         row('wechat', '微信', m.wechat, '已注册 wechat_chats、wechat_history、wechat_send、wechat_delivery，可先看群聊再发言，并随之启动适配器。关闭会撤掉它们并停掉适配器。', '工具未注册，适配器已停。开启后立即注册，无需重启。'),
         row('qq', 'QQ', m.qq, '插件自己直连 OneBot：状态和设置在 QQ 页面。关闭就断开这条通道。', '开启时检查 SDK；缺少时按需安装并提示重启 DSH。'),
+        m.computer && m.computer.available ? row('computer', '她的浏览器', m.computer, '只在家会话里有 page_* 原语和她自己存的 my_* 工具；浏览器是一个独立的 Edge 窗口，不用你的鼠标键盘。', '工具未注册。开启后她下一步起就能用。') : null,
         msg ? h('div', { className: msg.indexOf('失败') >= 0 ? 'dw-bad' : 'dw-muted', role: 'status' }, msg) : null)
+    }
+    /** 她的浏览器：Edge 在不在、她存了哪些工具、各自最近一次结果；按钮把窗口拿到前面来扫码。 */
+    function Computer(props) {
+      var c = props.computer, procs = list(c.procedures)
+      var msgState = useState(''), msg = msgState[0], setMsg = msgState[1]
+      var stateLabel = { missing: '找不到 Edge', stopped: '未打开', running: '运行中' }
+      function open() { setMsg(''); post('computer/open', {}).then(function () { setMsg('窗口已拿到前面') }, function (e) { setMsg('打不开：' + (e.message || e)) }) }
+      return h(Card, { title: '她的浏览器', delay: 300 },
+        KV([['浏览器', stateLabel[c.browser.state] || c.browser.state], ['工具目录', c.dir]]),
+        procs.length ? procs.map(function (p) { return h('div', { key: p.name, className: p.last && !p.last.ok ? 'dw-bad' : 'dw-muted' }, 'my_' + p.name + ' · ' + p.description + (p.onAlarm ? '（闹钟前）' : '') + (p.last ? (p.last.ok ? ' · 最近成功' : ' · 最近失败：' + (p.last.detail || '')) : '')) }) : h('div', { className: 'dw-muted' }, '她还没有存自己的工具'),
+        h('button', { className: 'dw-btn', disabled: c.browser.state === 'missing', onClick: open }, '打开她的浏览器'),
+        msg ? h('div', { className: msg.indexOf('打不开') >= 0 ? 'dw-bad' : 'dw-muted', role: 'status' }, msg) : null)
     }
     function Overview(props) {
       var snap = props.snap, zone = snap.timeZone, life = snap.life, alarm = life && life.alarm, mem = snap.memory
@@ -698,7 +711,8 @@ window.__ModuleLoader__.load({
           snap.workspace ? h(WorkspacePermission, { workspace: snap.workspace, onSaved: props.refresh }) : null,
           typeof snap.compactAfterReview === 'boolean' ? h(CompactAfterReview, { on: snap.compactAfterReview, onSaved: props.refresh }) : null,
           snap.schedule ? h(Schedule, { schedule: snap.schedule, onSaved: props.refresh }) : null,
-          snap.modules && (snap.modules.wechat.available || snap.modules.qq.available) ? h(Modules, { modules: snap.modules, running: snap.running, onSaved: props.refresh }) : null))
+          snap.modules && (snap.modules.wechat.available || snap.modules.qq.available || (snap.modules.computer && snap.modules.computer.available)) ? h(Modules, { modules: snap.modules, running: snap.running, onSaved: props.refresh }) : null,
+          snap.computer ? h(Computer, { computer: snap.computer }) : null))
     }
     function Records(props) {
       var snap = props.snap, zone = snap.timeZone, life = snap.life, compactions = list(snap.compactions)

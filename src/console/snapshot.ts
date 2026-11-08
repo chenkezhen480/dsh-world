@@ -53,6 +53,8 @@ export interface SnapshotDeps {
   faults(): string[];
   /** Which modules the config allows, whether their console switch is on, and whether they are running now. */
   modules?(): unknown;
+  /** Her own browser and the tools she saved; absent while the module is off. */
+  computer?(): unknown;
   /** The OneBot channel she runs herself; null while it is off. */
   native?(): unknown;
   /** The QQ bridge, when the module is on; absent leaves that card out of the console. */
@@ -90,6 +92,7 @@ export function consoleSources(deps: SnapshotDeps): ConsoleSources & { invalidat
       qq: deps.qq ? qq : null,
       native,
       modules: deps.modules?.() ?? null,
+      computer: deps.computer?.() ?? null,
     };
   }
   return {

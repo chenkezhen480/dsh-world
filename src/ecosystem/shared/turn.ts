@@ -10,7 +10,7 @@ import '../../hostContract.ts';
  * A channel's requests, one at a time: each gets a `cancelled` promise that rejects when it runs out of time or the
  * channel stops, and the queue refuses more than `limit` waiting at once.
  */
-export function createChannelQueue(name: string, options: { limit: number; timeoutMs: number; timers?: LifeTimers | undefined }) {
+export function createChannelQueue(name: string, options: { limit: number; timeoutMs: number; timers?: LifeTimers | undefined; timeoutMessage?: string }) {
   const timers = options.timers ?? realTimers;
   const cancellations = new Set<() => void>();
   let pending: Promise<unknown> = Promise.resolve();
@@ -27,7 +27,7 @@ export function createChannelQueue(name: string, options: { limit: number; timeo
       let cancel!: () => void;
       const cancelled = new Promise<never>((_resolve, reject) => {
         cancel = () => reject(stoppedError());
-        timer = timers.set(() => reject(new Error(`${name} home reply timed out`)), options.timeoutMs);
+        timer = timers.set(() => reject(new Error(options.timeoutMessage ?? `${name} home reply timed out`)), options.timeoutMs);
       });
       cancelled.catch(() => {});
       cancellations.add(cancel);

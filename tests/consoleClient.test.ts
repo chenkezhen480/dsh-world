@@ -431,6 +431,8 @@ test('the module switches say what is on, what is off and what the config does n
   };
   const render = (modules: unknown, running = true) => text(react.createElement(Modules, { modules, running }));
   const on = render({ wechat: { available: true, enabled: true, running: true }, qq: { available: false, enabled: true, running: false } });
+  assert.doesNotMatch(render({ wechat: { available: true, enabled: true, running: true }, qq: { available: false, enabled: true, running: false }, computer: { available: false, enabled: false, running: false } }), /她的浏览器/);
+  assert.match(render({ wechat: { available: false, enabled: false, running: false }, qq: { available: false, enabled: false, running: false }, computer: { available: true, enabled: true, running: true } }), /她的浏览器 · 运行中/);
   assert.match(on, /微信 · 运行中/); assert.match(on, /wechat_send/); assert.match(on, /QQ · 未配置/);
   const off = render({ wechat: { available: true, enabled: false, running: false }, qq: { available: true, enabled: false, running: false } });
   assert.match(off, /微信 · 已关闭/); assert.match(off, /QQ · 已关闭/); assert.match(off, /工具未注册/);

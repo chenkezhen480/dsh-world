@@ -31,6 +31,8 @@
     "client",
     "src/ecosystem/wechat/windows",
     "src/ecosystem/README.md",
+    "src/ecosystem/computer/README.md",
+    "src/ecosystem/computer/NOTICE.md",
     "templates",
     "cordis.patch.yml",
     "README.md",

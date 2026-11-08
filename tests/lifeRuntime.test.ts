@@ -42,7 +42,7 @@ function fakeTimers(clock: { now: Date }) {
     jump(ms: number) { clock.now = new Date(clock.now.getTime() + ms); for (const entry of pending) entry.at += ms; },
   };
 }
-interface SetupOptions { afterReview?: () => void; before?: (worldDir: string) => Promise<void>; host?: (host: LifeHost) => LifeHost; store?: (store: LifeStore) => LifeStore; notifier?: Notifier; dailyBudget?: () => number | undefined; inWorkspace?: (id: string) => boolean; alarmContext?: (now: Date) => string | undefined; schedule?: { review: string; wake: string } }
+interface SetupOptions { afterReview?: () => void; before?: (worldDir: string) => Promise<void>; host?: (host: LifeHost) => LifeHost; store?: (store: LifeStore) => LifeStore; notifier?: Notifier; dailyBudget?: () => number | undefined; inWorkspace?: (id: string) => boolean; alarmContext?: (now: Date) => string | undefined | Promise<string | undefined>; schedule?: { review: string; wake: string } }
 async function setup(t: test.TestContext, model: (request: GenerateOptions, index: number) => AsyncIterable<StreamChunk>, setupOptions: SetupOptions = {}) {
   const requests: GenerateOptions[] = [];
   const { ctx, root, cleanup, errors } = await hostFixture(t, request => { if (request.purpose !== 'compaction') requests.push(request); return model(request, requests.length - 1); });
@@ -847,4 +847,64 @@ test('a word stuck before its first step is reported, and after a restart it is 
     }
     assert.ok(!s.faults().some(fault => /这一轮还没开始/.test(fault)));
   }
+});
+const gated = () => { let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; }); return { gate, release: () => release() }; };
+test('alarm facts that take a while are waited for and appear in the alarm', async t => {
+  const g = gated();
+  const s = await setup(t, () => textResponse('嗯'), { alarmContext: async () => { await g.gate; return 'my_bili_unread：私信 2'; } });
+  await s.start();
+  s.life.planNext({ after_minutes: 1 }, '看书');
+  const before = s.requests.length;
+  s.timers.advance(60_000); await tick();
+  assert.equal(s.requests.length, before, 'nothing is sent while the facts are still coming');
+  g.release(); await s.idle();
+  assert.equal(s.requests.length, before + 1);
+  assert.match(textOf(s.requests.at(-1)!), /my_bili_unread：私信 2/);
+});
+test('an alarm replaced while its facts are gathered is not sent stale; the new one goes out once', async t => {
+  const g = gated();
+  const s = await setup(t, () => textResponse('嗯'), { alarmContext: async () => { await g.gate; return undefined; } });
+  await s.start();
+  s.life.planNext({ after_minutes: 1 }, '旧的闹钟');
+  const before = s.requests.length;
+  s.timers.advance(60_000); await tick();
+  s.life.planNext({ after_minutes: 1 }, '新的闹钟');
+  g.release(); await s.idle();
+  assert.equal(s.requests.length, before, 'the replaced alarm sends nothing');
+  s.timers.advance(60_000); await s.idle();
+  assert.equal(s.requests.length, before + 1);
+  assert.match(textOf(s.requests.at(-1)!), /新的闹钟/);
+  assert.doesNotMatch(textOf(s.requests.at(-1)!), /旧的闹钟/);
+});
+test('alarm facts that cannot be gathered never hold the alarm back; the console says so', async t => {
+  const s = await setup(t, () => textResponse('嗯'), { alarmContext: async () => { throw new Error('页面没开'); } });
+  await s.start();
+  s.life.planNext({ after_minutes: 1 }, '看书');
+  const before = s.requests.length;
+  s.timers.advance(60_000); await s.idle();
+  assert.equal(s.requests.length, before + 1);
+  assert.match(textOf(s.requests.at(-1)!), /看书/);
+  assert.ok(s.faults().some(fault => fault.includes('闹钟附加的信息没取到')), s.faults().join('|'));
+});
+test('alarm facts that never arrive are given up on after a while', async t => {
+  const s = await setup(t, () => textResponse('嗯'), { alarmContext: () => new Promise<string | undefined>(() => {}) });
+  await s.start();
+  s.life.planNext({ after_minutes: 1 }, '看书');
+  const before = s.requests.length;
+  s.timers.advance(60_000); await tick();
+  assert.equal(s.requests.length, before);
+  s.timers.advance(90_000); await s.idle();
+  assert.equal(s.requests.length, before + 1);
+  assert.ok(s.faults().some(fault => fault.includes('闹钟附加的信息没取到')), s.faults().join('|'));
+});
+test('stopping while alarm facts are gathered delivers nothing and keeps the alarm pending', async t => {
+  const g = gated();
+  const s = await setup(t, () => textResponse('嗯'), { alarmContext: async () => { await g.gate; return 'x'; } });
+  await s.start();
+  s.life.planNext({ after_minutes: 1 }, '看书');
+  const before = s.requests.length;
+  s.timers.advance(60_000); await tick();
+  s.life.stop(); g.release(); await tick(); await tick();
+  assert.equal(s.requests.length, before);
+  assert.equal(s.alarm()?.source, 'plan');
 });

@@ -77,7 +77,9 @@ DSH 设置里的「世界控制台」：
 
 dsh-world 开放了一个本地的「桥」：桌宠之类的程序可以把你说的话送进她的家，也可以接收她的回复和主动找你的话。协议见文末。
 
-微信作为独立模块接入同一个家，使用她的独立账号收发指定私聊或群聊。她可用 `wechat_chats` 查询已配置目标，用 `wechat_history` 主动分页查看群消息，无需等别人 @，历史里的图片用 `wechat_image` 按消息 ID 一张张看；读完以同一个 `chatId` 调用 `wechat_send` 自主联系对方或回复消息，文字、图片和表情共用同一发送队列；一批话没发出或结果不明时，发起的会话会在下一步收到一条说明（不会因此被叫醒），平时不用逐条查回执，需要时仍可用 `wechat_delivery` 查询。普通最终回答不会自动转发到微信。Windows 适配器和配置步骤见 [微信模块](src/ecosystem/wechat/windows/README.md)。B 站尚未接入。
+微信作为独立模块接入同一个家，使用她的独立账号收发指定私聊或群聊。她可用 `wechat_chats` 查询已配置目标，用 `wechat_history` 主动分页查看群消息，无需等别人 @，历史里的图片用 `wechat_image` 按消息 ID 一张张看；读完以同一个 `chatId` 调用 `wechat_send` 自主联系对方或回复消息，文字、图片和表情共用同一发送队列；一批话没发出或结果不明时，发起的会话会在下一步收到一条说明（不会因此被叫醒），平时不用逐条查回执，需要时仍可用 `wechat_delivery` 查询。普通最终回答不会自动转发到微信。Windows 适配器和配置步骤见 [微信模块](src/ecosystem/wechat/windows/README.md)。
+
+**她自己的浏览器（默认关）**：配置 `computer: true` 并在控制台打开后，家会话里多一个她自己的 Edge 窗口和一组页面原语，她可以自己摸索网站，把走顺的步骤存成自己的工具，闹钟前自动看一眼并把结果附在闹钟文字后。插件不含任何平台代码，B 站等网页平台都由她自己学；有平台风控与账号风险，登录态存在世界目录的 `browser/`。见 [她的浏览器](src/ecosystem/computer/README.md)。
 
 **群聊动静**：适配器在线时，已配置群里未 @ 她的消息只更新未读数、最后发言人和时间，不唤醒模型，也不把正文加入上下文。她原有的闹钟响起时，会附上一行群聊概况，包括未读消息或安静了多久；是否去看、是否发言，由她自己决定。成功读取群的最新一页后清零未读，自己的发言不计入未读；计数保存在适配器状态中，重启保留。插件不会改写你的 `alarm.md`、`world-prompt.md` 或「我是谁」。
 
@@ -85,7 +87,7 @@ dsh-world 开放了一个本地的「桥」：桌宠之类的程序可以把你�
 
 > **QQ 走插件自己那条原生通道**：插件直接连 SnowLuma 提供的 OneBot WebSocket，自己收、自己发（代码在 [`src/ecosystem/qq-native/`](src/ecosystem/qq-native/index.ts)），中间没有第二个进程，也不需要别的 QQ 实现。SnowLuma 负责登录 QQ 并对外提供 OneBot 的 HTTP／WS 服务；它按自己的 EULA 不许被自动化脚本部署，装法与参数怎么拿见 [INSTALL.md](INSTALL.md)。这条通道的配置都在 profile 的 `cordis.patch.yml` 里（见下文「设置」），控制台上改过的设置存在世界目录的 `qq-native.json`。
 
-外部生态接入代码统一放在 [`src/ecosystem/`](src/ecosystem/README.md)：`wechat/` 包含微信宿主模块、Windows 收发适配器和原生桥；`qq-native/` 是插件自己连 OneBot 的那条 QQ 通道（`qq/` 里是与它配套的控制台接口和 SnowLuma 控制台那扇门）；`shared/` 保存通用身份协议、群会话路由与消息出口；`bridge/` 为桌宠等本地程序提供通用桥。后续平台在同一目录下独立扩展，核心记忆、人设和生活线保持独立。
+外部生态接入代码统一放在 [`src/ecosystem/`](src/ecosystem/README.md)：`wechat/` 包含微信宿主模块、Windows 收发适配器和原生桥；`qq-native/` 是插件自己连 OneBot 的那条 QQ 通道（`qq/` 里是与它配套的控制台接口和 SnowLuma 控制台那扇门）；`shared/` 保存通用身份协议、群会话路由与消息出口；`bridge/` 为桌宠等本地程序提供通用桥；`computer/` 是她自己的浏览器和工具。后续平台在同一目录下独立扩展，核心记忆、人设和生活线保持独立。
 
 微信原生发送引擎单独适用非商业许可，详见该模块的许可说明。
 

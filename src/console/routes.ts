@@ -44,12 +44,15 @@ export interface ConsoleActions {
   /** Local HH:MM of the evening look back and the morning wake; a field left out stays, null goes back to its default. */
   setSchedule(schedule: { review?: string | null; wake?: string | null }): void;
   /** A field left out stays as it is; null goes back to its default. */
-  /** Turns the WeChat and QQ modules on or off now (their tools and routes come and go with the switch). Returns why it cannot, or nothing. */
-  setModules(modules: { wechat?: boolean; qq?: boolean }): Promise<string | { restartRequired: true; message: string } | undefined>;
+  /** Turns the WeChat, QQ and computer modules on or off now (their tools and routes come and go with the switch). Returns why it cannot, or nothing. */
+  setModules(modules: { wechat?: boolean; qq?: boolean; computer?: boolean }): Promise<string | { restartRequired: true; message: string } | undefined>;
+  /** Brings her browser window forward (for scanning a login code); returns why it cannot, or nothing. */
+  showComputer(): Promise<string | undefined>;
   /** Restarts the adapter the plugin manages; false when it does not manage one. */
   restartWechatAdapter(): Promise<boolean>;
   setWechatSettings(settings: { context?: number | null; bufferSeconds?: number | null }): void;
 }
+const optionalFlag = (value: unknown): value is boolean | undefined => value === undefined || typeof value === 'boolean';
 export interface ConsoleRequest { method: string; url: string; write: boolean; body?: Record<string, unknown> | undefined }
 const MEMORY_STATUS: Record<MemoryErrorCode, number> = { invalidQuery: 400, invalidRef: 400, invalidCursor: 400, notFound: 404, outOfScope: 403, cursorExpired: 409, sourceChanged: 409, scopeChanged: 409, readFailed: 500 };
 /** Query-string values to the shape the tools take: a number that is not one stays NaN and is refused by the shared check. */
@@ -106,12 +109,13 @@ async function write(actions: ConsoleActions, path: string, body: Record<string,
       actions.setWechatSettings({ ...(context === undefined ? {} : { context }), ...(bufferSeconds === undefined ? {} : { bufferSeconds }) }); return ok();
     }
     case '/console/modules': {
-      const wechat = body?.wechat, qq = body?.qq;
-      if ((wechat !== undefined && typeof wechat !== 'boolean') || (qq !== undefined && typeof qq !== 'boolean')) return bad('wechat 和 qq 必须是 true 或 false');
-      if (wechat === undefined && qq === undefined) return bad('nothing to change');
-      const refused = await actions.setModules({ ...(wechat === undefined ? {} : { wechat }), ...(qq === undefined ? {} : { qq }) });
+      const wechat = body?.wechat, qq = body?.qq, computer = body?.computer;
+      if (!optionalFlag(wechat) || !optionalFlag(qq) || !optionalFlag(computer)) return bad('wechat、qq 和 computer 必须是 true 或 false');
+      if (wechat === undefined && qq === undefined && computer === undefined) return bad('nothing to change');
+      const refused = await actions.setModules({ ...(wechat === undefined ? {} : { wechat }), ...(qq === undefined ? {} : { qq }), ...(computer === undefined ? {} : { computer }) });
       return typeof refused === 'string' ? bad(refused) : ok({ ok: true, ...refused });
     }
+    case '/console/computer/open': { const refused = await actions.showComputer(); return refused ? bad(refused) : ok(); }
     case '/console/wechat-adapter': return await actions.restartWechatAdapter() ? ok() : bad('适配器不是由插件管理的，请在配置里写 wechatAdapter');
     case '/console/archive-scope': {
       if (!validArchiveScope(body?.scope)) return bad('scope must be home or workspace');

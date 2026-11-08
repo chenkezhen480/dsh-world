@@ -6,6 +6,7 @@ import type { AttachmentStore } from '@deepseek-ai/dsh-attachment';
 import type {} from '@deepseek-ai/dsh-agent-loop';
 import { createUserMessage, type UserMessage } from '@deepseek-ai/dsh-llm';
 import { SessionSeq } from '@deepseek-ai/dsh-session';
+import type { ToolDefinition } from '@deepseek-ai/dsh-tools';
 import type {} from '@deepseek-ai/dsh-system-prompt';
 import '../hostContract.ts';
 import { errorText, Faults } from '../faults.ts';
@@ -36,14 +37,18 @@ import type { Alarm, Greeting, LifeOptions, PendingWake, Review, WakeRecord } fr
 /** How long a word may sit in her home without its turn starting a step before the console says so. */
 const STALL_MINUTES = 5;
 const withValue = <K extends string>(key: K, value: string | undefined) => (value === undefined ? {} : { [key]: value }) as Partial<Record<K, string>>;
+const ALARM_FACTS_LIMIT_MS = 90_000;
+
 export interface LifeDeps {
   ctx: Context; config: WorldConfig; options: LifeOptions; store: LifeStore; host: LifeHost; notifier: Notifier; clock?: () => Date; timers?: LifeTimers;
   /** CNY her home may spend a day; undefined or absent is no limit. */
   dailyBudget?: () => number | undefined;
   /** Called once each evening look back has been handed to her home (not for alarms or greetings, and not when delivery failed). */
   afterReview?: () => void;
-  /** Read-only facts appended after the user's alarm template is rendered. */
-  alarmContext?: (now: Date) => string | undefined;
+  /** Read-only facts appended after the user's alarm template is rendered; may take a moment (her own tools run first). */
+  alarmContext?: (now: Date) => string | undefined | Promise<string | undefined>;
+  /** More tools for her home whose set changes at run time; registered again when the revision moves. */
+  homeTools?: { tools(agent: Agent): readonly ToolDefinition[]; revision(): string };
   photos?: () => PhotoStore;
   /** Her room's workspace; the life line reaches only its sessions. Absent, every session of hers. */
   inWorkspace?: (sessionId: string) => boolean;
@@ -291,17 +296,35 @@ export function createLifeRuntime(deps: LifeDeps) {
       diaryDir: options.diaryDir, selfFile: options.selfFile,
     }, timeZone, wake(), alarmMessages(), templateValues()), () => deps.afterReview?.());
   }
+  /** The optional facts line never holds up her alarm: a failure or a wait past the limit is a fault and the alarm goes without it. */
+  async function alarmFacts(): Promise<string | undefined> {
+    if (!deps.alarmContext) return undefined;
+    let handle: unknown;
+    const limit = new Promise<never>((_, reject) => { handle = timers.set(() => reject(new Error('等了太久')), ALARM_FACTS_LIMIT_MS); });
+    try {
+      const facts = await Promise.race([Promise.resolve().then(() => deps.alarmContext!(clock())), limit]);
+      faults.clear('alarm-facts');
+      return facts;
+    } catch (error) {
+      ctx.logger.error(error);
+      faults.set('alarm-facts', `闹钟附加的信息没取到：${errorText(error)}`);
+      return undefined;
+    } finally { timers.clear(handle); }
+  }
   async function send(alarm: Alarm): Promise<void> {
     try {
       // Resolve (or rebuild) the home first: a rebuilt home must still see this alarm as pending.
       const agent = await home.open();
       if (stopped) return;
       if (state.alarm !== alarm) { timer.arm(); return; }
+      // Gathered before the alarm leaves the store, so a stop or a new alarm meanwhile keeps this one pending.
+      const context = await alarmFacts();
+      if (stopped) return;
+      if (state.alarm !== alarm || agent.id !== state.homeSessionId) { timer.arm(); return; }
       // Cleared before steering, so a turn that ends quickly already sees "no alarm" and gets the fallback.
       delete state.alarm;
       const now = clock();
       const text = wakeText(alarm, now, timeZone, wake(), alarmMessages(), { ...templateValues(), did: alarm.source === 'fallback' ? '' : didSince(alarm, now) });
-      const context = deps.alarmContext?.(now);
       const message = lifeMessage(context ? `${text}\n\n${context}` : text);
       expect(agent, message, '闹钟', alarm.at, alarm.source, { alarm }, now);
       await say(agent, message);
@@ -359,6 +382,7 @@ export function createLifeRuntime(deps: LifeDeps) {
   };
   const tools = createToolRegistry({
     faults, logger: ctx.logger,
+    ...(deps.homeTools ? { extras: deps.homeTools } : {}),
     inWorld: agent => !stopped && includes(agent.session),
     isHome: agent => agent.id === state.homeSessionId,
     guard: ({ name, arguments: args, agent }) => {

@@ -31,6 +31,7 @@ function fakeActions() {
     setCompactAfterReview: on => { calls.push(`compact-after-review:${on}`); },
     setSchedule: next => { calls.push(`schedule:${JSON.stringify(next)}`); },
     setModules: async modules => { calls.push(`modules:${JSON.stringify(modules)}`); return undefined; },
+    showComputer: async () => { calls.push('show-computer'); return undefined; },
     restartWechatAdapter: async () => { calls.push('adapter-restart'); return true; },
     setWechatSettings: next => { calls.push(`wechat:${JSON.stringify(next)}`); },
   };
@@ -400,4 +401,23 @@ test('memory lookups reach the console through the same service as the tools: pa
   assert.equal((await handleConsole(src, fakeActions().actions, { method: 'POST', url: '/dsh-world/console/memory/find', write: true, body: {} })).status, 404, 'lookups are reads only');
   const snapshot = await src.snapshot() as { memory: { index: { state: string; failures: unknown[] } } };
   assert.equal(snapshot.memory.index.state, 'ready'); assert.deepEqual(snapshot.memory.index.failures, []);
+});
+
+test('the computer switch and her browser window are reachable from the console', async () => {
+  const { actions, calls } = fakeActions();
+  const post = (url: string, body: Record<string, unknown> = {}) => handleConsole(sources, actions, { method: 'POST', url: `/dsh-world/console/${url}`, write: true, body });
+  assert.equal((await post('modules', { computer: true })).status, 200);
+  assert.equal((await post('modules', { computer: 'yes' })).status, 400);
+  assert.equal((await post('computer/open')).status, 200);
+  assert.deepEqual(calls.slice(-2), ['modules:{"computer":true}', 'show-computer']);
+});
+
+test('the computer module is off until switched on and its choice is kept', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-world-modules-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const power = createWorldSwitch(dir);
+  assert.equal(power.computerEnabled(), false);
+  power.setModules({ computer: true });
+  assert.equal(createWorldSwitch(dir).computerEnabled(), true);
+  power.setModules({ wechat: false });
+  assert.equal(createWorldSwitch(dir).computerEnabled(), true, 'another switch leaves it alone');
 });
