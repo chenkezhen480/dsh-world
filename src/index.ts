@@ -15,7 +15,7 @@ import { consoleRoute, type ConsoleActions } from './console/routes.ts';
 import { consoleSources } from './console/snapshot.ts';
 import { compactionFor, createHomeApply } from './console/homeApply.ts';
 import { errorText, Faults } from './faults.ts';
-import { swapCompactionOnce, swapPresetCompaction, swapStockCompaction, type ConfigEditor } from './compactionSwap.ts';
+import { repairCopiedPresets, swapCompactionOnce, swapPresetCompaction, swapStockCompaction, type ConfigEditor } from './compactionSwap.ts';
 import { hostLife } from './life/host.ts';
 import { createLifeStore, durableWrite } from './life/lifeStore.ts';
 import { toastSupported, windowsToast, type Notifier } from './life/notify.ts';
@@ -23,6 +23,7 @@ import { createLifeRuntime, type LifeRuntime } from './life/runtime.ts';
 import type { LifeOptions } from './life/types.ts';
 import { createOutlet } from './ecosystem/shared/outlets.ts';
 import { readPersona, writePersona } from './persona.ts';
+import { MOOD_FILE } from './mood.ts';
 import type { QqNativeModule } from './ecosystem/qq-native/index.ts';
 import { qqRoute } from './ecosystem/qq/route.ts';
 import { createConsoleDoors, discoverSnowlumaHome } from './ecosystem/qq/panel.ts';
@@ -110,14 +111,14 @@ interface WebServer { register(route: ReturnType<typeof consoleRoute> | ReturnTy
 interface ProfileWorlds {
   rooms: Map<string, { path: string; authorize(session: Session): symbol | false | undefined }>;
   consoles: Map<string, readonly string[]>;
-  compactionSwap: Promise<void>;
+  profileEdits: Promise<void>;
   unregisterList?: () => void;
 }
 
 function profileWorlds(root: Context): ProfileWorlds {
   const existing = root.get('dshWorldProfile') as ProfileWorlds | undefined;
   if (existing) return existing;
-  const worlds: ProfileWorlds = { rooms: new Map(), consoles: new Map(), compactionSwap: Promise.resolve() };
+  const worlds: ProfileWorlds = { rooms: new Map(), consoles: new Map(), profileEdits: Promise.resolve() };
   root.provide('dshWorldProfile', worlds);
   guardWorldContext(root, (session, worldId) => {
     if (worldId !== undefined) return worlds.rooms.get(worldId)?.authorize(session);
@@ -193,7 +194,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   async function startMemory(fresh: boolean): Promise<void> {
     if (memory || disposed) return;
     const prompt = { file: worldPromptFile, persona: personaFile, conversationsDir: join(worldDir, 'conversations'), names: names(), memoryTools: true, ...(config.life ? { life: options } : {}) };
-    const runtime = createWorldRuntime(ctx, { ...memoryConfig, selfFile }, store, { prompt, names, isHome: id => isHome(id), archiveSession, inWorkspace, memory: memoryService }, power.memoryTurns, power.coldHours);
+    const runtime = createWorldRuntime(ctx, { ...memoryConfig, selfFile, moodFile: join(roomDir, MOOD_FILE) }, store, { prompt, names, isHome: id => isHome(id), archiveSession, inWorkspace, memory: memoryService }, power.memoryTurns, power.coldHours);
     memory = runtime;
     try { await runtime.start({ fresh }); faults.clear('memory'); }
     catch (error) { memory = undefined; faults.set('memory', `记忆线没能启动：${errorText(error)}`); ctx.logger.error(error); }
@@ -229,17 +230,22 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     const webServer = (lifeCtx as unknown as { webServer: WebServer }).webServer;
     const host = hostLife(lifeCtx);
     const configEditor = lifeCtx.get('configEditor') as ConfigEditor | undefined;
-    const swap = () => swapCompactionOnce({ enabled: config.replaceCompaction, profileDir: (lifeCtx.get('profileContext') as { dir?: string } | undefined)?.dir, done: power.compactionSwapped, markDone: power.markCompactionSwapped,
+    const profileDir = () => (lifeCtx.get('profileContext') as { dir?: string } | undefined)?.dir;
+    const swap = () => swapCompactionOnce({ enabled: config.replaceCompaction, profileDir: profileDir(), done: power.compactionSwapped, markDone: power.markCompactionSwapped,
       swap: async dir => { const row = swapStockCompaction(dir); return row.status === 'unchanged' && configEditor ? swapPresetCompaction(configEditor, config.agentPreset, dir) : row; },
       report: message => { faults.set('compaction-swap', message); lifeCtx.logger.warn(`dsh-world: ${message}`); } });
+    const repair = async () => {
+      const dir = profileDir();
+      if (configEditor && dir) await repairCopiedPresets({ editor: configEditor, profileDir: dir, report: message => { faults.set('preset-repair', message); lifeCtx.logger.warn(`dsh-world: ${message}`); } });
+    };
     // Different worlds may edit the same profile or preset on startup.
-    const swapCompaction = () => worlds.compactionSwap = worlds.compactionSwap.then(swap, swap);
+    const editProfile = () => worlds.profileEdits = worlds.profileEdits.then(swap, swap).then(repair, repair);
     // The preset row the editor rewrites is active only once the host has finished loading.
     const appReady = lifeCtx.get('appReady') as { onReady(listener: () => void): () => void } | undefined;
-    if (!appReady) void swapCompaction();
+    if (!appReady) void editProfile();
     else lifeCtx.effect(() => {
       let closed = false;
-      const cancel = appReady.onReady(() => { if (!closed) void swapCompaction(); });
+      const cancel = appReady.onReady(() => { if (!closed) void editProfile(); });
       return () => { closed = true; cancel(); };
     }, 'dsh-world compaction swap');
     const permissions = createWorkspacePermissions(lifeCtx, options.roomDir, power);

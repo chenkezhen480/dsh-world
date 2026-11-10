@@ -61,15 +61,17 @@ test('the shipped template: room, diary, 我是谁, world line and ask-first rul
   const order = ['# 我的世界', '## 房间', '## 日记', '## 聊天记录', '## 我是谁', '## 世界线', '## 大事先问'].map(heading => home.indexOf(heading));
   assert.deepEqual([...order].sort((a, b) => a - b), order); assert.ok(order.every(index => index > 0));
   assert.match(home, /我的房间是 R。/); assert.match(home, /我的日记本在 D，一天一个文件/);
-  assert.match(home, /房间里还有一个 focus\.md，是我给自己留的纸条[\s\S]*闹钟响和晚上回顾的时候，会把它附在后面/);
-  assert.match(home, /常见的情绪词有这些：平静、开心[\s\S]*可以参考，也可以自由表达[\s\S]*写不写、什么时候写，都由我自己决定/);
+  assert.match(home, /房间里还有一个 mood\.md[^\n]*「名字 数值」[^\n]*0 到 10 的整数[^\n]*开心、兴奋、平静、累、困、烦、难过、紧张[^\n]*在时间前面看到最新的心情值[^\n]*都由我自己决定/);
+  assert.doesNotMatch(home, /focus\.md|常见的情绪词/);
   assert.match(home, /自己的家里（「小鱼的家」）/); assert.match(home, /不是伙伴在说话/);
   assert.match(home, /【我的时间】/); assert.match(home, /用 plan_next 说好打算做什么、做到什么时候/); assert.match(home, /闹钟不是用来叫醒自己的/); assert.match(home, /每天早上 07:30 被叫醒/); assert.match(home, /reach_out/);
   assert.match(home, /问完不用干等，先去做别的；伙伴回我的话会直接插进我正在做的事里。其余的事我自己决定。/);
   assert.match(home, /## 我是谁\n我眼中的自己写在 S\.md，[\s\S]*伙伴写的设定已经在人设里[\s\S]*\n\nSELF\n/);
   assert.match(home, /## 日记\n[^\n]*日记记的是发生过的事和我当时的感受[^\n]*日记不会自动读给我/);
   assert.match(home, /这里只写现在的我[^\n]*具体经历和一时的感受写进日记/);
-  assert.match(home, /已经被截断时[^\n]*重写整篇[^\n]*更短、能完整读完/);
+  assert.match(home, /固定分成六段，标题依次是「性子」「喜欢和不喜欢」「说话方式」「生活习惯」「和伙伴的关系」「自我描述」[^\n]*不另开新标题/);
+  assert.match(home, /每段 800 字以内，全篇 5000 字以内[^\n]*不写日期/);
+  assert.match(home, /已经被截断时[^\n]*按这六段直接重写整篇[^\n]*更短、能完整读完/);
 
   const away = renderWorldPrompt({ names: { companion: '小鱼', partner: '阿明' }, life }, shipped, { file: 'S.md', text: 'SELF' }, false);
   assert.match(away, /我的世界线在「小鱼的家」那个会话里/); assert.match(away, /这些事先问阿明/);

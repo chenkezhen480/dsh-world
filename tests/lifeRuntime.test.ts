@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdir, readFile, utimes, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Context } from '@deepseek-ai/cordis';
 import { createUserMessage, ToolCallId, type GenerateOptions, type StreamChunk } from '@deepseek-ai/dsh-llm';
@@ -767,51 +767,6 @@ test('group facts follow a custom alarm section without rewriting the file or wa
   const latest = s.requests.at(-1)!.messages.at(-1)!;
   assert.doesNotMatch(JSON.stringify(latest), /微信：/);
 });
-test('the note she wrote for herself rides on her own alarm and her look back, and never on a greeting', async t => {
-  const s = await setup(t, () => textResponse('嗯'));
-  await mkdir(join(s.worldDir, 'room'), { recursive: true });
-  const note = join(s.worldDir, 'room', 'focus.md');
-  await writeFile(note, '有点累\n外面在下雨');
-  await utimes(note, new Date('2026-10-23T00:00:00.000Z'), new Date('2026-10-23T00:00:00.000Z'));
-  await s.start();
-  assert.doesNotMatch(textOf(s.requests.at(-1)!), /有点累/, 'the greeting does not carry her note');
-  s.life.planNext({ after_minutes: 1 }, '读一会书');
-  s.timers.advance(60_000); await s.idle();
-  assert.match(textOf(s.requests.at(-1)!), /我 3 小时 1 分前在 focus\.md 写下：有点累；外面在下雨/);
-  const toReview = () => { const next = new Date(s.clock.now); next.setUTCHours(14, 0, 0, 0); if (next.getTime() <= s.clock.now.getTime()) next.setUTCDate(next.getUTCDate() + 1); return next.getTime() - s.clock.now.getTime(); };
-  s.timers.advance(toReview()); await s.idle();
-  const review = textOf(s.requests.at(-1)!);
-  assert.match(review, /回头看看今天/);
-  assert.match(review, /我 14 小时前在 focus\.md 写下：有点累；外面在下雨/);
-});
-
-test('a note that cannot be read is a fault, and her alarm still rings without it', async t => {
-  const s = await setup(t, () => textResponse('嗯'));
-  await mkdir(join(s.worldDir, 'room', 'focus.md'), { recursive: true });
-  await s.start();
-  s.life.planNext({ after_minutes: 1 }, '读一会书');
-  s.timers.advance(60_000); await s.idle();
-  assert.doesNotMatch(textOf(s.requests.at(-1)!), /focus\.md 写下/);
-  assert.match(s.faults().join('\n'), /纸条没读出来/);
-});
-
-test('her own alarm wording is not rewritten and still carries the note; a missing or blank note adds nothing', async t => {
-  const own = '## 闹钟响了\n我自己的闹钟措辞。\n';
-  const s = await setup(t, () => textResponse('嗯'), { before: dir => writeFile(join(dir, 'alarm.md'), own) });
-  await s.start();
-  const ring = async (note: string) => { s.life.planNext({ after_minutes: 1 }, note); s.timers.advance(60_000); await s.idle(); return JSON.stringify(s.requests.at(-1)!.messages.at(-1)!); };
-  assert.doesNotMatch(await ring('读一会书'), /focus\.md 写下/, 'no note yet, nothing appended');
-  await mkdir(join(s.worldDir, 'room'), { recursive: true });
-  const note = join(s.worldDir, 'room', 'focus.md');
-  await writeFile(note, '有点累');
-  await utimes(note, new Date('2026-10-23T00:00:00.000Z'), new Date('2026-10-23T00:00:00.000Z'));
-  assert.match(await ring('接着读'), /我自己的闹钟措辞。[\s\S]*我 3 小时 \d+ 分前在 focus\.md 写下：有点累/);
-  assert.equal(await readFile(join(s.worldDir, 'alarm.md'), 'utf8'), own);
-  await writeFile(note, '  \n\n');
-  assert.doesNotMatch(await ring('再接着读'), /focus\.md 写下/, 'a blank note appends nothing');
-  assert.ok(!s.faults().some(fault => fault.includes('纸条')));
-});
-
 test('an alarm set from a chat session rings at home, not in the chat', async t => {
   const sessionOf = (request: GenerateOptions) => (request as { sessionId?: string }).sessionId;
   let asked = false;

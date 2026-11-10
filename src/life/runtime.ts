@@ -20,7 +20,6 @@ import { summarizeSince } from './activity.ts';
 import { createAlarmTimer, realTimers, type LifeTimers } from './alarmTimer.ts';
 import { createEarlyStopWatch } from './earlyStop.ts';
 import { closedDiaryRefusal } from './diary.ts';
-import { FOCUS_FILE, focusLine, readFocusNote } from './focusNote.ts';
 import { createHome } from './home.ts';
 import type { LifeHost } from './host.ts';
 import { createJournal } from './journal.ts';
@@ -277,17 +276,6 @@ export function createLifeRuntime(deps: LifeDeps) {
     if (reviewing) days.add(reviewing);
     return days;
   }
-  /**
-   * Her own note, appended only to messages the plugin sends her: an alarm and the look back. A greeting leaves it
-   * out, like the group context, so the first words of a new home stay hers alone. A read failure is a fault, never
-   * "she has not written one".
-   */
-  function focusSuffix(now: Date): string | undefined {
-    const note = readFocusNote(join(options.roomDir, FOCUS_FILE), now);
-    if (note.kind === 'failed') { faults.set('focus', `纸条没读出来：${note.message}`); return undefined; }
-    faults.clear('focus');
-    return focusLine(note);
-  }
   /** The evening look back on her day; her 我是谁 is kept as it was, so she can rewrite it freely. */
   function lookBack(review: Review): Promise<void> {
     let snapshot: string | undefined;
@@ -298,14 +286,10 @@ export function createLifeRuntime(deps: LifeDeps) {
       state.review = nextReview(clock(), timeZone, options.schedule().review);
     };
     const existing = (dir: string) => { const file = join(options.worldDir, dir, `${review.day}.jsonl`); return existsSync(file) ? file : undefined; };
-    return sayOwn('每日回顾', 'review', review.at, { review }, take, () => { state.review = review; }, now => {
-      const text = reviewText(review, now, {
-        ...withValue('conversations', existing('conversations')), ...withValue('activity', existing('activity')), ...withValue('snapshot', snapshot),
-        diaryDir: options.diaryDir, selfFile: options.selfFile,
-      }, timeZone, wake(), alarmMessages(), templateValues());
-      const suffix = focusSuffix(now);
-      return suffix ? `${text}\n\n${suffix}` : text;
-    }, () => deps.afterReview?.());
+    return sayOwn('每日回顾', 'review', review.at, { review }, take, () => { state.review = review; }, now => reviewText(review, now, {
+      ...withValue('conversations', existing('conversations')), ...withValue('activity', existing('activity')), ...withValue('snapshot', snapshot),
+      diaryDir: options.diaryDir, selfFile: options.selfFile,
+    }, timeZone, wake(), alarmMessages(), templateValues()), () => deps.afterReview?.());
   }
   async function send(alarm: Alarm): Promise<void> {
     try {
@@ -318,8 +302,7 @@ export function createLifeRuntime(deps: LifeDeps) {
       const now = clock();
       const text = wakeText(alarm, now, timeZone, wake(), alarmMessages(), { ...templateValues(), did: alarm.source === 'fallback' ? '' : didSince(alarm, now) });
       const context = deps.alarmContext?.(now);
-      const suffix = focusSuffix(now);
-      const message = lifeMessage([text, context, suffix].filter(Boolean).join('\n\n'));
+      const message = lifeMessage(context ? `${text}\n\n${context}` : text);
       expect(agent, message, '闹钟', alarm.at, alarm.source, { alarm }, now);
       await say(agent, message);
     } catch (error) {

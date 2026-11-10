@@ -9,6 +9,7 @@ import { compactsWhole } from './compaction.ts';
 import { compactionFor } from './console/homeApply.ts';
 import { Faults } from './faults.ts';
 import { createHistory, excludePresentMessages, renderHistory } from './history.ts';
+import { MOOD_CLEARED, moodText, readMood } from './mood.ts';
 import { createWorldToolRegistry, memoryTools } from './memoryTools.ts';
 import { createPromptSections, WORLD_PROMPT_PREFIX, type WorldPromptSource } from './promptSection.ts';
 import { belongsToWorld, createSourceArchive, inWorld, sessionPreset } from './sourceArchive.ts';
@@ -20,6 +21,7 @@ import { DEFAULT_COLD_HOURS, DEFAULT_MEMORY_TURNS } from './worldSwitch.ts';
 
 export type { WorldPromptSource } from './promptSection.ts';
 const memorySource = 'dsh-world-history';
+const moodSource = 'dsh-world-mood';
 const isRecall = (source: UserMessage['source'] | undefined, worldId?: string) => source?.kind === memorySource && (worldId === undefined || source.worldId === undefined || source.worldId === worldId);
 type RequestPosition = { turn: number; step: number };
 type WorldAssembly = { worldId: string; token?: symbol };
@@ -44,7 +46,7 @@ export function guardWorldContext(ctx: Context, authorize: (session: Session, wo
   const assemblies = new WeakMap<AbortSignal, WorldAssembly>();
   const previousPrompts = new WeakMap<Session, WorldAssembly>();
   const revoked = (source: UserMessage['source'] | undefined, session: Session | undefined) => {
-    if (source?.kind === memorySource) return !session || !authorize(session, source.worldId);
+    if (source?.kind === memorySource || source?.kind === moodSource) return !session || !authorize(session, source.worldId);
     return source?.kind === 'dsh-world-channel-context' && (!session || !authorize(session));
   };
   ctx.on('system-prompt/assemble', async (_assembly, context, next) => {
@@ -178,6 +180,24 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
     }
     return found.length ? found.slice(0, 8).join('、') + (found.length > 8 ? `…共 ${found.length} 个` : '') : '无';
   }
+  /** The text of her latest mood snapshot still on the surface, if any. */
+  function latestMood(session: Session): string | undefined {
+    const seq = recallNodes(session, source => source?.kind === moodSource && source.worldId === config.worldId).at(-1);
+    const event = seq === undefined ? undefined : session.eventAt(seq);
+    return event?.type === 'user/message' ? event.data.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('') : undefined;
+  }
+  /**
+   * Her mood rides just before the time block, appended like it: only when it differs from the latest one on the
+   * surface, never replacing an old one, so the cached prefix stays whole and compaction clears them all.
+   */
+  function moodMessage(session: Session): UserMessage | undefined {
+    if (!config.moodFile) return undefined;
+    const mood = readMood(config.moodFile);
+    if (mood.kind === 'failed') faults.set('mood', `mood.md 读不出来：${mood.message}`); else faults.clear('mood');
+    const latest = latestMood(session);
+    const text = moodText(mood) ?? (latest === undefined ? undefined : MOOD_CLEARED);
+    return text === undefined || text === latest ? undefined : createUserMessage({ content: [{ type: 'text', text }], source: { kind: moodSource, form: 'snapshot', worldId: config.worldId } });
+  }
   function flushRetired(session: Session, state: MemoryState, position: RequestPosition): void {
     const retiring = state.retiring; state.retiring = [];
     retireRecall(session, retiring, position);
@@ -271,6 +291,8 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
         state.inScope = true;
         await archiveNow(agent.id); signal.throwIfAborted();
         if (!included(agent.session)) return leave();
+        const mood = moodMessage(agent.session);
+        if (mood) decision = { ...decision, messages: [...decision.messages, mood] };
         if (!state.reload) return decision;
         // A block that cannot be built leaves the old one in place; she talks on, the fault shows, and the next step tries again.
         let block: UserMessage | undefined, built = true;

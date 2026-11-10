@@ -24,7 +24,7 @@ test('replay is stable, regenerated message is independent, inherited messages a
 // Which sessions are archived at all is the archive scope's call (archiveSelection), never the extractor's.
 test('injected, replaced and delegated messages are not experiences', () => {
   const injected = user('u', 'injected');
-  for (const kind of ['runtime-context', 'time-context', 'dsh-world-history', 'subagent']) {
+  for (const kind of ['runtime-context', 'time-context', 'dsh-world-history', 'dsh-world-mood', 'subagent']) {
     assert.deepEqual(extractConversationRecords({ ...injected, data: { ...injected.data, source: { kind } } } as never, scope), []);
   }
   assert.deepEqual(extractConversationRecords({ ...injected, surfaceOp: { op: 'replace', startSeq: SessionSeq(0), endSeq: SessionSeq(0) } }, scope), []);

@@ -2,7 +2,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { basename, dirname, extname, join } from 'node:path';
 
 /** Characters of her self-description read per session; she is asked to keep it to what matters. */
-export const SELF_CAP = 4000;
+export const SELF_CAP = 5000;
 
 /**
  * Her 我是谁 file as it goes into `{{self}}`: only what she wrote, tagged so her own headings do not read as
