@@ -61,6 +61,8 @@ test('the shipped template: room, diary, 我是谁, world line and ask-first rul
   const order = ['# 我的世界', '## 房间', '## 日记', '## 聊天记录', '## 我是谁', '## 世界线', '## 大事先问'].map(heading => home.indexOf(heading));
   assert.deepEqual([...order].sort((a, b) => a - b), order); assert.ok(order.every(index => index > 0));
   assert.match(home, /我的房间是 R。/); assert.match(home, /我的日记本在 D，一天一个文件/);
+  assert.match(home, /房间里还有一个 focus\.md，是我给自己留的纸条[\s\S]*闹钟响和晚上回顾的时候，会把它附在后面/);
+  assert.match(home, /常见的情绪词有这些：平静、开心[\s\S]*可以参考，也可以自由表达[\s\S]*写不写、什么时候写，都由我自己决定/);
   assert.match(home, /自己的家里（「小鱼的家」）/); assert.match(home, /不是伙伴在说话/);
   assert.match(home, /【我的时间】/); assert.match(home, /用 plan_next 说好打算做什么、做到什么时候/); assert.match(home, /闹钟不是用来叫醒自己的/); assert.match(home, /每天早上 07:30 被叫醒/); assert.match(home, /reach_out/);
   assert.match(home, /问完不用干等，先去做别的；伙伴回我的话会直接插进我正在做的事里。其余的事我自己决定。/);
