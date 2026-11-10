@@ -1,6 +1,6 @@
 import type { Context } from '@deepseek-ai/cordis';
 import type { Agent } from '@deepseek-ai/dsh-agent';
-import { createUserMessage, type ContentBlock } from '@deepseek-ai/dsh-llm';
+import { createUserMessage, type ContentBlock, type UserMessage } from '@deepseek-ai/dsh-llm';
 import { identityPrefix, speakerIdentity, type SpeakerIdentity } from '../shared/identity.ts';
 import type { LifeTimers } from '../../life/alarmTimer.ts';
 import { channelContext, channelMedia, channelReference, CONTEXT_IDENTITY_NOTE, contextJson, type ChannelContextMessage, type ChannelReference } from '../shared/context.ts';
@@ -9,6 +9,9 @@ import { incomingText } from './messages.ts';
 import { admit, type InWorld } from '../../worldScope.ts';
 
 export const WECHAT_REPLY_TIMEOUT_MS = 3 * 60_000;
+
+/** Ran out of time before her home took the words in: nothing was handed over, so asking again later repeats nothing. */
+export class WechatHomeBusy extends Error {}
 
 /** One home, serialized channel requests; each caller receives only its own final answer. */
 export function createWechatHome(deps: { ctx: Context; home(identity: SpeakerIdentity): Promise<Agent>; inWorld?: InWorld; timers?: LifeTimers; images?(identity: SpeakerIdentity, context: ChannelContextMessage[], reference?: ChannelReference): Promise<ContentBlock[]> }) {
@@ -19,12 +22,15 @@ export function createWechatHome(deps: { ctx: Context; home(identity: SpeakerIde
     const media = channelMedia(suppliedMedia, identity);
     const reference = channelReference(suppliedReference, identity);
     return queue.run(async cancelled => {
+      // Until the words are handed over, running out of time only means she was busy (#busy).
+      const handedOver = cancelled.catch((error: Error) => { throw new WechatHomeBusy(error.message, { cause: error }); });
+      handedOver.catch(() => {});
       // Checked again after every wait: the session may leave her world meanwhile.
-      const agent = admit(deps.inWorld, await Promise.race([deps.home(identity), cancelled]));
-      await Promise.race([agent.whenIdle(), cancelled]);
+      const agent = admit(deps.inWorld, await Promise.race([deps.home(identity), handedOver]));
+      await Promise.race([agent.whenIdle(), handedOver]);
       admit(deps.inWorld, agent);
       if ((reference?.image || [...context, ...media].some(message => message.image || message.reference?.image)) && !deps.images) throw new Error('Image admission is unavailable');
-      const images = await Promise.race([deps.images?.(identity, [...context, ...media], reference) ?? Promise.resolve([]), cancelled]);
+      const images = await Promise.race([deps.images?.(identity, [...context, ...media], reference) ?? Promise.resolve([]), handedOver]);
       queue.alive();
       const content = incomingText(text, reference);
       const source = content ? { kind: 'user' as const, identity } : { kind: 'dsh-world-channel-context' as const, form: 'recall' as const };
@@ -38,7 +44,9 @@ export function createWechatHome(deps: { ctx: Context; home(identity: SpeakerIde
       const instructions = parts.length || images.length
         ? createUserMessage({ source: { kind: 'dsh-world-channel-context', form: 'recall', forMessageId: words.id }, content: [...(parts.length ? [{ type: 'text' as const, text: parts.join('\n') }] : []), ...images] })
         : undefined;
-      const reply = await askTurn(deps.ctx, agent, words, { name: 'WeChat', context: instructions, cancelled, inWorld: deps.inWorld });
+      // What she sends to this chat herself is her answer; the rest of her turn is not this request's to wait for.
+      const answered = (sent: UserMessage['source']) => sent.kind === 'dsh-world-wechat-outgoing' && sent.identity.conversationId === identity.conversationId;
+      const reply = await askTurn(deps.ctx, agent, words, { name: 'WeChat', context: instructions, cancelled, inWorld: deps.inWorld, answered });
       queue.alive();
       return { id: words.id, text: reply };
     });

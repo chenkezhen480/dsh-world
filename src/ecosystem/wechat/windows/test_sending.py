@@ -5,7 +5,7 @@ import io
 from urllib.error import HTTPError
 from unittest.mock import Mock, patch
 from pathlib import Path
-from adapter import MessageStore, flushOutgoing, watch
+from adapter import HomeBusy, MessageStore, flushOutgoing, watch
 
 
 class SendingTest(unittest.TestCase):
@@ -29,6 +29,30 @@ class SendingTest(unittest.TestCase):
                 self.assertEqual(store.cursor('family@chatroom'), 10, 'the held group is not read past its unconfirmed message')
                 self.assertEqual(store.pendingChats(), {'family@chatroom': 'm.db:11'})
                 self.assertEqual(''.join(call.args[0] for call in stderr.write.call_args_list).count('仅此聊天'), 1, 'said once, not every poll')
+            finally: store.close()
+
+    def test_a_message_the_busy_home_never_took_in_is_handed_over_again_instead_of_holding_the_chat(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); store = MessageStore(root / 'state.sqlite')
+            store.baseline('private', 20); store.baseline('other', 30)
+            config = dict(selfId='bot', moduleFile=str(root / 'wechat.json'), chats=[dict(id='private', name='伙伴'), dict(id='other', name='朋友')])
+            rows = {'private': [dict(local_id=21, shard='m.db', sort_seq=21, type='文本', sender_username='owner', content='你还在忙吗')],
+                    'other': [dict(local_id=31, shard='m.db', sort_seq=31, type='文本', sender_username='friend', content='在吗')]}
+            database = Mock(); database.get_messages.side_effect = lambda chat, limit, offset=0: rows[chat][offset:offset + limit]
+            answers = {'你还在忙吗': [HomeBusy('DSH HTTP 409: home busy'), dict(text='')], '在吗': [dict(text='')]}
+            asked = []
+            def ask(_file, message):
+                asked.append(message['text']); answer = answers[message['text']].pop(0)
+                if isinstance(answer, Exception): raise answer
+                return answer
+            poll = Mock(side_effect=[{}] * 12 + [StopIteration('done')])
+            try:
+                with patch('adapter.time.sleep'), patch('adapter.time.monotonic', side_effect=range(0, 10_000, 10)), patch('sys.stderr') as stderr, self.assertRaises(StopIteration):
+                    watch(config, database, store, Mock(), ask=ask, report=lambda *_: None, poll=poll)
+                self.assertEqual(asked, ['你还在忙吗', '在吗', '你还在忙吗'], 'the other chat goes on; the busy one is asked again')
+                self.assertEqual(store.pendingChats(), {}, 'nothing waits for a person to check')
+                self.assertEqual(store.cursor('private'), 21)
+                self.assertIn('不会重复', ''.join(call.args[0] for call in stderr.write.call_args_list))
             finally: store.close()
 
     def test_uncertain_claim_only_reports_its_receipt_and_does_not_block_the_next_job(self):

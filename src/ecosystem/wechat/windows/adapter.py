@@ -52,6 +52,10 @@ class HomeRequestError(RuntimeError):
     pass
 
 
+class HomeBusy(RuntimeError):
+    """The home ran out of time before taking the message in; asking again later cannot repeat it."""
+
+
 @contextmanager
 def exclusiveRun(directory):
     import msvcrt
@@ -275,6 +279,11 @@ class MessageStore:
                 self.db.execute('UPDATE cursors SET seq=MAX(seq,?) WHERE chatId=?', (int(row['sort_seq']), chatId))
         print(f'微信消息 {chatId} / {key}：{error}', file=sys.stderr, flush=True)
 
+    def abandonBatch(self, chatId, rows):
+        """Undo `beginBatch` for messages the home never took in, so a later poll hands them over again."""
+        with self.db:
+            self.db.executemany("DELETE FROM messages WHERE chatId=? AND messageId=? AND status='pending'", [(chatId, messageKey(row)) for row in rows])
+
     def finishBatch(self, chatId, rows):
         with self.db:
             result = self.db.executemany("UPDATE messages SET status='done' WHERE chatId=? AND messageId=? AND status='pending'", [(chatId, messageKey(row)) for row in rows])
@@ -352,6 +361,8 @@ def postHome(moduleFile, message):
                 try: detail = error.read(1024).decode('utf-8', errors='replace')
                 except (IncompleteRead, URLError, TimeoutError, ConnectionError) as readError:
                     detail = f'响应正文未读完：{readError}'
+            if error.code == 409 and not retryable:
+                raise HomeBusy(f'DSH HTTP 409: {detail or error.reason}') from error
             transient = error.code in (502, 503, 504)
             failure = HomeRequestError if transient else RuntimeError
             if not retryable or not transient or attempt == 4:
@@ -567,7 +578,12 @@ def watch(config, database, store, send, ask=askHome, report=reportReceipt, poll
                     mergeFollowing(database, chat, config, message, rows[1:])
                     store.beginBatch(chat['id'], rows)
                     if message:
-                        askWhileSending(config, message, database, store, send, ask, report, poll)
+                        try: askWhileSending(config, message, database, store, send, ask, report, poll)
+                        except HomeBusy as error:
+                            # She is still busy and has not seen it: hand the same messages over on a later poll.
+                            store.abandonBatch(chat['id'], rows)
+                            print(f'她还在忙，这条稍后再交给她（不会重复）：{chat["id"]} / {messageKey(rows[0])}：{error}', file=sys.stderr, flush=True)
+                            break
                     store.finishBatch(chat['id'], rows)
                     flushOutgoing(config, database, store, send, poll=poll, report=report)
             config['_presence'] = dict(observedAt=datetime.now(timezone.utc).isoformat(), groups=store.presence.snapshot(config))

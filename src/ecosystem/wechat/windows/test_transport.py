@@ -6,7 +6,7 @@ from http.client import IncompleteRead
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from unittest.mock import patch
-from adapter import postHome
+from adapter import HomeBusy, postHome
 
 
 class TransportTest(unittest.TestCase):
@@ -48,6 +48,13 @@ class TransportTest(unittest.TestCase):
                     postHome(self.file, message)
                 self.assertEqual(request.call_count, 1)
                 sleep.assert_not_called()
+
+    def test_a_busy_home_is_its_own_failure_and_is_not_retried_inside_the_request(self):
+        with patch('adapter.urlopen', side_effect=self.unavailable(409, 'home busy; message not taken in, ask again later')) as request, patch('adapter.time.sleep') as sleep:
+            with self.assertRaisesRegex(HomeBusy, '409.*not taken in'):
+                postHome(self.file, dict(text='她在忙'))
+            self.assertEqual(request.call_count, 1)
+            sleep.assert_not_called()
 
     def test_connection_failures_have_five_attempts_and_no_final_sleep(self):
         for error in (URLError(ConnectionRefusedError('refused')), TimeoutError('timeout'), ConnectionResetError('reset')):

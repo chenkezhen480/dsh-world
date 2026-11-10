@@ -6,7 +6,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { jsonObject, knownHost, readBody, sendJson, type JsonResult } from '../../http.ts';
 import { speakerIdentity, type SpeakerIdentity } from '../shared/identity.ts';
 import { durableWrite } from '../../life/lifeStore.ts';
-import { createWechatHome } from './home.ts';
+import { createWechatHome, WechatHomeBusy } from './home.ts';
 import type { PreparedReply, WechatReceipt } from './archive.ts';
 import { channelContext, channelMedia, channelReference, type ChannelContextMessage, type ChannelReference } from '../shared/context.ts';
 import { admitContextImages } from './images.ts';
@@ -114,7 +114,10 @@ export function createWechatModule(deps: { ctx: Context; home(identity: SpeakerI
     if (identity.channel !== 'wechat') return { status: 400, body: { error: 'bad channel' } };
     if ((identity.conversationType === 'group') !== identity.conversationId.endsWith('@chatroom')) return { status: 400, body: { error: 'bad conversation type' } };
     try { return { status: 200, body: { accepted: true, ...(await home.ask(text, identity, context, media, reference)) } }; }
-    catch (error) { deps.ctx.logger.warn('dsh-world WeChat request failed:', error); return { status: 503, body: { error: 'home request failed; delivery must be checked before retrying' } }; }
+    catch (error) {
+      if (error instanceof WechatHomeBusy) return { status: 409, body: { error: 'home busy; message not taken in, ask again later' } };
+      deps.ctx.logger.warn('dsh-world WeChat request failed:', error); return { status: 503, body: { error: 'home request failed; delivery must be checked before retrying' } };
+    }
   }
   return {
     presence: (now: Date) => !stopped && accountState === 'online' ? presence.summary(now) : undefined,
