@@ -52,14 +52,35 @@ export function readMood(path: string): Mood {
 /** Shown once after an earlier snapshot when she has emptied or removed the file, so the old values stop counting. */
 export const MOOD_CLEARED = '【我的心情值】现在没有心情值（mood.md 不在或是空的），之前那条不再算数。';
 
+export interface MoodValue { name: string; value: number; own: boolean }
+/** The default set first, each at 0 when unset, then the words she added herself in her order. */
+export function moodValues(mood: Extract<Mood, { kind: 'mood' }>): MoodValue[] {
+  const defaults = DEFAULT_MOODS.map(name => ({ name, value: mood.values.get(name) ?? 0, own: false }));
+  const own = [...mood.values].filter(([name]) => !(DEFAULT_MOODS as readonly string[]).includes(name)).map(([name, value]) => ({ name, value, own: true }));
+  return [...defaults, ...own];
+}
+
 /** What she reads just before the time block, in her own voice; undefined when there is nothing to show. */
 export function moodText(mood: Mood): string | undefined {
   if (mood.kind === 'none') return undefined;
   if (mood.kind === 'failed') return '【我的心情值】mood.md 读不出来，之前那条不再算数。';
-  const shown = DEFAULT_MOODS.map(name => `${name} ${mood.values.get(name) ?? 0}`);
-  const own = [...mood.values].filter(([name]) => !(DEFAULT_MOODS as readonly string[]).includes(name)).map(([name, value]) => `${name} ${value}`);
+  const values = moodValues(mood), pair = (value: MoodValue) => `${value.name} ${value.value}`;
+  const shown = values.filter(value => !value.own).map(pair), own = values.filter(value => value.own).map(pair);
   const lines = [`【我的心情值】${shown.join(' · ')}${own.length ? `｜我自己加的：${own.join(' · ')}` : ''}（以最新一条为准）`];
   if (mood.trivia.length) lines.push(`旁边：${mood.trivia.join('；')}${mood.cut ? '……后面还有' : ''}`);
   if (mood.unread) lines.push(`（mood.md 里有 ${mood.unread} 行没读懂）`);
   return lines.join('\n');
+}
+
+export type MoodView =
+  | { kind: 'none' }
+  | { kind: 'failed'; message: string }
+  | { kind: 'mood'; values: MoodValue[]; trivia: string[]; cut: boolean; unread: number; updatedAt: string | null };
+/** The world console's read-only view: what she reads, plus when she last changed the file. */
+export function moodView(path: string): MoodView {
+  const mood = readMood(path);
+  if (mood.kind !== 'mood') return mood;
+  let updatedAt: string | null = null;
+  try { updatedAt = statSync(path).mtime.toISOString(); } catch { /* removed since it was read; the values still stand */ }
+  return { kind: 'mood', values: moodValues(mood), trivia: mood.trivia, cut: mood.cut, unread: mood.unread, updatedAt };
 }
