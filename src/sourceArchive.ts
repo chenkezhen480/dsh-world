@@ -1,6 +1,7 @@
 import type { Context } from '@deepseek-ai/cordis';
 import { SessionId, SessionLogOffset, type Session } from '@deepseek-ai/dsh-session';
 import type {} from '@deepseek-ai/dsh-session-persistence';
+import { abortable } from './abortable.ts';
 import { extractConversationRecords, isOrdinarySession } from './archive.ts';
 import type { ArchiveStore } from './store.ts';
 import type { WorldConfig } from './types.ts';
@@ -116,38 +117,45 @@ export function createSourceArchive(ctx: Context, config: WorldConfig, store: Ar
     tail = job.catch(error => { ctx.logger.error(error); });
     return job;
   }
-  return {
-    schedule,
-    faults: () => faults.list(),
-    /**
-     * Every session the archive has seen, replayed again so nothing written while the plugin was not loaded is
-     * missed; with `skip`, what was said while her world was stopped is passed over instead.
-     */
-    async catchUp(skip = false): Promise<void> {
-      // One session's failure is kept for flush(); it must not stop the sessions after it.
-      const replayOne = (id: string) => (skip ? enqueue(() => replay(id, true)) : schedule(id)).catch(() => {});
+  /** Replays what was missed, or passes over messages written while the world was stopped when `skip` is set. */
+  async function catchUp(skip = false, signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) return;
+    // Keep the current replay in the queue so its transaction and file close finish before shutdown.
+    const replayOne = (id: string) => (skip ? enqueue(() => replay(id, true)) : schedule(id)).catch(() => {});
+    try {
       // The host exposes a metadata inventory; every selected message log is still read in pages.
-      const snapshots = await ctx.sessionPersistence.list();
+      const snapshots = await abortable(ctx.sessionPersistence.list({ signal }), signal);
       const visited = new Set<string>();
       for (let offset = 0; offset < snapshots.length; offset += pageSize) {
         for (const { header } of snapshots.slice(offset, offset + pageSize)) {
+          if (signal?.aborted) return;
           if (!isOrdinarySession(header) || !archived(header.id)) continue;
           visited.add(header.id);
           await replayOne(header.id);
         }
       }
       let after = '';
-      for (let ids = store.sourcePage(after); ids.length; ids = store.sourcePage(after)) {
+      while (!signal?.aborted) {
+        const ids = store.sourcePage(after);
+        if (!ids.length) return;
         for (const id of ids) {
+          if (signal?.aborted) return;
           after = id;
           if (visited.has(id)) continue;
           // A session deleted from the host (not merely archived there) keeps its records but has nothing left to resume.
-          if (!await ctx.sessionPersistence.stat(SessionId(id))) { forget(id); continue; }
+          const exists = await abortable(ctx.sessionPersistence.stat(SessionId(id), { signal }), signal);
+          if (signal?.aborted) return;
+          if (!exists) { forget(id); continue; }
           if (!archived(id)) continue;
           await replayOne(id);
         }
       }
-    },
+    } catch (error) { if (!signal?.aborted || error !== signal.reason) throw error; }
+  }
+  return {
+    schedule,
+    catchUp,
+    faults: () => faults.list(),
     /** Moves past everything a session holds now without keeping it (said while her world was stopped). */
     skip: (sessionId: string) => enqueue(() => replay(sessionId, true)),
     /** Waits for every queued replay; rejects while any session still has an unresolved failure. */

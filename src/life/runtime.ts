@@ -429,7 +429,9 @@ export function createLifeRuntime(deps: LifeDeps) {
     if (!state.review) { state.review = nextReview(clock(), timeZone, deps.options.schedule().review); record(() => store.write(state)); }
     if (followSchedule()) record(() => store.write(state));
     try {
-      const agent = await home.open(); faults.clear('home');
+      const agent = await home.open();
+      if (stopped) return;
+      faults.clear('home');
       reconcile(agent);
       // The morning fallback is the plugin's, not a plan of hers: starting again wakes her rather than leaving her asleep till then.
       if (options.resumed && !state.greeting && state.alarm?.source !== 'plan') { state.greeting = { at: clock().toISOString(), kind: 'return' }; record(() => store.write(state)); }

@@ -5,6 +5,7 @@ import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { Readable } from 'node:stream';
+import { setImmediate as nextImmediate } from 'node:timers/promises';
 import type { Context } from '@deepseek-ai/cordis';
 import { join } from 'node:path';
 import { createUserMessage, isAgentLoopRequest, LlmError, ToolCallId, type GenerateOptions } from '@deepseek-ai/dsh-llm';
@@ -1151,6 +1152,111 @@ test('a running world whose workspace service starts later still reads her sessi
   }, 'the earlier session to be archived');
   assert.deepEqual(logged, []); assert.equal(errors.length, 0);
 });
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(done => { resolve = done; });
+  return { promise, resolve };
+}
+
+test('an existing world session gets its prompt and persona while startup archive catch-up is pending', async t => {
+  const requests: GenerateOptions[] = [];
+  const { ctx, root, cleanup } = await hostFixture(t, request => { requests.push(request); return textResponse('reply'); });
+  isolateHome(t, root);
+  const worldDir = join(root, 'worlds/fish');
+  const room = join(worldDir, 'room');
+  await mkdir(room, { recursive: true });
+  await writeFile(join(worldDir, 'world.json'), '{"running":true}');
+  await writeFile(join(worldDir, 'persona.md'), '## 她是谁\nSTARTUP_PERSONA');
+  const { agent } = await ctx.agents.create({ sessionId: SessionId('already-open'), meta: { agentPreset: config.agentPreset, cwd: room }, agentOptions: { provider: 'test', model: 'test' } });
+  ctx.provide('workspaceRegistry', { list: () => [{ path: room, sessionIds: [agent.id] }] });
+  const list = ctx.sessionPersistence.list.bind(ctx.sessionPersistence);
+  const listed = deferred<void>(), release = deferred<void>();
+  t.mock.method(ctx.sessionPersistence, 'list', async () => { listed.resolve(); await release.promise; return list(); });
+  const plugin = ctx.plugin(worldPlugin, { ...config, life: false });
+  cleanup.push(() => plugin.dispose());
+  try {
+    await listed.promise;
+    await plugin.await();
+    agent.followup(user('first while startup runs'));
+    await agent.whenIdle();
+    assert.equal(requests.length, 1);
+    assert.match(textOf(requests[0]!), /# 我的世界/);
+    assert.match(textOf(requests[0]!), /STARTUP_PERSONA/);
+  } finally { release.resolve(); }
+});
+
+test('unloading cancels startup catch-up before the host inventory returns and permits reloading', async t => {
+  const { ctx, root } = await hostFixture(t, () => textResponse('reply'));
+  isolateHome(t, root);
+  await mkdir(join(root, 'worlds/fish'), { recursive: true });
+  await writeFile(join(root, 'worlds/fish/world.json'), '{"running":true}');
+  const listed = deferred<AbortSignal | undefined>();
+  const release = deferred<void>();
+  let calls = 0;
+  t.mock.method(ctx.sessionPersistence, 'list', async ({ signal }: Parameters<typeof ctx.sessionPersistence.list>[0] = {}) => {
+    if (++calls === 1) { listed.resolve(signal); await release.promise; }
+    return [];
+  });
+  const logged = captureErrors(ctx);
+  const plugin = ctx.plugin(worldPlugin, config);
+  const signal = await listed.promise;
+  const disposing = plugin.dispose();
+  try {
+    assert.equal(await Promise.race([disposing.then(() => 'disposed'), nextImmediate('pending')]), 'disposed');
+    assert.equal(signal?.aborted, true, 'the host also receives cancellation');
+    const reloaded = ctx.plugin(worldPlugin, config);
+    try { await reloaded.await(); } finally { await reloaded.dispose(); }
+  } finally { release.resolve(); await disposing; }
+  await nextImmediate();
+  assert.deepEqual(logged, []);
+});
+
+test('a running world finishes plugin setup and can stop while home restoration waits on the host', async t => {
+  const { ctx, root, cleanup } = await hostFixture(t, () => textResponse('reply'));
+  isolateHome(t, root);
+  await mkdir(join(root, 'worlds/fish'), { recursive: true });
+  await writeFile(join(root, 'worlds/fish/world.json'), '{"running":true}');
+  const { routes } = provideLifeHost(ctx);
+  const registry = ctx.get('workspaceRegistry') as { create(path: string, title: string): Promise<unknown> };
+  const create = registry.create.bind(registry);
+  const entered = deferred<void>();
+  const release = deferred<void>();
+  t.mock.method(registry, 'create', async (path: string, title: string) => { entered.resolve(); await release.promise; return create(path, title); });
+  const injection = deferred<{ await(): Promise<unknown> }>();
+  ctx.on('internal/plugin', fiber => { if ('sessionController' in fiber.inject) injection.resolve(fiber); });
+  const plugin = ctx.plugin(worldPlugin, { ...config, life: true });
+  cleanup.push(() => plugin.dispose());
+  try {
+    await entered.promise;
+    const fiber = await injection.promise;
+    assert.equal(await Promise.race([fiber.await().then(() => true), nextImmediate(false)]), true, 'host setup waits for plugin initialization');
+    const stopped = consolePost(routes, '/dsh-world/worlds/fish/console/stop');
+    assert.equal(await Promise.race([stopped.then(() => true), nextImmediate(false)]), true, 'stop can run before the host returns');
+  } finally { release.resolve(); }
+  await nextImmediate();
+  assert.equal(ctx.agents.list().length, 0, 'the old startup must not create a home after stop');
+});
+
+test('a running world with appReady restores the life line after host boot', async t => {
+  const { ctx, root, cleanup } = await hostFixture(t, () => textResponse('reply'));
+  isolateHome(t, root);
+  await mkdir(join(root, 'worlds/fish'), { recursive: true });
+  await writeFile(join(root, 'worlds/fish/world.json'), '{"running":true}');
+  const ready = deferred<() => void>();
+  ctx.provide('appReady', { onReady(listener: () => void) { ready.resolve(listener); return () => {}; } });
+  const { routes, workspaces } = provideLifeHost(ctx);
+  const plugin = ctx.plugin(worldPlugin, { ...config, life: true, replaceCompaction: false });
+  cleanup.push(() => plugin.dispose());
+  await plugin.await();
+  const onReady = await ready.promise;
+  await nextImmediate();
+  assert.ok(routes.some(route => route.path === '/dsh-world/worlds/fish'));
+  assert.equal(workspaces.size, 0, 'the host has not signaled readiness');
+  onReady();
+  const { homeSessionId } = await firstWakeDone(ctx, root);
+  assert.ok(homeSessionId, 'the saved running world resumed automatically');
+});
+
 test('a session deleted from the host does not stop the world from starting, and what it archived stays', async t => {
   const { ctx, root, cleanup, errors } = await hostFixture(t, async function* () { yield* textResponse('reply'); });
   isolateHome(t, root);
@@ -1162,6 +1268,11 @@ test('a session deleted from the host does not stop the world from starting, and
   ctx.provide('workspaceRegistry', { list: () => [{ path: join(root, 'worlds/fish/room'), sessionIds: ['deleted'] }] });
   const plugin = ctx.plugin(worldPlugin, config); cleanup.push(() => plugin.dispose());
   await plugin.await();
+  await until(async () => {
+    const archive = createArchiveStore({ ...config, root });
+    try { return archive.sourcePage('').length === 0; } finally { archive.close(); }
+  }, 'the deleted session progress to be removed');
+  await plugin.dispose();
   assert.equal(errors.length, 0);
   const archive = createArchiveStore({ ...config, root });
   const records = await archive.readPage({ limit: 10 }).then(page => page.records).finally(() => archive.close());
@@ -1181,6 +1292,7 @@ test('a session only archived in the host keeps its resume point', async t => {
   ctx.provide('workspaceRegistry', { archivedSessionIds: ['shelved'], list: () => [{ path: join(root, 'worlds/fish/room'), sessionIds: ['shelved'] }] });
   const plugin = ctx.plugin(worldPlugin, config); cleanup.push(() => plugin.dispose());
   await plugin.await();
+  await plugin.dispose();
   assert.equal(errors.length, 0);
   const after = createArchiveStore({ ...config, root });
   try { assert.deepEqual(after.sourcePage(''), ['shelved']); } finally { after.close(); }

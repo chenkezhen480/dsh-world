@@ -135,7 +135,7 @@ function profileWorlds(root: Context): ProfileWorlds {
  * memory block, persona, world prompt, archive and life line come and go together. The switch is kept in
  * `<world>/world.json`, so it outlasts a restart.
  */
-export async function apply(ctx: Context, config: Config): Promise<void> {
+export function apply(ctx: Context, config: Config): void {
   const { root } = ctx;
   const { worldId } = config;
   if (!validWorldId(worldId)) throw new TypeError('dsh-world: invalid worldId');
@@ -193,11 +193,11 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
    */
   async function startMemory(fresh: boolean): Promise<void> {
     if (memory || disposed) return;
-    const prompt = { file: worldPromptFile, persona: personaFile, conversationsDir: join(worldDir, 'conversations'), names: names(), memoryTools: true, ...(config.life ? { life: options } : {}) };
-    const runtime = createWorldRuntime(ctx, { ...memoryConfig, selfFile, moodFile: join(roomDir, MOOD_FILE) }, store, { prompt, names, isHome: id => isHome(id), archiveSession, inWorkspace, memory: memoryService }, power.memoryTurns, power.coldHours);
-    memory = runtime;
-    try { await runtime.start({ fresh }); faults.clear('memory'); }
-    catch (error) { memory = undefined; faults.set('memory', `记忆线没能启动：${errorText(error)}`); ctx.logger.error(error); }
+    try {
+      const prompt = { file: worldPromptFile, persona: personaFile, conversationsDir: join(worldDir, 'conversations'), names: names(), memoryTools: true, ...(config.life ? { life: options } : {}) };
+      memory = createWorldRuntime(ctx, { ...memoryConfig, selfFile, moodFile: join(roomDir, MOOD_FILE) }, store, { prompt, names, isHome: id => isHome(id), archiveSession, inWorkspace, memory: memoryService }, power.memoryTurns, power.coldHours);
+      await memory.start({ fresh }); faults.clear('memory');
+    } catch (error) { memory = undefined; faults.set('memory', `记忆线没能启动：${errorText(error)}`); ctx.logger.error(error); }
   }
   async function stopMemory(): Promise<void> {
     const running = memory; memory = undefined;
@@ -213,20 +213,22 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     });
     return () => {
       disposed = true;
+      memory?.cancelCatchUp();
       return changeWorld(async () => {
         try { await stopLifeLine?.(); }
         finally { await stopMemory().finally(() => store.close()).finally(() => worlds.rooms.delete(worldId)); }
       });
     };
   }, 'dsh-world memory line');
-  if (power.running()) await changeWorld(() => startMemory(false));
+  // Archive replay may outlast a host reload. Register all effects in this apply call.
+  if (power.running()) lifecycle = startMemory(false);
   // The host's workspace service may come up after this plugin; what the first catch-up could not place is read then.
   ctx.inject(['workspaceRegistry'], injected => {
     void changeWorld(async () => { if (!disposed) await memory?.retryCatchUp(); }).catch(error => injected.logger.error(error));
   });
 
   // The console and the life line need the desktop host.
-  ctx.inject(['sessionController', 'permissionPresets', 'webServer'], async lifeCtx => {
+  ctx.inject(['sessionController', 'permissionPresets', 'webServer'], lifeCtx => {
     const webServer = (lifeCtx as unknown as { webServer: WebServer }).webServer;
     const host = hostLife(lifeCtx);
     const configEditor = lifeCtx.get('configEditor') as ConfigEditor | undefined;
@@ -240,14 +242,6 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     };
     // Different worlds may edit the same profile or preset on startup.
     const editProfile = () => worlds.profileEdits = worlds.profileEdits.then(swap, swap).then(repair, repair);
-    // The preset row the editor rewrites is active only once the host has finished loading.
-    const appReady = lifeCtx.get('appReady') as { onReady(listener: () => void): () => void } | undefined;
-    if (!appReady) void editProfile();
-    else lifeCtx.effect(() => {
-      let closed = false;
-      const cancel = appReady.onReady(() => { if (!closed) void editProfile(); });
-      return () => { closed = true; cancel(); };
-    }, 'dsh-world compaction swap');
     const permissions = createWorkspacePermissions(lifeCtx, options.roomDir, power);
     // SnowLuma 的控制台在 OneBot 通道关闭时仍可用。
     const doors = createConsoleDoors({ worldDir, snowlumaHome: config.qqNative?.snowlumaHome ?? '' });
@@ -256,10 +250,9 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     );
     lifeCtx.effect(() => () => unregisterQq(), 'dsh-world qq route');
     let life: LifeRuntime | undefined;
-    const sdkAbort = new AbortController();
+    const hostAbort = new AbortController();
     const sdkAvailable = () => { try { import.meta.resolve('@snowluma/sdk'); return true; } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ERR_MODULE_NOT_FOUND') return false; throw error; } };
-    const qqSdk = createQqSdkInstaller({ available: sdkAvailable, profile: () => lifeCtx.get('profileContext') as QqSdkProfile | undefined, signal: sdkAbort.signal });
-    lifeCtx.effect(() => () => sdkAbort.abort(new Error('世界插件已卸载')), 'dsh-world SDK installation');
+    const qqSdk = createQqSdkInstaller({ available: sdkAvailable, profile: () => lifeCtx.get('profileContext') as QqSdkProfile | undefined, signal: hostAbort.signal });
     let qqChange = 0;
     const homeApply = createHomeApply({
       ctx: lifeCtx,
@@ -283,7 +276,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     async function startWechat(current: LifeRuntime): Promise<void> {
       if (wechat || !config.wechat) return;
       await wechatClosing;
-      if (wechat || life !== current || disposed || !power.running() || !power.wechatEnabled()) return;
+      if (wechat || life !== current || disposed || hostAbort.signal.aborted || !power.running() || !power.wechatEnabled()) return;
       const groupSessions = createChannelSessions({ ctx: lifeCtx, host, store, roomDir: options.roomDir, roomTitle: roomTitle(names()), agentPreset: config.agentPreset });
       channels = groupSessions;
       wechat = createWechatModule({ ctx: lifeCtx, worldId: config.worldId, inWorld: inWorldSession, home: identity => identity.conversationType === 'group' ? groupSessions.open(identity) : current.home(), origin: () => host.origin(), file: join(worldDir, 'wechat.json'), incomingDir: join(worldDir, 'wechat-incoming'), allowedHosts: config.allowedHosts, settings: () => ({ contextMessages: power.wechatContext(), bufferSeconds: power.wechatBufferSeconds() }),
@@ -307,7 +300,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
         if (qqSdk.needsRestart()) throw new Error('SDK 已安装，请重启 DSH 后启用 QQ');
         if (!sdkAvailable()) throw new Error('QQ 缺少 SnowLuma SDK，请关闭再开启 QQ，按需安装依赖');
         const { createQqNativeModule } = await import('./ecosystem/qq-native/index.ts');
-        if (qqNative || life !== current || !power.running() || !power.qqEnabled()) return;
+        if (qqNative || life !== current || disposed || hostAbort.signal.aborted || !power.running() || !power.qqEnabled()) return;
         const groupSessions = createChannelSessions({ ctx: lifeCtx, host, store, roomDir: options.roomDir, roomTitle: roomTitle(names()), agentPreset: config.agentPreset });
         qqChannels = groupSessions;
         qqNative = createQqNativeModule({
@@ -356,23 +349,28 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     function stopQqNative(): void { qqNative?.stop(); qqNative = undefined; qqChannels?.stop(); qqChannels = undefined; faults.clear('qq'); }
     async function startLife(resumed: boolean): Promise<void> {
       if (!lifeStore || life) return;
+      let current: LifeRuntime | undefined;
+      const failed = async (error: unknown) => {
+        if (disposed || hostAbort.signal.aborted || life !== current) return;
+        faults.set('life', `生活线没能启动：${errorText(error)}`); lifeCtx.logger.error(error);
+        await stopLife();
+      };
       try {
         await lifeStop;
-        if (disposed) return;
+        if (disposed || hostAbort.signal.aborted) return;
         const outlets = config.outlets.map(outlet => createOutlet(outlet, () => host.origin()));
         const notifier: Notifier = { ...(config.toast && toastSupported() ? { toast: windowsToast(config.toastAppId || undefined) } : {}), outlets };
-        const current = createLifeRuntime({ ctx: lifeCtx, config: { ...config, companionName: names().companion }, options, store: lifeStore, host, notifier, dailyBudget: power.dailyBudget, inWorkspace, photos, alarmContext: now => wechat?.presence(now), afterReview: () => { if (power.compactAfterReview()) homeApply.request(); } });
-        life = current; isHome = current.isHome;
-        if (config.bridge) { bridge = createBridge({ ctx: lifeCtx, prefix, home: () => current.home(), inWorld: inWorldSession, outlets, origin: () => host.origin(), file: join(worldDir, 'bridge.json'), name: names().companion }); bridge.start(); }
-        if (config.wechat && power.wechatEnabled()) await startWechat(current);
-        if (config.qqNative?.enabled && power.qqEnabled()) await startQqNative(current);
+        const runtime = createLifeRuntime({ ctx: lifeCtx, config: { ...config, companionName: names().companion }, options, store: lifeStore, host, notifier, dailyBudget: power.dailyBudget, inWorkspace, photos, alarmContext: now => wechat?.presence(now), afterReview: () => { if (power.compactAfterReview()) homeApply.request(); } });
+        life = current = runtime; isHome = runtime.isHome;
+        if (config.bridge) { bridge = createBridge({ ctx: lifeCtx, prefix, home: () => runtime.home(), inWorld: inWorldSession, outlets, origin: () => host.origin(), file: join(worldDir, 'bridge.json'), name: names().companion }); bridge.start(); }
+        if (config.wechat && power.wechatEnabled()) await startWechat(runtime);
+        if (config.qqNative?.enabled && power.qqEnabled()) await startQqNative(runtime);
+        if (disposed || hostAbort.signal.aborted) return;
         faults.clear('life');
-        await current.start({ resumed });
-      } catch (error) {
-        // The console still opens and says why, instead of looking as if the life line were simply off.
-        await stopLife();
-        faults.set('life', `生活线没能启动：${errorText(error)}`); lifeCtx.logger.error(error);
-      }
+        const started = runtime.start({ resumed });
+        if (resumed) await started;
+        else void started.catch(error => changeWorld(() => failed(error))).finally(sources.invalidate).catch(error => lifeCtx.logger.error(error));
+      } catch (error) { await failed(error); }
     }
     function stopLife(): Promise<void> {
       isHome = id => id === storedHome();
@@ -383,7 +381,10 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       return lifeStop = Promise.all([lifeStop, closingWechat, homeApply.cancel()]).then(() => {});
     }
     stopLifeLine = stopLife;
-    lifeCtx.effect(() => () => changeWorld(stopLife), 'dsh-world life line');
+    lifeCtx.effect(() => () => {
+      hostAbort.abort(new Error('世界插件已卸载'));
+      return changeWorld(stopLife);
+    }, 'dsh-world life line');
     // The host matches exact routes before the longest prefix, so this path never reaches the console.
     if (config.bridge) lifeCtx.effect(() => webServer.register(bridgeRoute(prefix, () => bridge, config.allowedHosts)), 'dsh-world bridge route');
     if (config.bridge) lifeCtx.effect(() => webServer.register(compactRoute(prefix, () => bridge, () => !power.running() || !life ? '请先启动世界生活线' : homeApply.request(), config.allowedHosts)), 'dsh-world compact route');
@@ -421,7 +422,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
         const change = patch.qq === undefined ? qqChange : ++qqChange;
         let restartRequired = false;
         if (patch.qq === true) {
-          try { restartRequired = await qqSdk.ensure(); sdkAbort.signal.throwIfAborted(); faults.clear('qq-sdk'); }
+          try { restartRequired = await qqSdk.ensure(); hostAbort.signal.throwIfAborted(); faults.clear('qq-sdk'); }
           catch (error) { const message = `QQ 依赖安装失败：${errorText(error)}`; faults.set('qq-sdk', message); return message; }
           if (change !== qqChange) return 'QQ 开关已被更新，本次安装不会重新开启 QQ';
         }
@@ -452,6 +453,14 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
         if (!worlds.consoles.size) { worlds.unregisterList?.(); delete worlds.unregisterList; }
       };
     }, 'dsh-world world list');
-    if (power.running()) await changeWorld(async () => { if (!disposed && power.running()) await startLife(false); });
+    const ready = () => {
+      if (disposed || hostAbort.signal.aborted) return;
+      void editProfile().catch(error => lifeCtx.logger.error(error));
+      if (power.running()) void changeWorld(async () => { if (power.running()) await startLife(false); }).catch(error => lifeCtx.logger.error(error));
+    };
+    // Home restoration and profile edits can call host services that wait for boot to finish.
+    const appReady = lifeCtx.get('appReady') as { onReady(listener: () => void): () => void } | undefined;
+    if (appReady) lifeCtx.effect(() => appReady.onReady(ready), 'dsh-world host ready');
+    else ready();
   });
 }

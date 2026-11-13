@@ -38,13 +38,16 @@ export function createHome(deps: HomeDeps) {
   /** A new home before its first turn ends. */
   let firstTurn: string | undefined;
 
+  function assertRunning(): void { if (deps.stopped()) throw new Error('生活线已停止'); }
   async function rename(sessionId: string): Promise<boolean> {
     try { await host.rename(sessionId, deps.title); faults.clear('rename'); return true; }
     catch (error) { faults.set('rename', `家改名失败：${errorText(error)}`); deps.logger.error(error); return false; }
   }
   async function ready(agent: Agent): Promise<Agent> {
+    assertRunning();
     admit(deps.inWorld, agent);
     if (untitled === agent.id && await rename(agent.id) && untitled === agent.id) untitled = undefined;
+    assertRunning();
     deps.opened(agent);
     return agent;
   }
@@ -56,10 +59,13 @@ export function createHome(deps: HomeDeps) {
     return workspace;
   }
   async function build(): Promise<Agent> {
+    assertRunning();
     const workspace = await room();
+    assertRunning();
     const current = deps.current();
     if (current && !host.isArchived(current)) {
       const agent = await host.resolveAgent(current);
+      assertRunning();
       if (agent) {
         // A home built before her room was a workspace moves in.
         if (!workspace.sessionIds.includes(agent.id)) await workspace.attachSession(agent.id);
@@ -67,7 +73,7 @@ export function createHome(deps: HomeDeps) {
       }
     }
     const sessionId = await host.createSession(deps.roomDir, deps.agentPreset, workspace.id);
-    if (deps.stopped()) throw new Error('生活线已停止');
+    assertRunning();
     untitled = sessionId; firstTurn = sessionId;
     deps.moveIn(sessionId);
     const agent = await host.resolveAgent(sessionId);

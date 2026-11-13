@@ -136,6 +136,8 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
   const disposers: (() => void)[] = [];
   let stopping: Promise<void> | undefined;
   let stopped = false;
+  const catchUpController = new AbortController();
+  const cancelCatchUp = () => catchUpController.abort();
   /**
    * Whether the session may carry her world: her preset, or a memory block inherited onto its surface (a delegated
    * child of her session). Everything else is never read from disk or tracked. The check stays in memory.
@@ -237,7 +239,7 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
   async function retryCatchUp(): Promise<void> {
     if (!undecided) return;
     undecided = false;
-    await archive.catchUp();
+    await archive.catchUp(false, catchUpController.signal);
   }
 
   /** `fresh`: her world was just started from the console, so what was said while it was stopped is not archived. */
@@ -331,11 +333,19 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
           else yield chunk;
         }
       }));
-      await archive.catchUp(options.fresh);
-      if (options.fresh) for (const agent of ctx.agents.list()) if (included(agent.session)) await archive.skip(agent.id);
+      // Already-open sessions can start a turn before the background archive catch-up finishes.
       for (const agent of ctx.agents.list()) {
         prompts?.add(agent);
         syncTools(agent);
+      }
+      const { signal } = catchUpController;
+      await archive.catchUp(options.fresh, signal);
+      if (options.fresh) for (const agent of ctx.agents.list()) {
+        if (signal.aborted) return;
+        if (included(agent.session)) await archive.skip(agent.id);
+      }
+      for (const agent of ctx.agents.list()) {
+        if (signal.aborted) return;
         await attach(agent);
       }
     } catch (error) { await stop(); throw error; }
@@ -343,10 +353,11 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
   function stop(): Promise<void> {
     return stopping ??= (async () => {
       stopped = true;
+      cancelCatchUp();
       prompts?.clear(); tools?.clear();
       for (const dispose of disposers.splice(0).reverse()) dispose();
       await archive.flush();
     })();
   }
-  return { scopeToken: Symbol(), start, retryCatchUp, refreshPrompt: (session: Session) => { prompts?.refresh(session); }, flush: archive.flush, stop, faults: () => [...faults.list(), ...archive.faults()] };
+  return { scopeToken: Symbol(), start, retryCatchUp, cancelCatchUp, refreshPrompt: (session: Session) => { prompts?.refresh(session); }, flush: archive.flush, stop, faults: () => [...faults.list(), ...archive.faults()] };
 }
