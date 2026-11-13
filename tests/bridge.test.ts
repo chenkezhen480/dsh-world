@@ -66,7 +66,7 @@ async function setup(t: test.TestContext, model: (request: GenerateOptions, inde
   ctx.tools.register(testTool('look', async () => 'a puzzle'));
   const busy = async () => { home.followup(userMessage('先玩会儿')); await playing; assert.equal(home.status, 'running'); };
   const idle = async () => { await home.whenIdle(); await tick(); await tick(); };
-  return { ctx, root, home, bridge, make, file, pushes, names, reachOnly, control, requests, errors, timers, release, busy, idle };
+  return { ctx, root, home, bridge, make, file, pushes, names, reachOnly, control, requests, errors, timers, playing, release, busy, idle };
 }
 
 test('her partner\'s words reach an idle home as a followup from the user, and her reply goes to the pet', async t => {
@@ -80,7 +80,7 @@ test('her partner\'s words reach an idle home as a followup from the user, and h
   assert.deepEqual(s.names, ['TA'], 'an unnamed companion is TA'); assert.deepEqual(s.reachOnly, [], 'an outlet that takes only reach gets no reply');
   assert.deepEqual(s.errors, []);
 });
-test('while she is busy the words are steered into the running turn, and the reply is her first visible text after them', async t => {
+test('while she is busy the words are steered into the running turn', async t => {
   const s = await setup(t, (_request, index) => index === 0 ? textThenTool('我去玩游戏了', 'play_game') : index === 1 ? toolOnly('look') : index === 2 ? textResponse('在玩消消乐') : textResponse('不该出现'));
   await s.busy();
   await s.bridge.say('在玩什么');
@@ -109,16 +109,62 @@ test('only the reply after the latest of several messages is pushed', async t =>
   s.timers.advance(REPLY_TIMEOUT_MS); await tick();
   assert.equal(s.pushes.length, 1, 'no busy after the reply');
 });
-test('no reply within three minutes pushes busy, and the later reply is still pushed', async t => {
-  const s = await setup(t, (_request, index) => index === 0 ? toolOnly('play_game') : textResponse('忙完啦'));
-  await s.busy();
+test('a turn still in progress pushes busy after three minutes, then only its last visible reply', async t => {
+  const s = await setup(t, (_request, index) => index === 0 ? textThenTool('先看看是什么', 'play_game') : textResponse('忙完啦'));
   await s.bridge.say('在吗');
-  s.timers.advance(REPLY_TIMEOUT_MS - 1); await tick();
-  assert.equal(s.pushes.length, 0);
-  s.timers.advance(1); await tick();
-  assert.deepEqual([...s.pushes], [{ text: 'TA在忙，忙完会在家里回你', kind: 'busy' }]);
-  s.release(); await s.idle();
+  await s.playing;
+  try {
+    s.timers.advance(REPLY_TIMEOUT_MS - 1); await tick();
+    assert.equal(s.pushes.length, 0);
+    s.timers.advance(1); await tick();
+    assert.deepEqual([...s.pushes], [{ text: 'TA在忙，忙完会在家里回你', kind: 'busy' }]);
+  } finally { s.release(); await s.idle(); }
   assert.deepEqual([...s.pushes], [{ text: 'TA在忙，忙完会在家里回你', kind: 'busy' }, { text: '忙完啦', kind: 'reply' }]);
+});
+test('an empty reply clears tracking before a later turn', async t => {
+  const s = await setup(t, (_request, index) => textResponse(index === 0 ? ' ' : '这是另一轮的回复'));
+  await s.bridge.say('处理通知'); await s.idle();
+  s.home.followup(userMessage('新话题')); await s.idle();
+  s.timers.advance(REPLY_TIMEOUT_MS);
+  assert.deepEqual(s.pushes, []);
+});
+test('an empty final reply after a tool does not push the earlier narration', async t => {
+  const s = await setup(t, (_request, index) => index === 0 ? textThenTool('收件箱里有一条通知', 'look') : (async function* () {
+    yield { type: 'finish', reason: { kind: 'stop' } } satisfies StreamChunk;
+  })());
+  await s.bridge.say('处理通知'); await s.idle();
+  assert.equal(s.requests.length, 2);
+  s.timers.advance(REPLY_TIMEOUT_MS);
+  assert.deepEqual(s.pushes, []);
+});
+test('a tool that ends the turn does not push the narration accompanying its call', async t => {
+  const s = await setup(t, () => textThenTool('我去处理一下', 'external_reply'));
+  s.ctx.tools.register(defineTool({
+    name: 'external_reply', description: 'Reply in the external app', parameters: {},
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
+    execute: async (_args, execution) => { execution.concludeTurn(); return 'sent'; },
+  }));
+  await s.bridge.say('处理通知'); await s.idle();
+  assert.equal(s.requests.length, 1);
+  assert.deepEqual(s.pushes, []);
+});
+test('another user message steered in before turn end cancels the pending outlet reply', async t => {
+  const s = await setup(t, (_request, index) => index === 0 ? textThenTool('先看看是什么', 'play_game') : textResponse('家里的回复'));
+  await s.bridge.say('处理通知');
+  await s.playing;
+  try { s.home.steer(userMessage('家里换个话题')); }
+  finally { s.release(); await s.idle(); }
+  s.timers.advance(REPLY_TIMEOUT_MS);
+  assert.deepEqual(s.pushes, []);
+});
+test('an aborted turn drops its pending outlet reply and clears the busy timer', async t => {
+  const s = await setup(t, () => textThenTool('这句还没说完', 'play_game'));
+  await s.bridge.say('在吗');
+  await s.playing;
+  try { s.home.cancel({ kind: 'user' }); }
+  finally { s.release(); await s.idle(); }
+  s.timers.advance(REPLY_TIMEOUT_MS);
+  assert.deepEqual(s.pushes, []);
 });
 test('a failed push is a fault until the next push works', async t => {
   const s = await setup(t, () => textResponse('嗯'));

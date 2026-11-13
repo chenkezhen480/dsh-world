@@ -235,7 +235,13 @@ node <DSH 自带 pnpm 的入口文件> add dsh-world@latest --ignore-scripts --r
 
 **把话送进她的家**（`bridge: true`）：插件启动时写出 `<世界目录>/bridge.json`，内容是 `{ origin, sayPath, compactPath, token, name, ... }`。向 `POST {origin}{sayPath}` 发 `{ "text": "..." }`，请求头带 `x-dsh-world-token: <token>`，会立即返回 `202`。这句话会作为你本人说的话进入她的家和记忆。
 
-**接收她的话**（`outlets`）：每个目标写一个 `name`，地址用 `url`（其中 `{origin}` 会被替换），或者用 `urlFile` + `path`（端口会变的程序用这个）；再用 `kinds` 选择要接收哪些：`reply` 是桥上那句话的回复，`busy` 表示她正忙，`reach` 是她主动找你。插件会向目标 `POST`：
+**接收她的话**（`outlets`）：每个目标写一个 `name`，地址用 `url`（其中 `{origin}` 会被替换），或者用 `urlFile` + `path`（端口会变的程序用这个）。`kinds` 按类型过滤推送，省略或留空时接收所有类型。
+
+- `reply`：通过桥送入的话进入回合后，等回合正常结束，再推送最终回复，每轮最多一次。最终回复没有正文或图片，或回合以工具调用结束时，跳过推送。
+- `busy`：话从桥上送入后三分钟仍在等回复时发出的忙碌提示。之后收到的回复仍按 `reply` 处理。
+- `reach`：她用 `reach_out` 主动找你。只想接收这类消息时，配置 `kinds: [reach]`。
+
+插件会向目标发送 `POST` 请求，正文格式如下。
 
 ```json
 { "text": "她的话（纯文本）", "kind": "reply", "name": "她的名字", "images": ["http://…"], "image": "表情名" }

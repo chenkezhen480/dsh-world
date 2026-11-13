@@ -30,12 +30,12 @@ export interface BridgeDeps {
   /** Her name, in the busy notice and the console's faults; TA when unnamed. */
   name?: string;
 }
-interface Tracked { id: string; sessionId: string; admitted: boolean; timer?: unknown }
+interface Tracked { id: string; sessionId: string; admitted: boolean; finalText?: string; timer?: unknown }
 const labels = (name: string): Record<PushKind, string> => ({ reply: `${name}的回复`, busy: `「${name}在忙」`, reach: `${name}找你的话` });
 
 /**
- * A local app's way into her home: its words arrive as her partner's own (source `user`), and the first
- * visible text she says after they are admitted goes to the outlets. Only the latest words are tracked.
+ * A local app's way into her home: its words arrive as her partner's own (source `user`). The final
+ * reply after admission goes to the outlets when that turn completes. Only the latest words are tracked.
  */
 export function createBridge(deps: BridgeDeps) {
   const { ctx } = deps;
@@ -73,13 +73,26 @@ export function createBridge(deps: BridgeDeps) {
   function start(): void {
     disposers.push(ctx.on('session/event', (session, event) => {
       if (!tracked || session.id !== tracked.sessionId) return;
-      if (event.type === 'user/message' && event.data.id === tracked.id) { tracked.admitted = true; return; }
-      if (event.type !== 'assistant/message' || !tracked.admitted) return;
-      const visible = event.data.message.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n');
-      const reply = pushOf(visible, 'reply', name, safeOrigin());
-      if (!reply.text && !reply.images) return;
-      untrack();
-      send(reply);
+      if (event.type === 'user/message') {
+        if (event.data.id === tracked.id) tracked.admitted = true;
+        else if (tracked.admitted && event.data.source.kind === 'user') untrack();
+        return;
+      }
+      if (!tracked.admitted) return;
+      if (event.type === 'assistant/message') {
+        const { content } = event.data.message;
+        // Text accompanying a tool call can be narration, including when the tool itself ends the turn.
+        tracked.finalText = content.some(block => block.type === 'tool-call') ? undefined
+          : content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n');
+      }
+      // The next turn end in this session closes the turn that admitted the words, even when steered in.
+      if (event.type === 'turn/end') {
+        const { finalText } = tracked;
+        untrack();
+        if (event.data.reason.kind !== 'completed' || !finalText) return;
+        const reply = pushOf(finalText, 'reply', name, safeOrigin());
+        if (reply.text || reply.images) send(reply);
+      }
     }));
     try {
       durableWrite(deps.file, JSON.stringify({ origin: deps.origin(), ...bridgePaths(deps.prefix), token, pid: process.pid, startedAt: clock().toISOString(), name }, null, 2));
