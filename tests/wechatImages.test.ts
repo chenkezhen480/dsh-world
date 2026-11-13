@@ -71,8 +71,8 @@ for (const caption of ['', '这张图里有什么']) test(`private images reach 
   const requests: GenerateOptions[] = [];
   let savePhoto: (() => Promise<unknown>) | undefined;
   const { ctx, root, cleanup } = await hostFixture(t, request => { requests.push(request); return (async function* () {
-    if (requests.length === 1) await savePhoto!();
-    else await assert.rejects(savePhoto!(), /最新用户消息/);
+    // The image stays in front of her on later turns, so she can still keep it then.
+    await savePhoto!();
     yield* textResponse('看到了');
   })(); });
   const privateIdentity = { ...identity, conversationType: 'private' as const, conversationId: 'owner' };
@@ -110,6 +110,7 @@ for (const caption of ['', '这张图里有什么']) test(`private images reach 
   if (!caption) {
     await channel.ask('刚才这张图再说明一下', privateIdentity);
     assert.ok(requests.at(-1)!.messages.some(message => message.content.some(block => block.type === 'image')), 'a later caption keeps the already admitted image context');
+    assert.equal(album.list().total, 1, 'keeping the earlier turn\'s image again succeeds and stays one photo');
   }
 });
 

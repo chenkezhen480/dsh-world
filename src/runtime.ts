@@ -12,6 +12,7 @@ import { Faults } from './faults.ts';
 import { createHistory, excludePresentMessages, renderHistory } from './history.ts';
 import { MOOD_CLEARED, moodText, readMood } from './mood.ts';
 import { createWorldToolRegistry, memoryTools } from './memoryTools.ts';
+import { moodTools } from './moodTools.ts';
 import { assembledWorlds, createPromptSections, type WorldPromptSource } from './promptSection.ts';
 import { belongsToWorld, createSourceArchive, inWorld, sessionPreset } from './sourceArchive.ts';
 import type { ArchiveStore } from './store.ts';
@@ -200,8 +201,9 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
   const prompts = world && createPromptSections(config, world, scopeToken, { logger: ctx.logger });
   const memory = new WeakMap<Session, MemoryState>();
   const service = world?.memory;
-  const tools = service ? createWorldToolRegistry({ tools: inside => memoryTools(service, inside), inWorld: agent => !stopped && included(agent.session), faults, logger: ctx.logger }) : undefined;
-  /** The memory tools follow world membership, whatever the life line does. */
+  const worldTools = (inside: () => boolean) => [...service ? memoryTools(service, inside) : [], ...config.moodFile ? moodTools(config.moodFile, inside) : []];
+  const tools = service || config.moodFile ? createWorldToolRegistry({ tools: worldTools, inWorld: agent => !stopped && included(agent.session), faults, logger: ctx.logger }) : undefined;
+  /** The world tools (memory, mood) follow world membership, whatever the life line does. */
   const syncTools = (agent: Agent): boolean => !tools ? false : included(agent.session) ? tools.attach(agent) : tools.detach(agent);
   const disposers: (() => void)[] = [];
   let stopping: Promise<void> | undefined;

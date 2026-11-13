@@ -696,8 +696,9 @@
       var body = !mood || mood.kind === 'none' ? h('div', { className: 'dw-muted' }, '她还没有写 mood.md')
         : mood.kind === 'failed' ? h('div', { className: 'dw-bad' }, 'mood.md 读不出来：' + mood.message)
         : [
-          h('div', { key: 'v', className: 'dw-trail' }, list(mood.values).map(function (v) { return h('span', { key: v.name, className: v.value ? null : 'dw-muted' }, v.name + ' ' + v.value + (v.own ? '（她加的）' : '')) })),
+          h('div', { key: 'v', className: 'dw-trail' }, list(mood.values).map(function (v) { return h('span', { key: v.name, className: v.value ? null : 'dw-muted' }, v.name + ' ' + v.value) })),
           list(mood.trivia).length ? h('div', { key: 't', style: { marginTop: 8 } }, '旁边：' + list(mood.trivia).join('；') + (mood.cut ? '……后面还有' : '')) : null,
+          list(mood.outside).length ? h('div', { key: 'o', className: 'dw-muted' }, list(mood.outside).join('、') + ' 不在固定的心情里，没有算进去') : null,
           mood.unread ? h('div', { key: 'u', className: 'dw-muted' }, '有 ' + mood.unread + ' 行没读懂，她在快照里能看到') : null,
           h('div', { key: 'at', className: 'dw-muted', style: { marginTop: 8 } }, mood.updatedAt ? '她最后改于 ' + local(mood.updatedAt, props.zone) : ''),
         ]

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Context } from '@deepseek-ai/cordis';
@@ -9,6 +9,7 @@ import { SessionId } from '@deepseek-ai/dsh-session';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { hostFixture, textResponse } from './hostFixture.ts';
 import { MOOD_CLEARED, moodText, parseMood, readMood } from '../src/mood.ts';
+import { moodTools } from '../src/moodTools.ts';
 import { createWorldRuntime } from '../src/runtime.ts';
 import { createArchiveStore } from '../src/store.ts';
 
@@ -24,17 +25,26 @@ function hostTime(ctx: Context) {
   }, { prepend: true });
 }
 
-test('her moods are read with every separator, the later line winning, the default set always shown at 0 when unset and her own words after it', () => {
-  const mood = parseMood('﻿开心 6\r\n累：7\n紧张:1\n想家　5\n开心 8\n');
-  assert.equal(moodText(mood), '【我的心情值】开心 8 · 兴奋 0 · 平静 0 · 累 7 · 困 0 · 烦 0 · 难过 0 · 紧张 1｜我自己加的：想家 5（以最新一条为准）');
+test('her moods are read with every separator, the later line winning, the fixed set always shown in its order at 0 when unset', () => {
+  const mood = parseMood('﻿开心 6\r\n累：7\n紧张:1\n孤单　5\n开心 8\n');
+  assert.equal(moodText(mood), '【我的心情值】开心 8 · 兴奋 0 · 平静 0 · 安心 0 · 烦 0 · 生气 0 · 紧张 1 · 难过 0 · 累 7 · 孤单 5 · 想念 0（以最新一条为准，用 set_mood 改）');
+});
+
+test('a word outside the fixed set is named back to her and never counted, so near-synonyms cannot pile up', () => {
+  const mood = parseMood('高兴 7\n开心 2\n困 3\n高兴 8\n');
+  assert.equal(moodText(mood), [
+    '【我的心情值】开心 2 · 兴奋 0 · 平静 0 · 安心 0 · 烦 0 · 生气 0 · 紧张 0 · 难过 0 · 累 0 · 孤单 0 · 想念 0（以最新一条为准，用 set_mood 改）',
+    '（高兴、困 不在固定的心情里，没有算进去；换成最接近的那个，细的写进小事）',
+  ].join('\n'));
+  assert.equal(parseMood('高兴 7').kind, 'mood', 'a file with only outside words still says so instead of showing nothing');
 });
 
 test('a mood line she got wrong is counted for her, never taken as a small thing, and small things beyond the limits are cut with a mark', () => {
-  const mood = parseMood('开心 11\n累 7.5\n烦 -1\n一个特别特别特别长的心情名字 3\n外面在下雨\n楼下的猫今天又来了一次哦\n晚饭吃面\n还有一件\n');
+  const mood = parseMood('开心 11\n累 7.5\n烦 -1\n外面在下雨\n楼下的猫今天又来了一次哦\n晚饭吃面\n还有一件\n');
   assert.equal(moodText(mood), [
-    '【我的心情值】开心 0 · 兴奋 0 · 平静 0 · 累 0 · 困 0 · 烦 0 · 难过 0 · 紧张 0（以最新一条为准）',
+    '【我的心情值】开心 0 · 兴奋 0 · 平静 0 · 安心 0 · 烦 0 · 生气 0 · 紧张 0 · 难过 0 · 累 0 · 孤单 0 · 想念 0（以最新一条为准，用 set_mood 改）',
     '旁边：外面在下雨；楼下的猫今天又来了一次哦；晚饭吃面……后面还有',
-    '（mood.md 里有 4 行没读懂）',
+    '（mood.md 里有 3 行没读懂）',
   ].join('\n'));
   assert.match(moodText(parseMood('楼下的猫今天又来了一次哦哦哦'))!, /旁边：楼下的猫今天又来了一次哦……后面还有$/m, 'one long line is cut to twelve characters');
 });
@@ -129,4 +139,47 @@ test('a mood file that cannot be read is a fault until it can be read again, and
   agent.followup(user('好了')); await agent.whenIdle();
   assert.match(moods(requests.at(-1)!).at(-1)!, /平静 4/);
   assert.doesNotMatch(world.faults().join('\n'), /mood/);
+});
+
+test('set_mood replaces the whole mood file in one call, refuses a line it cannot read without touching the file, and only inside her world', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-world-set-mood-')); t.after(() => rm(root, { recursive: true, force: true }));
+  const file = join(root, 'mood.md'); let inside = true;
+  const [setMood] = moodTools(file, () => inside);
+  const run = (mood: unknown) => setMood!.execute({ mood } as never, { signal: new AbortController().signal } as never);
+  assert.equal(await run('开心 6\n累 7\n外面在下雨'), '已记下。');
+  assert.equal(await readFile(file, 'utf8'), '开心 6\n累 7\n外面在下雨\n');
+  await assert.rejects(run('开心 11'), /有 1 行没读懂，这次没有改动/);
+  await assert.rejects(run('  \n'), /没有写任何心情/);
+  await assert.rejects(run('高兴 7\n累 2'), /高兴 不在固定的心情里，这次没有改动：只能用 开心、兴奋/);
+  assert.equal(await readFile(file, 'utf8'), '开心 6\n累 7\n外面在下雨\n', 'a refused write leaves the file as it was');
+  inside = false;
+  await assert.rejects(run('开心 3'), /不在世界工作区内/);
+  assert.equal(await readFile(file, 'utf8'), '开心 6\n累 7\n外面在下雨\n');
+});
+
+test('her world sessions have set_mood, and what she records with it shows on the next step; sessions outside never get it', async t => {
+  const requests: GenerateOptions[] = [];
+  const { ctx, root, cleanup } = await hostFixture(t, async function* (request) {
+    requests.push(request);
+    if (requests.length === 1) {
+      const block = { type: 'tool-call' as const, id: ToolCallId('call'), name: 'set_mood', arguments: JSON.stringify({ mood: '开心 7\n累 3' }) };
+      yield { type: 'block-start', index: 0, blockType: 'tool-call' };
+      yield { type: 'tool-call-delta', index: 0, id: block.id, name: 'set_mood', argumentsDelta: block.arguments };
+      yield { type: 'block-end', index: 0, block };
+      yield { type: 'finish', reason: { kind: 'tool-calls' } }; return;
+    }
+    yield* textResponse('嗯');
+  });
+  const moodFile = join(root, 'room', 'mood.md'); await mkdir(join(root, 'room'), { recursive: true });
+  const store = createArchiveStore({ ...config, root });
+  const world = createWorldRuntime(ctx, { ...config, moodFile }, store);
+  await world.start(); cleanup.push(() => world.stop().finally(() => store.close()));
+  const { agent } = await ctx.agents.create({ sessionId: SessionId('home'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } });
+  agent.followup(user('今天怎么样')); await agent.whenIdle();
+  assert.ok(requests[0]!.tools?.some(tool => tool.name === 'set_mood'), 'her world session has the tool');
+  assert.equal(await readFile(moodFile, 'utf8'), '开心 7\n累 3\n');
+  assert.match(moods(requests[1]!).at(-1)!, /开心 7[\s\S]*累 3[\s\S]*用 set_mood 改/);
+  const outside = await ctx.agents.create({ sessionId: SessionId('work'), meta: { agentPreset: 'coding' }, agentOptions: { provider: 'test', model: 'test' } });
+  outside.agent.followup(user('写代码')); await outside.agent.whenIdle();
+  assert.ok(!requests.at(-1)!.tools?.some(tool => tool.name === 'set_mood'), 'a session outside her world never gets it');
 });

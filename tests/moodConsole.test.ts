@@ -11,7 +11,7 @@ async function room(t: { after(fn: () => unknown): void }) {
   const dir = await mkdtemp(join(tmpdir(), 'dsh-world-mood-console-')); t.after(() => rm(dir, { recursive: true, force: true })); return dir;
 }
 
-test('the console view is the reading she gets, defaults first and her own words marked, with when she last changed the file', async t => {
+test('the console view is the reading she gets, the fixed set in order and the words outside it named, with when she last changed the file', async t => {
   const dir = await room(t), file = join(dir, 'mood.md');
   assert.deepEqual(moodView(file), { kind: 'none' });
   await writeFile(file, '开心 6\n想家 5\n外面在下雨\n开心 11\n');
@@ -19,8 +19,9 @@ test('the console view is the reading she gets, defaults first and her own words
   const view = moodView(file);
   assert.equal(view.kind, 'mood');
   if (view.kind !== 'mood') return;
-  assert.deepEqual(view.values.slice(0, 2), [{ name: '开心', value: 6, own: false }, { name: '兴奋', value: 0, own: false }]);
-  assert.deepEqual(view.values.at(-1), { name: '想家', value: 5, own: true });
+  assert.deepEqual(view.values.slice(0, 2), [{ name: '开心', value: 6 }, { name: '兴奋', value: 0 }]);
+  assert.equal(view.values.length, 11);
+  assert.deepEqual(view.outside, ['想家']);
   assert.deepEqual(view.trivia, ['外面在下雨']);
   assert.equal(view.unread, 1);
   assert.equal(view.updatedAt, '2026-11-10T12:00:00.000Z');
@@ -39,7 +40,7 @@ test('the console snapshot carries her mood, and none without a mood file', asyn
   });
   const shown = await sources(moodFile).snapshot() as { mood: { kind: string; values: { name: string; value: number }[] } };
   assert.equal(shown.mood.kind, 'mood');
-  assert.deepEqual(shown.mood.values.find(value => value.name === '累'), { name: '累', value: 7, own: false });
+  assert.deepEqual(shown.mood.values.find(value => value.name === '累'), { name: '累', value: 7 });
   assert.equal((await sources().snapshot() as { mood: unknown }).mood, null);
 });
 
@@ -59,8 +60,8 @@ test('the mood card shows her values, the small things and when she changed it, 
     return text(el.children);
   };
   const render = (mood: unknown) => text(react.createElement(MoodCard, { mood, zone: 'Asia/Shanghai' }));
-  const shown = render({ kind: 'mood', values: [{ name: '开心', value: 6, own: false }, { name: '兴奋', value: 0, own: false }, { name: '想家', value: 5, own: true }], trivia: ['外面在下雨'], cut: true, unread: 1, updatedAt: '2026-11-10T12:00:00.000Z' });
-  assert.match(shown, /心情/); assert.match(shown, /开心 6/); assert.match(shown, /想家 5（她加的）/);
+  const shown = render({ kind: 'mood', values: [{ name: '开心', value: 6 }, { name: '兴奋', value: 0 }], trivia: ['外面在下雨'], cut: true, unread: 1, outside: ['想家'], updatedAt: '2026-11-10T12:00:00.000Z' });
+  assert.match(shown, /心情/); assert.match(shown, /开心 6/); assert.match(shown, /想家 不在固定的心情里，没有算进去/);
   assert.match(shown, /旁边：外面在下雨……后面还有/); assert.match(shown, /有 1 行没读懂/); assert.match(shown, /她最后改于 /);
   assert.match(render({ kind: 'none' }), /她还没有写 mood\.md/);
   assert.match(render(null), /她还没有写 mood\.md/);

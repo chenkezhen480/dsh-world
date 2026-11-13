@@ -62,7 +62,7 @@ test('the shipped template: room, diary, 我是谁, world line and ask-first rul
   const order = ['# 我的世界', '## 房间', '## 日记', '## 聊天记录', '## 我是谁', '## 世界线', '## 大事先问'].map(heading => home.indexOf(heading));
   assert.deepEqual([...order].sort((a, b) => a - b), order); assert.ok(order.every(index => index > 0));
   assert.match(home, /我的房间是 R。/); assert.match(home, /我的日记本在 D，一天一个文件/);
-  assert.match(home, /房间里还有一个 mood\.md[^\n]*「名字 数值」[^\n]*0 到 10 的整数[^\n]*开心、兴奋、平静、累、困、烦、难过、紧张[^\n]*在时间前面看到最新的心情值[^\n]*都由我自己决定/);
+  assert.match(home, /房间里还有一个 mood\.md[^\n]*「名字 数值」[^\n]*0 到 10 的整数[^\n]*名字只能是固定的这几个：开心、兴奋、平静、安心、烦、生气、紧张、难过、累、孤单、想念[^\n]*写进不以数字结尾的行[^\n]*在时间前面看到最新的心情值[^\n]*都由我自己决定/);
   assert.doesNotMatch(home, /focus\.md|常见的情绪词/);
   assert.match(home, /自己的家里（「小鱼的家」）/); assert.match(home, /不是伙伴在说话/);
   assert.match(home, /【我的时间】/); assert.match(home, /用 plan_next 说好打算做什么、做到什么时候/); assert.match(home, /闹钟不是用来叫醒自己的/); assert.match(home, /每天早上 07:30 被叫醒/); assert.match(home, /reach_out/);
