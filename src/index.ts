@@ -15,7 +15,7 @@ import { consoleRoute, type ConsoleActions } from './console/routes.ts';
 import { consoleSources } from './console/snapshot.ts';
 import { compactionFor, createHomeApply } from './console/homeApply.ts';
 import { errorText, Faults } from './faults.ts';
-import { repairCopiedPresets, swapCompactionOnce, swapPresetCompaction, swapStockCompaction, type ConfigEditor } from './compactionSwap.ts';
+import { compactionPresetOverride, hasAgentPresets, repairCopiedPresets, restoreCompactionPreset, swapCompactionOnce, type ConfigEditor } from './compactionSwap.ts';
 import { hostLife } from './life/host.ts';
 import { createLifeStore, durableWrite } from './life/lifeStore.ts';
 import { toastSupported, windowsToast, type Notifier } from './life/notify.ts';
@@ -58,7 +58,7 @@ export const Config = z.object({
   worldId: z.string().default('default'), agentPreset: z.string().default('standard'), timeZone: z.string().default(systemTimeZone),
   companionName: z.string(), partnerName: z.string(),
   archiveScope: z.union([z.const('home').description('仅家会话'), z.const('workspace').description('家所在工作区'), z.transform(z.const('world').hidden(), () => 'workspace' as const).hidden()]).default('workspace').description('记忆归档范围，修改后重启生效'),
-  // Install means the tool-free compaction: the first start rewrites the profile's stock compaction row (see README); false leaves it alone.
+  // Only a profile-level stock row can be switched automatically. Session presets own their compaction.
   replaceCompaction: z.boolean().default(true),
   life: z.boolean().default(true), diaryDir: z.string(), fallbackWakeTime: z.string().pattern(CLOCK_TIME).default('09:00'),
   selfFile: z.string(), worldPromptFile: z.string(), alarmTemplateFile: z.string(), personaFile: z.string(),
@@ -233,15 +233,14 @@ export function apply(ctx: Context, config: Config): void {
     const host = hostLife(lifeCtx);
     const configEditor = lifeCtx.get('configEditor') as ConfigEditor | undefined;
     const profileDir = () => (lifeCtx.get('profileContext') as { dir?: string } | undefined)?.dir;
-    const swap = () => swapCompactionOnce({ enabled: config.replaceCompaction, profileDir: profileDir(), done: power.compactionSwapped, markDone: power.markCompactionSwapped,
-      swap: async dir => { const row = swapStockCompaction(dir); return row.status === 'unchanged' && configEditor ? swapPresetCompaction(configEditor, config.agentPreset, dir) : row; },
+    const swap = () => swapCompactionOnce({ enabled: config.replaceCompaction && !lifeCtx.get('agentPresets') && !hasAgentPresets(configEditor), profileDir: profileDir(), done: power.compactionSwapped, markDone: power.markCompactionSwapped,
       report: message => { faults.set('compaction-swap', message); lifeCtx.logger.warn(`dsh-world: ${message}`); } });
     const repair = async () => {
       const dir = profileDir();
       if (configEditor && dir) await repairCopiedPresets({ editor: configEditor, profileDir: dir, report: message => { faults.set('preset-repair', message); lifeCtx.logger.warn(`dsh-world: ${message}`); } });
     };
     // Different worlds may edit the same profile or preset on startup.
-    const editProfile = () => worlds.profileEdits = worlds.profileEdits.then(swap, swap).then(repair, repair);
+    const editProfile = (edit: () => Promise<void>) => worlds.profileEdits = worlds.profileEdits.then(edit, edit);
     const permissions = createWorkspacePermissions(lifeCtx, options.roomDir, power);
     // SnowLuma 的控制台在 OneBot 通道关闭时仍可用。
     const doors = createConsoleDoors({ worldDir, snowlumaHome: config.qqNative?.snowlumaHome ?? '' });
@@ -391,6 +390,7 @@ export function apply(ctx: Context, config: Config): void {
 
     // Her album lives in her room, so the console shows it whether or not the life line is running.
     const sources = consoleSources({ ctx: lifeCtx, config: memoryConfig, archive: store, longTerm: memoryService, names, ...(lifeStore ? { lifeStore } : {}), life: () => life, homeApply: homeApply.snapshot, compactAfterReview: power.compactAfterReview, ...(config.life ? { schedule: () => ({ review: power.reviewTime(), wake: power.wakeTime(), defaults: { review: DEFAULT_REVIEW_TIME, wake: config.fallbackWakeTime } }) } : {}), photos, diaryDir: options.diaryDir, running: power.running, dailyBudget: power.dailyBudget, memoryTurns: power.memoryTurns, coldHours: power.coldHours, selectedArchiveScope: power.selectedArchiveScope, workspacePermissions: permissions.snapshot, wechat: () => wechat ? { ...wechat.status(), adapter: adapter?.status() ?? null } : undefined, archiveSession, native: () => qqNative?.status() ?? null,
+      compactionPreset: () => configEditor ? compactionPresetOverride(configEditor, config.agentPreset, profileDir()) : null,
       modules: () => ({ wechat: { available: config.wechat, enabled: power.wechatEnabled(), running: wechat !== undefined }, qq: { available: Boolean(config.qqNative?.enabled), enabled: power.qqEnabled(), running: qqNative !== undefined, ...(qqSdk.needsRestart() ? { restartRequired: true } : {}) } }), faults: () => [...faults.list(), ...(adapter?.status().error ? [`微信适配器：${adapter.status().error}`] : []), ...(memory?.faults() ?? []), ...(bridge?.faults() ?? []), ...memoryHealth()] });
     const actions: ConsoleActions = {
       start: () => changeWorld(async () => {
@@ -405,6 +405,11 @@ export function apply(ctx: Context, config: Config): void {
         finally { await stopMemory().finally(() => sources.invalidate()); }
       }),
       applyHome: () => !power.running() || !life ? '请先启动世界生活线' : homeApply.request(),
+      restoreCompactionPreset: () => editProfile(async () => {
+        const dir = profileDir();
+        if (!configEditor || !dir) throw new Error('宿主配置编辑服务不可用');
+        await restoreCompactionPreset(configEditor, config.agentPreset, dir);
+      }).finally(sources.invalidate),
       prompts: () => ({
         persona: readPersona(personaFile),
         worldPrompt: existsSync(worldPromptFile) ? (text => ({ text, custom: true, memory: { missing: memoryTemplateGaps(text), snippet: readFileSync(MEMORY_SNIPPET_FILE, 'utf8') } }))(readFileSync(worldPromptFile, 'utf8')) : { text: readFileSync(DEFAULT_TEMPLATE_FILE, 'utf8'), custom: false },
@@ -455,7 +460,7 @@ export function apply(ctx: Context, config: Config): void {
     }, 'dsh-world world list');
     const ready = () => {
       if (disposed || hostAbort.signal.aborted) return;
-      void editProfile().catch(error => lifeCtx.logger.error(error));
+      void editProfile(async () => { try { swap(); } finally { await repair(); } }).catch(error => lifeCtx.logger.error(error));
       if (power.running()) void changeWorld(async () => { if (power.running()) await startLife(false); }).catch(error => lifeCtx.logger.error(error));
     };
     // Home restoration and profile edits can call host services that wait for boot to finish.

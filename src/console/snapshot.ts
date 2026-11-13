@@ -13,6 +13,7 @@ import type { HomeApplyState } from './homeApply.ts';
 import type { PhotoStore } from '../life/photos.ts';
 import type { DailySchedule } from '../life/types.ts';
 import type { MemoryService } from '../memory.ts';
+import type { compactionPresetOverride } from '../compactionSwap.ts';
 
 const SNAPSHOT_TTL_MS = 5000;
 export function estimateTokens(text: string): number {
@@ -29,6 +30,7 @@ export interface SnapshotDeps {
   /** The running life line; undefined while her world is stopped. */
   life(): LifeRuntime | undefined;
   homeApply?(): HomeApplyState;
+  compactionPreset?(): ReturnType<typeof compactionPresetOverride>;
   photos?(): PhotoStore;
   /** Long-term memory: the console's lookups and the health of its index. */
   longTerm?: MemoryService;
@@ -78,6 +80,7 @@ export function consoleSources(deps: SnapshotDeps): ConsoleSources & { invalidat
       schedule: deps.schedule?.() ?? null,
       life: life ? { homeSessionId: life.homeSessionId, status: home ? home.status : 'cold', alarm: life.alarm, review: life.review, recentWakes: lifeStore?.wakes().slice(-5).reverse() ?? [] } : null,
       homeApply: deps.homeApply?.() ?? null,
+      compactionPreset: deps.compactionPreset?.() ?? null,
       health: [...(life?.faults ?? []), ...deps.faults()],
       memory: { index: deps.longTerm?.status() ?? null, turns: turns.length, windowTurns: window, coldHours: deps.coldHours?.() ?? null, archiveScope, selectedArchiveScope, restartRequired: archiveScope !== selectedArchiveScope, approxTokens: estimateTokens(renderHistory(turns, config.timeZone, deps.names(), archiveScope === 'home')), oldest: turns.at(-1)?.messages[0]?.occurredAt, ...archive.stats() },
       wechat: deps.wechat?.() ?? null,

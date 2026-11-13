@@ -20,6 +20,7 @@ function fakeActions() {
   const actions: ConsoleActions = {
     start: async () => { calls.push('start'); }, stop: async () => { calls.push('stop'); },
     applyHome: () => { calls.push('apply-home'); return undefined; },
+    restoreCompactionPreset: async () => { calls.push('restore-compaction-preset'); },
     prompts: () => ({ persona, worldPrompt: { text: 'T', custom: false } }),
     savePersona: layers => { calls.push(`persona:${JSON.stringify(layers)}`); },
     saveWorldPrompt: text => { calls.push(`world:${text}`); },

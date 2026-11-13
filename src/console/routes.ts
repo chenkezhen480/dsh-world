@@ -6,6 +6,7 @@ import { validArchiveScope, type MemoryArchiveScope } from '../archiveSelection.
 import type { PhotoStore } from '../life/photos.ts';
 import { validClockTime } from '../life/alarm.ts';
 import { MemoryError, type MemoryContent, type MemoryErrorCode, type MemoryPage } from '../memory.ts';
+import { errorText } from '../faults.ts';
 
 /** A write must carry this header; a page on another site cannot add it without a CORS preflight, which is never answered. */
 export const WRITE_HEADER = 'x-dsh-world';
@@ -26,6 +27,7 @@ export interface ConsoleActions {
   stop(): Promise<void>;
   /** Enqueue one application of saved prompts and idle-home compaction; returns a refusal, if any. */
   applyHome(): string | undefined;
+  restoreCompactionPreset(): Promise<void>;
   prompts(): { persona: Persona; worldPrompt: { text: string; custom: boolean; memory?: { missing: string[]; snippet: string } } };
   savePersona(persona: Partial<Persona>): void;
   /** An empty text goes back to the shipped template. */
@@ -82,6 +84,10 @@ async function write(actions: ConsoleActions, path: string, body: Record<string,
     case '/console/start': await actions.start(); return ok();
     case '/console/stop': await actions.stop(); return ok();
     case '/console/apply-home': { const refused = actions.applyHome(); return refused ? bad(refused) : ok(); }
+    case '/console/restore-compaction-preset': {
+      try { await actions.restoreCompactionPreset(); return ok(); }
+      catch (error) { return bad(errorText(error)); }
+    }
     case '/console/persona': { const layers = persona(body); if (!layers) return bad('persona layers must be strings'); actions.savePersona(layers); return ok(); }
     case '/console/budget': {
       const daily = body?.daily;

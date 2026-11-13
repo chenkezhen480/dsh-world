@@ -122,7 +122,7 @@ node <DSH 自带 pnpm 的入口文件> add dsh-world@latest --ignore-scripts --r
 
 **已有 world 更新**：正常退出 DSH 后，用 [`scripts/update-world.mjs`](scripts/update-world.mjs) 指定原 profile、`.tgz` 和 DSH 自带 pnpm；`.tgz` 可直接从 npm 下载，例如 <https://registry.npmjs.org/dsh-world/-/dsh-world-0.6.4.tgz>。脚本先备份完整 profile、世界及会话，再更新并校验；失败恢复旧 profile，保留她已有文件。安装成品无需 Git、npm 或 TypeScript，完整命令与恢复说明见 [已有 world 升级](INSTALL.md#已有-world用编译包更新)。
 
-**只留对话的压缩**：装好 `dsh-world` 后第一次启动，默认会把 profile 的压缩换成 `dsh-world/compaction`（先备份，重启 DSH 后生效），整个 profile 的会话压缩都会受影响。怎么关、怎么手动启用，见 [注意事项·安装与升级](NOTES.md#安装与升级)。
+**只留对话的压缩**：只有原版压缩直接写在 profile、且没有使用会话预设时，插件才会尝试换成 `dsh-world/compaction`。桌面版使用会话预设自己的压缩。已有旧版副本可在世界控制台「概览 → 会话预设」还原。详见 [注意事项·安装与升级](NOTES.md#安装与升级)。
 
 ## 设置
 
@@ -140,7 +140,7 @@ node <DSH 自带 pnpm 的入口文件> add dsh-world@latest --ignore-scripts --r
     agentPreset: standard        # 她所在的预设
     timeZone: Asia/Seoul         # 默认系统时区
     life: true                   # 生活线，默认开启
-    replaceCompaction: true      # 首次启动把 profile 的压缩换成 dsh-world 的只留对话压缩；false = 不动
+    replaceCompaction: true      # 自动替换直接写在 profile 里的原版压缩；对会话预设不生效
     archiveScope: workspace      # workspace：家的工作区；home：仅当前家会话
     fallbackWakeTime: '09:00'    # 没定闹钟时，早上几点叫醒她；控制台「作息」里改过的优先
     diaryDir: C:/path/to/日记    # 日记目录，默认在世界目录里

@@ -1257,6 +1257,76 @@ test('a running world with appReady restores the life line after host boot', asy
   assert.ok(homeSessionId, 'the saved running world resumed automatically');
 });
 
+test('a desktop preset is not copied to enable compaction on a clean profile', async t => {
+  const { ctx, root, cleanup } = await hostFixture(t, () => textResponse('reply'));
+  isolateHome(t, root);
+  const file = join(root, 'cordis.patch.yml');
+  await writeFile(file, '[]\n');
+  ctx.provide('profileContext', { dir: root });
+  const inherited = { id: config.agentPreset, plugins: [{ name: '@deepseek-ai/dsh-compaction-basic' }] };
+  const entry = { options: { name: '@deepseek-ai/dsh-agent-preset', config: inherited } };
+  let edits = 0;
+  ctx.provide('configEditor', { entries: () => [entry], configuration: () => [{ entry, inherited, override: {} }], edit: async () => { edits++; } });
+  const { routes } = provideLifeHost(ctx);
+  const plugin = ctx.plugin(worldPlugin, config); cleanup.push(() => plugin.dispose());
+  await plugin.await();
+  await until(async () => routes.length > 0, 'console');
+  await nextImmediate();
+  assert.equal(edits, 0);
+  assert.equal(await readFile(file, 'utf8'), '[]\n');
+});
+
+test('a host with session presets does not rewrite the profile when its config editor is unavailable', async t => {
+  const { ctx, root, cleanup } = await hostFixture(t, () => textResponse('reply'));
+  isolateHome(t, root);
+  const file = join(root, 'cordis.patch.yml');
+  const original = '- id: preset-companion\n  config:\n    plugins:\n      - name: "@deepseek-ai/dsh-compaction-basic"\n';
+  await writeFile(file, original);
+  ctx.provide('profileContext', { dir: root });
+  ctx.provide('agentPresets', {});
+  const { routes } = provideLifeHost(ctx);
+  const plugin = ctx.plugin(worldPlugin, config); cleanup.push(() => plugin.dispose());
+  await plugin.await();
+  await until(async () => routes.length > 0, 'console');
+  await nextImmediate();
+  assert.equal(await readFile(file, 'utf8'), original);
+});
+
+test('the console can see and restore a legacy compaction preset override while the world is stopped', async t => {
+  const { ctx, root, cleanup } = await hostFixture(t, () => textResponse('reply'));
+  isolateHome(t, root);
+  const file = join(root, 'cordis.patch.yml');
+  const original = 'existing profile patch';
+  await writeFile(file, original);
+  ctx.provide('profileContext', { dir: root });
+  const inherited = { id: config.agentPreset, plugins: [{ name: '@deepseek-ai/dsh-compaction-basic' }, { name: 'new-stock-tool' }] };
+  let override: unknown = { id: config.agentPreset, plugins: [{ name: 'dsh-world/compaction' }, { name: 'custom-tool' }] };
+  const entry = { options: { name: '@deepseek-ai/dsh-agent-preset', config: override } };
+  ctx.provide('configEditor', {
+    entries: () => [entry], configuration: () => [{ entry, inherited, override }],
+    edit: async (target: typeof entry, change: (raw: unknown, base: unknown) => unknown) => {
+      assert.equal(target, entry);
+      entry.options.config = change(override, inherited);
+      assert.deepEqual(entry.options.config, inherited);
+      override = {};
+      await writeFile(file, 'DSH removed the override');
+    },
+  });
+  const { routes } = provideLifeHost(ctx);
+  const plugin = ctx.plugin(worldPlugin, { ...config, replaceCompaction: false }); cleanup.push(() => plugin.dispose());
+  await plugin.await();
+  await until(async () => routes.length > 0, 'console');
+  const url = '/dsh-world/worlds/fish/console/';
+  const before = await consoleGet(routes, url + 'snapshot');
+  assert.equal(before.running, false);
+  assert.deepEqual(before.compactionPreset, { preset: config.agentPreset, canRestore: true });
+  await consolePost(routes, url + 'restore-compaction-preset');
+  assert.equal((await consoleGet(routes, url + 'snapshot')).compactionPreset, null);
+  const backups = (await readdir(root)).filter(name => name.endsWith('.bak'));
+  assert.equal(backups.length, 1);
+  assert.equal(await readFile(join(root, backups[0]!), 'utf8'), original);
+});
+
 test('a session deleted from the host does not stop the world from starting, and what it archived stays', async t => {
   const { ctx, root, cleanup, errors } = await hostFixture(t, async function* () { yield* textResponse('reply'); });
   isolateHome(t, root);

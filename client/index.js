@@ -286,6 +286,25 @@
           h('span', { role: 'status', 'aria-live': 'polite', className: error || state.status === 'failed' ? 'dw-bad' : 'dw-muted' }, error || (waiting ? '已排队，不打断当前对话。' : compacting ? '正在执行，请稍候。' : state.message) || (!snap.running || !snap.life ? '请先启动世界生活线。' : ''))))
     }
 
+    function CompactionPreset(props) {
+      var info = props.info
+      var sendingState = useState(false), sending = sendingState[0], setSending = sendingState[1]
+      var resultState = useState(null), result = resultState[0], setResult = resultState[1]
+      function restore() {
+        if (!window.confirm('还原预设「' + info.preset + '」？这会移除该预设在当前 profile 中的整份覆盖（包括你自己改过的设置），操作前会备份。')) return
+        setSending(true); setResult(null)
+        post('restore-compaction-preset').then(function () {
+          setResult({ text: '已移除覆盖并备份。请重启 DSH，让已有会话使用还原后的预设。' })
+          props.refresh()
+        }, function (e) { setResult({ text: e.message || String(e), error: true }) }).then(function () { setSending(false) })
+      }
+      if (!info && !result) return null
+      return h(Card, { title: '会话预设' },
+        info ? h('div', { className: 'dw-muted' }, '预设「' + info.preset + '」正在使用 profile 中的压缩配置副本。DSH 升级时，自带预设的更新不会合入这份副本。') : null,
+        info && info.canRestore ? h('div', { className: 'dw-setting' }, h('button', { className: 'dw-btn', disabled: sending, onClick: restore }, sending ? '还原中…' : '还原 DSH 预设')) : null,
+        result ? h('div', { role: 'status', className: result.error ? 'dw-bad' : 'dw-muted' }, result.text) : null)
+    }
+
     /** 今天家里花了多少，和每天的额度（留空不限）。 */
     function Budget(props) {
       var budget = props.budget || {}, daily = budget.daily, today = budget.today
@@ -695,6 +714,7 @@
           ]))) : null,
         h('div', { className: 'dw-grid' },
           h(Card, { title: '健康', delay: 120 }, health.length ? health.map(function (f, i) { return h('div', { key: i, className: 'dw-bad' }, '● ' + f) }) : h('div', { className: 'dw-ok' }, '● 一切正常')),
+          h(CompactionPreset, { info: snap.compactionPreset, refresh: props.refresh }),
           h(Memory, { mem: mem, onSaved: props.refresh }),
           h(Budget, { budget: snap.budget, onSaved: props.refresh }),
           snap.workspace ? h(WorkspacePermission, { workspace: snap.workspace, onSaved: props.refresh }) : null,
