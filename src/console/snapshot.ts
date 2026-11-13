@@ -13,6 +13,8 @@ import type { HomeApplyState } from './homeApply.ts';
 import type { PhotoStore } from '../life/photos.ts';
 import type { DailySchedule } from '../life/types.ts';
 import type { MemoryService } from '../memory.ts';
+import type { compactionPresetOverride } from '../compactionSwap.ts';
+import { moodView } from '../mood.ts';
 
 const SNAPSHOT_TTL_MS = 5000;
 export function estimateTokens(text: string): number {
@@ -29,10 +31,13 @@ export interface SnapshotDeps {
   /** The running life line; undefined while her world is stopped. */
   life(): LifeRuntime | undefined;
   homeApply?(): HomeApplyState;
+  compactionPreset?(): ReturnType<typeof compactionPresetOverride>;
   photos?(): PhotoStore;
   /** Long-term memory: the console's lookups and the health of its index. */
   longTerm?: MemoryService;
   diaryDir: string;
+  /** Her mood file, shown read-only; absent in a console without a room. */
+  moodFile?: string;
   running(): boolean;
   /** CNY a day for her home; undefined is no limit. */
   dailyBudget(): number | undefined;
@@ -49,7 +54,7 @@ export interface SnapshotDeps {
   wechat?(): unknown;
   /** Whose conversations her archive keeps; the memory block shown is read through it. */
   archiveSession?(id: string): boolean;
-  /** Faults outside the life line: the memory line, the bridge, the QQ bridge, starting and stopping. */
+  /** Faults outside the life line: the memory line, the bridge, starting and stopping. */
   faults(): string[];
   /** Which modules the config allows, whether their console switch is on, and whether they are running now. */
   modules?(): unknown;
@@ -57,8 +62,6 @@ export interface SnapshotDeps {
   computer?(): unknown;
   /** The OneBot channel she runs herself; null while it is off. */
   native?(): unknown;
-  /** The QQ bridge, when the module is on; absent leaves that card out of the console. */
-  qq?: () => Promise<unknown>;
 }
 /** Read-only views for the console; repeated polling within a few seconds reuses one snapshot until `invalidate`. */
 export function consoleSources(deps: SnapshotDeps): ConsoleSources & { invalidate(): void } {
@@ -73,8 +76,6 @@ export function consoleSources(deps: SnapshotDeps): ConsoleSources & { invalidat
     const turns = await history.loadRecentTurns(window, deps.archiveSession);
     const archiveScope = config.archiveScope ?? 'workspace';
     const selectedArchiveScope = deps.selectedArchiveScope?.() ?? archiveScope;
-    // Never let a dead bridge take the whole console down with it: a broken QQ module shows as "not running".
-    const qq = deps.qq ? await deps.qq().catch(() => null) : null;
     const native = deps.native?.() ?? null;
     return {
       worldId: config.worldId, timeZone: config.timeZone, now: new Date().toISOString(), running: deps.running(), name: deps.names().companion,
@@ -84,12 +85,13 @@ export function consoleSources(deps: SnapshotDeps): ConsoleSources & { invalidat
       schedule: deps.schedule?.() ?? null,
       life: life ? { homeSessionId: life.homeSessionId, status: home ? home.status : 'cold', alarm: life.alarm, review: life.review, recentWakes: lifeStore?.wakes().slice(-5).reverse() ?? [] } : null,
       homeApply: deps.homeApply?.() ?? null,
+      compactionPreset: deps.compactionPreset?.() ?? null,
       health: [...(life?.faults ?? []), ...deps.faults()],
       memory: { index: deps.longTerm?.status() ?? null, turns: turns.length, windowTurns: window, coldHours: deps.coldHours?.() ?? null, archiveScope, selectedArchiveScope, restartRequired: archiveScope !== selectedArchiveScope, approxTokens: estimateTokens(renderHistory(turns, config.timeZone, deps.names(), archiveScope === 'home')), oldest: turns.at(-1)?.messages[0]?.occurredAt, ...archive.stats() },
       wechat: deps.wechat?.() ?? null,
       compactions: lifeStore?.compactions().slice(-5).reverse() ?? [],
       diaryDates: diary.dates(), activityDays: lifeStore?.activityDays() ?? [],
-      qq: deps.qq ? qq : null,
+      mood: deps.moodFile ? moodView(deps.moodFile) : null,
       native,
       modules: deps.modules?.() ?? null,
       computer: deps.computer?.() ?? null,

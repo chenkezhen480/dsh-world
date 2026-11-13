@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Readable } from 'node:stream';
-import { QQ_PREFIX, WRITE_HEADER, qqRoute } from '../src/ecosystem/qq/route.ts';
+const QQ_PREFIX = '/dsh-world/worlds/fish/qq';
+import { WRITE_HEADER, qqRoute } from '../src/ecosystem/qq/route.ts';
 import type { ConsoleDoors } from '../src/ecosystem/qq/panel.ts';
 
 function request(method: string, path: string, options: { body?: unknown; headers?: Record<string, string> } = {}) {
@@ -29,8 +30,8 @@ const native = () => ({ connected: true, url: 'ws://127.0.0.1:3003', autoReply: 
 const WRITE = { [WRITE_HEADER]: '1' };
 
 test('QQ 前缀下：状态是 GET，认不出来的路径是 404', async () => {
-  const route = qqRoute([], doors(), native, () => ({ ok: true }));
-  assert.deepEqual({ kind: route.kind, path: route.path }, { kind: 'prefix', path: '/dsh-world/qq' });
+  const route = qqRoute('/dsh-world/worlds/fish', [], doors(), native, () => ({ ok: true }));
+  assert.deepEqual({ kind: route.kind, path: route.path }, { kind: 'prefix', path: '/dsh-world/worlds/fish/qq' });
   const answered = await call(route, request('GET', '/native'));
   assert.equal(answered.status, 200);
   assert.equal(answered.body.connected, true);
@@ -45,7 +46,7 @@ test('QQ 前缀下：状态是 GET，认不出来的路径是 404', async () => 
 });
 
 test('写操作必须带 x-dsh-world 头，跨站来的连读都不给', async () => {
-  const route = qqRoute([], doors(), native, () => ({ ok: true }));
+  const route = qqRoute('/dsh-world/worlds/fish', [], doors(), native, () => ({ ok: true }));
   assert.equal((await call(route, request('POST', '/native', { body: { autoReply: true } }))).status, 400);
   assert.equal((await call(route, request('POST', '/native', { headers: { ...WRITE, 'sec-fetch-site': 'cross-site' }, body: { autoReply: true } }))).status, 403);
   assert.equal((await call(route, request('POST', '/native', { headers: WRITE, body: { autoReply: true } }))).status, 200);
@@ -53,7 +54,7 @@ test('写操作必须带 x-dsh-world 头，跨站来的连读都不给', async (
 
 test('面板的白名单、静默和拉起 SnowLuma 校验后一起交给通道', async () => {
   const patches: unknown[] = [];
-  const route = qqRoute([], doors(), native, patch => { patches.push(patch); return { ok: true }; });
+  const route = qqRoute('/dsh-world/worlds/fish', [], doors(), native, patch => { patches.push(patch); return { ok: true }; });
   const post = (body: unknown) => call(route, request('POST', '/native', { headers: WRITE, body }));
   assert.equal((await post({ allowPrivate: '123' })).status, 400, '名单要是数组');
   assert.match(String((await post({ allowGroups: ['12a'] })).body.error), /不是号码：12a/);
@@ -69,7 +70,7 @@ test('面板的白名单、静默和拉起 SnowLuma 校验后一起交给通道'
 
 test('合批窗口只收 0 到 30 秒的整数毫秒：一批从第一句起最多等 30 秒，再长也没用', async () => {
   const patches: unknown[] = [];
-  const route = qqRoute([], doors(), native, patch => { patches.push(patch); return { ok: true }; });
+  const route = qqRoute('/dsh-world/worlds/fish', [], doors(), native, patch => { patches.push(patch); return { ok: true }; });
   const post = (body: unknown) => call(route, request('POST', '/native', { headers: WRITE, body }));
   for (const bad of [-1, 30_001, 1.5, '6000', null]) assert.equal((await post({ batchQuietMs: bad })).status, 400, String(bad));
   assert.equal((await post({ batchQuietMs: 0 })).status, 200);
@@ -78,7 +79,7 @@ test('合批窗口只收 0 到 30 秒的整数毫秒：一批从第一句起最�
 });
 
 test('原生通道没有接上时，写接口说清楚，而不是静默成功', async () => {
-  const route = qqRoute([], doors(), undefined, undefined);
+  const route = qqRoute('/dsh-world/worlds/fish', [], doors(), undefined, undefined);
   assert.equal((await call(route, request('GET', '/native'))).status, 200);
   assert.equal((await call(route, request('GET', '/native'))).body, null);
   const welp = await call(route, request('POST', '/native', { headers: WRITE, body: { autoReply: true } }));
@@ -87,19 +88,19 @@ test('原生通道没有接上时，写接口说清楚，而不是静默成功',
 });
 
 test('控制台的地址是读接口：SnowLuma 那扇门要用面板密码现换', async () => {
-  const route = qqRoute([], doors(), native, () => ({ ok: true }));
+  const route = qqRoute('/dsh-world/worlds/fish', [], doors(), native, () => ({ ok: true }));
   const read = await call(route, request('GET', '/console'));
   assert.equal(read.status, 200);
   assert.deepEqual(read.body.snowluma, { needs: 'password', url: 'http://127.0.0.1:5099' });
   // 桥那扇门不再存在，所以返回体里也没有 qq。
   assert.equal('qq' in read.body, false);
   // 没接门的时候：说没有，不是 500。
-  assert.equal((await call(qqRoute([], undefined, native), request('GET', '/console'))).status, 404);
+  assert.equal((await call(qqRoute('/dsh-world/worlds/fish', [], undefined, native), request('GET', '/console'))).status, 404);
 });
 
 test('/open 只认 SnowLuma 那一扇门', async () => {
   const opened: string[] = [];
-  const route = qqRoute([], doors({ open: async kind => { opened.push(kind); return { opened: true as const }; } }), native, () => ({ ok: true }));
+  const route = qqRoute('/dsh-world/worlds/fish', [], doors({ open: async kind => { opened.push(kind); return { opened: true as const }; } }), native, () => ({ ok: true }));
   const bad = await call(route, request('POST', '/open', { headers: WRITE, body: { kind: 'qq' } }));
   assert.equal(bad.status, 400);
   assert.equal((await call(route, request('POST', '/open', { headers: WRITE, body: { kind: 'snowluma' } }))).status, 200);
@@ -108,7 +109,7 @@ test('/open 只认 SnowLuma 那一扇门', async () => {
 
 test('面板密码只走 POST，还得带 x-dsh-world 头；密码要是空的就别往磁盘上写', async () => {
   const seen: string[] = [];
-  const route = qqRoute([], doors({
+  const route = qqRoute('/dsh-world/worlds/fish', [], doors({
     remember: async (username: string, password: string) => { seen.push(`${username || 'admin'}:${password}`); return { url: 'http://127.0.0.1:5099/?token=abc' }; },
   }), native, () => ({ ok: true }));
   assert.equal((await call(route, request('POST', '/panel-password', { body: { password: 'x' } }))).status, 400);

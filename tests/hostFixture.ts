@@ -25,6 +25,10 @@ export async function hostFixture(t: TestContext, stream: (request: GenerateOpti
   ctx.plugin(Sessions); ctx.plugin(Projections); ctx.plugin(Agents); ctx.plugin(SystemPrompt, { ...(options.personaPrefix === undefined ? {} : { personaPrefix: options.personaPrefix }), ...(options.includeHarnessIdentity === undefined ? {} : { includeHarnessIdentity: options.includeHarnessIdentity }) }); ctx.plugin(Tools); ctx.plugin(LlmRuntime);
   const storage = ctx.plugin(persistence, { root: join(root, 'sessions'), compression: 'none' });
   await storage.await();
+  if ('resolve' in ctx.tools) {
+    const executor = '@deepseek-ai/dsh-tool-executor-native';
+    await ctx.plugin(await import(executor)).await();
+  }
   await ctx.plugin(Loop, { agents: [], maxParallelToolCalls: 10 }).await();
   class Adapter extends LlmAdapter {
     override async resolveModel(provider: string, model: string) { return { provider, id: model, name: model, context: { contextWindow: 1048576 }, defaultMaxTokens: 4096 }; }

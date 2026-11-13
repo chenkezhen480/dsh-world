@@ -22,7 +22,7 @@ class QuoteTest(unittest.TestCase):
     def test_old_host_cannot_silently_discard_reference_metadata(self):
         with tempfile.TemporaryDirectory() as directory:
             file = Path(directory) / 'wechat.json'
-            file.write_text(json.dumps(dict(protocol=4, origin='http://127.0.0.1:1', path='/dsh-world/wechat/ask', token='test')), encoding='utf-8')
+            file.write_text(json.dumps(dict(protocol=4, origin='http://127.0.0.1:1', path='/dsh-world/worlds/default/wechat/ask', token='test')), encoding='utf-8')
             with patch('adapter.urlopen') as request:
                 with self.assertRaisesRegex(RuntimeError, '引用'):
                     postHome(file, dict(text='新留言', reference=dict(type='text', text='旧留言')))

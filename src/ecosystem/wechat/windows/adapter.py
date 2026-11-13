@@ -3,6 +3,7 @@ import argparse
 from contextlib import contextmanager
 from http.client import IncompleteRead
 import json
+import re
 import sqlite3
 import sys
 import time
@@ -17,7 +18,7 @@ from snapshot import NotSent, SnapshotBusy
 from groups import DEFAULT_CONTEXT_MESSAGES, mentionedIds, recentContext
 from incoming import ImageUnavailable, admitReference
 from binding import WechatOffline
-from sender import BuildStale
+from sender import BuildStale, UnsupportedWechatBuild
 from messages import messageKey, messageOrder, normalizeMessage, messageNormalizer, messageEntry, displayMessage
 from quotes import MessageContentError, isAppMessage
 from reading import readHistory
@@ -35,6 +36,8 @@ REPLY_TIMEOUT_SECONDS = 190
 EXIT_NEEDS_HUMAN = 2
 # Exit code for "the native bridge must be built again"; the plugin builds it and starts the adapter again.
 EXIT_NEEDS_BUILD = 3
+# Exit code for a Weixin.dll fingerprint the adapter cannot match to a supported build.
+EXIT_UNSUPPORTED_BUILD = 4
 # A reply whose send never started (no stable snapshot of the chat) is handed out again this many times in all.
 SEND_ATTEMPTS = 3
 
@@ -49,6 +52,10 @@ def pendingText(chatId, key):
 
 class HomeRequestError(RuntimeError):
     pass
+
+
+class HomeBusy(RuntimeError):
+    """The home ran out of time before taking the message in; asking again later cannot repeat it."""
 
 
 @contextmanager
@@ -274,6 +281,11 @@ class MessageStore:
                 self.db.execute('UPDATE cursors SET seq=MAX(seq,?) WHERE chatId=?', (int(row['sort_seq']), chatId))
         print(f'微信消息 {chatId} / {key}：{error}', file=sys.stderr, flush=True)
 
+    def abandonBatch(self, chatId, rows):
+        """Undo `beginBatch` for messages the home never took in, so a later poll hands them over again."""
+        with self.db:
+            self.db.executemany("DELETE FROM messages WHERE chatId=? AND messageId=? AND status='pending'", [(chatId, messageKey(row)) for row in rows])
+
     def finishBatch(self, chatId, rows):
         with self.db:
             result = self.db.executemany("UPDATE messages SET status='done' WHERE chatId=? AND messageId=? AND status='pending'", [(chatId, messageKey(row)) for row in rows])
@@ -351,6 +363,8 @@ def postHome(moduleFile, message):
                 try: detail = error.read(1024).decode('utf-8', errors='replace')
                 except (IncompleteRead, URLError, TimeoutError, ConnectionError) as readError:
                     detail = f'响应正文未读完：{readError}'
+            if error.code == 409 and not retryable:
+                raise HomeBusy(f'DSH HTTP 409: {detail or error.reason}') from error
             transient = error.code in (502, 503, 504)
             failure = HomeRequestError if transient else RuntimeError
             if not retryable or not transient or attempt == 4:
@@ -368,9 +382,10 @@ def postHomeOnce(moduleFile, message, timeout):
     if message.get('media') and connection.get('protocol', 0) < 3:
         raise RuntimeError('私聊图片需要新版宿主协议，请更新并重载 DSH 的 dsh-world 插件')
     origin = urlparse(connection['origin'])
-    if origin.scheme != 'http' or origin.hostname not in ('127.0.0.1', 'localhost', '::1') or connection.get('path') != '/dsh-world/wechat/ask':
+    path = connection.get('path', '')
+    if origin.scheme != 'http' or origin.hostname not in ('127.0.0.1', 'localhost', '::1') or not isinstance(path, str) or not re.fullmatch(r'/dsh-world/worlds/[A-Za-z0-9][A-Za-z0-9_-]{0,63}/wechat/ask', path):
         raise ValueError('微信模块地址必须是本机 DSH 的独立接口')
-    request = Request(connection['origin'].rstrip('/') + connection['path'],
+    request = Request(connection['origin'].rstrip('/') + path,
                       data=json.dumps(message, ensure_ascii=False).encode(),
                       headers={'Content-Type': 'application/json', 'x-dsh-world-token': connection['token']}, method='POST')
     with urlopen(request, timeout=timeout) as response:
@@ -565,7 +580,12 @@ def watch(config, database, store, send, ask=askHome, report=reportReceipt, poll
                     mergeFollowing(database, chat, config, message, rows[1:])
                     store.beginBatch(chat['id'], rows)
                     if message:
-                        askWhileSending(config, message, database, store, send, ask, report, poll)
+                        try: askWhileSending(config, message, database, store, send, ask, report, poll)
+                        except HomeBusy as error:
+                            # She is still busy and has not seen it: hand the same messages over on a later poll.
+                            store.abandonBatch(chat['id'], rows)
+                            print(f'她还在忙，这条稍后再交给她（不会重复）：{chat["id"]} / {messageKey(rows[0])}：{error}', file=sys.stderr, flush=True)
+                            break
                     store.finishBatch(chat['id'], rows)
                     flushOutgoing(config, database, store, send, poll=poll, report=report)
             config['_presence'] = dict(observedAt=datetime.now(timezone.utc).isoformat(), groups=store.presence.snapshot(config))
@@ -688,6 +708,9 @@ if __name__ == '__main__':
     except BuildStale as error:
         print(f'微信适配器停止：{error}', file=sys.stderr)
         sys.exit(EXIT_NEEDS_BUILD)
+    except UnsupportedWechatBuild as error:
+        print(f'微信适配器停止：{error}', file=sys.stderr)
+        sys.exit(EXIT_UNSUPPORTED_BUILD)
     except Exception as error:
         print(f'微信适配器停止：{error}', file=sys.stderr)
         sys.exit(1)

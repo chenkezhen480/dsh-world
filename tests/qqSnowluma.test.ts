@@ -62,8 +62,8 @@ test('混合段：未知段不丢、reply id 在 segments 里、mface 有可读�
   assert.match(msg.text, /\[动画表情\]|\[mface/, 'mface 段必须可读或落到 default 分支留占位');
   assert.match(msg.text, /^\[引用消息\]/, 'reply 段转成引用占位');
   assert.match(msg.text, /@1000000001/);
-  // The file name stays with the placeholder, so the image can still be fetched.
-  assert.match(msg.text, /\[图片 file=ab12cd34\.image\]/);
+  assert.match(msg.text, /\[图片\]/);
+  assert.equal(msg.segments.find((segment: Loose) => segment.type === 'image').data.file, 'ab12cd34.image');
   assert.match(msg.text, /\[表情14\]/);
 });
 
@@ -115,13 +115,14 @@ test('防回声：user_id / sender.user_id 两个来源 + message_sent 全部过
   assert.equal(got[0].sender.card, null);
 });
 
-test('message 为字符串的网关形状：text 直接取字符串，segments 从 CQ 重建', () => {
+test('message 为字符串时从 CQ 重建 segments，图片链接不进入文本', () => {
   const event = load('event.group.text.json');
-  event.message = '在吗[CQ:face,id=14]';
+  event.message = '在吗[CQ:face,id=14][CQ:image,file=abc.png,url=https://example.com/private]';
   const msg = normalizeMessageEvent(event) as Loose;
-  assert.equal(msg.text, '在吗[CQ:face,id=14]');           // 切片第 8 节：string 原样 trim
-  assert.equal(msg.segments.length, 2);
+  assert.equal(msg.text, '在吗[CQ:face,id=14][图片]');
+  assert.equal(msg.segments.length, 3);
   assert.deepEqual(msg.segments[1], { type: 'face', data: { id: '14' } });
+  assert.equal(msg.segments[2].data.file, 'abc.png');
 });
 
 test('segmentsToText：at all、markdown、完全未知段走 default', () => {
@@ -211,4 +212,23 @@ test('start 对拒连端点 fail-loud：reject + 状态保持 connecting（SDK �
   await bridge.stop();
   assert.equal(bridge.getState(), 'closed');
   assert.equal(states[0], 'connecting');
+});
+
+test('握手期间关闭 QQ 连接不会抛出未处理的 WebSocket 错误', { timeout: 5000 }, async t => {
+  const server = net.createServer();
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  let socket: net.Socket | undefined;
+  t.after(async () => {
+    socket?.destroy();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  });
+  const accepted = new Promise<net.Socket>(resolve => server.once('connection', resolve));
+  const port = (server.address() as net.AddressInfo).port;
+  const bridge = createBridge({ wsUrl: `ws://127.0.0.1:${port}/` });
+  const rejected = assert.rejects(bridge.start(), /closed/);
+  socket = await accepted;
+  await bridge.stop();
+  await rejected;
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(bridge.getState(), 'closed');
 });

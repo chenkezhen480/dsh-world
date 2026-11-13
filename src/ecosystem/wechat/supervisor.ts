@@ -11,6 +11,8 @@ export const BUILD_SCRIPT = fileURLToPath(new URL('../../../src/ecosystem/wechat
 export const EXIT_NEEDS_HUMAN = 2;
 /** The adapter exits with this when no build of the native bridge matches its source (an upgrade changed it). */
 export const EXIT_NEEDS_BUILD = 3;
+/** The adapter exits with this when its Weixin.dll cannot be matched to a supported build. */
+const EXIT_UNSUPPORTED_BUILD = 4;
 const MAX_LOG_BYTES = 1024 * 1024;
 const HEALTHY_MS = 60_000;
 const BUILD_BY_HAND = '请在仓库里运行 wechat.ps1 Build，再在控制台重启适配器';
@@ -38,7 +40,7 @@ function lastLine(file: string, from: number): string | undefined {
 /**
  * Runs the Windows WeChat adapter for as long as the world's WeChat module lives: started with the module,
  * restarted with a growing delay when it exits or cannot start (a file missing during an upgrade comes back),
- * and stopped (its whole process tree) with the module. An exit that says a person must act is not retried. An exit
+ * and stopped (its whole process tree) with the module. Unsupported builds and exits that need a person halt. An exit
  * that says the native bridge needs building is answered by building it once into the `engine` folder beside the
  * adapter's config (where the adapter looks) and starting it again; a build that fails, or still does not match,
  * stops with what to do. The adapter itself waits for the same WeChat account to log in again, so a WeChat
@@ -128,6 +130,7 @@ export function createAdapterSupervisor(deps: AdapterSupervisorDeps) {
         if (!stopped && !replacing) {
           if (code === EXIT_NEEDS_HUMAN) { needsHuman = true; deps.log('dsh-world WeChat adapter stopped: a message needs checking by a person (run acknowledge, then restart it from the console)'); }
           else if (code === EXIT_NEEDS_BUILD) rebuild();
+          else if (code === EXIT_UNSUPPORTED_BUILD) halted(said ?? '当前微信构建无法匹配受支持的版本，已停止自动重启');
           else { deps.log(`dsh-world WeChat adapter exited (${text}); restarting`); schedule(); }
         }
         resolve();

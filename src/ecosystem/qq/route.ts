@@ -4,16 +4,16 @@ import type { ConsoleDoors } from './panel.ts';
 import { MAX_BATCH_MS } from '../qq-native/batch.ts';
 
 /**
- * The QQ module's few doors, on the same webServer as the console. The `/dsh-world/qq` prefix is never eaten
+ * The QQ module's few doors, on the same webServer as the console. The `…/qq` prefix is never eaten
  * by the console's `/dsh-world` prefix (the host matches the longer one first).
  *
- * Read:  GET  /dsh-world/qq/native    her own OneBot channel: is it connected, what has it seen, is it replying
- *        GET  /dsh-world/qq/console   SnowLuma's console address, with a session token already traded for the
+ * Read:  GET  …/qq/native    her own OneBot channel: is it connected, what has it seen, is it replying
+ *        GET  …/qq/console   SnowLuma's console address, with a session token already traded for the
  *                                     panel password
- * Write: POST /dsh-world/qq/native    { autoReply?, bridge?: { port? }, mutedUntil?, allowPrivate?, allowGroups?,
+ * Write: POST …/qq/native    { autoReply?, bridge?: { port? }, mutedUntil?, allowPrivate?, allowGroups?,
  *                                     batchQuietMs?, startSnowluma? } the channel's switches, applied together; a new bridge
  *                                     port restarts the balcony on the spot
- *        POST /dsh-world/qq/panel-password  { username, password } remembers SnowLuma's panel password and
+ *        POST …/qq/panel-password  { username, password } remembers SnowLuma's panel password and
  *                                     trades it for a session token right away
  *
  * Writes require the `x-dsh-world` header: a cross-site page cannot add it (that would trigger a preflight,
@@ -26,7 +26,6 @@ import { MAX_BATCH_MS } from '../qq-native/batch.ts';
  * this endpoint down with it.
  */
 
-export const QQ_PREFIX = '/dsh-world/qq';
 export const WRITE_HEADER = 'x-dsh-world';
 const MAX_BODY_BYTES = 8 * 1024;
 const ok = (body: unknown = { ok: true }): JsonResult => ({ status: 200, body });
@@ -111,16 +110,17 @@ async function write(doors: ConsoleDoors | undefined, path: string, body: Record
   }
 }
 
-export function qqRoute(allowedHosts: readonly string[] = [], doors?: ConsoleDoors, native?: () => unknown, setNative?: SetNative) {
+export function qqRoute(worldPrefix: string, allowedHosts: readonly string[] = [], doors?: ConsoleDoors, native?: () => unknown, setNative?: SetNative) {
+  const prefix = worldPrefix + '/qq';
   return {
-    kind: 'prefix' as const, path: QQ_PREFIX,
+    kind: 'prefix' as const, path: prefix,
     handler: async (req: IncomingMessage, res: ServerResponse) => {
       if (!allowed(req, allowedHosts)) {
         sendJson(res, { status: 403, body: { error: 'forbidden' } });
         return;
       }
-      const url = new URL(req.url ?? QQ_PREFIX, 'http://localhost');
-      const path = url.pathname.slice(QQ_PREFIX.length) || '/';
+      const url = new URL(req.url ?? prefix, 'http://localhost');
+      const path = url.pathname.slice(prefix.length) || '/';
       try {
         if (req.method === 'GET' && path === '/native') {
           // 她自己接的那条 OneBot 通道。没开就老实回 null，界面据此显示「没开」。

@@ -6,8 +6,8 @@ import { validArchiveScope, type MemoryArchiveScope } from '../archiveSelection.
 import type { PhotoStore } from '../life/photos.ts';
 import { validClockTime } from '../life/alarm.ts';
 import { MemoryError, type MemoryContent, type MemoryErrorCode, type MemoryPage } from '../memory.ts';
+import { errorText } from '../faults.ts';
 
-export const CONSOLE_PREFIX = '/dsh-world';
 /** A write must carry this header; a page on another site cannot add it without a CORS preflight, which is never answered. */
 export const WRITE_HEADER = 'x-dsh-world';
 const MAX_BODY_BYTES = 64 * 1024;
@@ -27,6 +27,7 @@ export interface ConsoleActions {
   stop(): Promise<void>;
   /** Enqueue one application of saved prompts and idle-home compaction; returns a refusal, if any. */
   applyHome(): string | undefined;
+  restoreCompactionPreset(): Promise<void>;
   prompts(): { persona: Persona; worldPrompt: { text: string; custom: boolean; memory?: { missing: string[]; snippet: string } } };
   savePersona(persona: Partial<Persona>): void;
   /** An empty text goes back to the shipped template. */
@@ -86,6 +87,10 @@ async function write(actions: ConsoleActions, path: string, body: Record<string,
     case '/console/start': await actions.start(); return ok();
     case '/console/stop': await actions.stop(); return ok();
     case '/console/apply-home': { const refused = actions.applyHome(); return refused ? bad(refused) : ok(); }
+    case '/console/restore-compaction-preset': {
+      try { await actions.restoreCompactionPreset(); return ok(); }
+      catch (error) { return bad(errorText(error)); }
+    }
     case '/console/persona': { const layers = persona(body); if (!layers) return bad('persona layers must be strings'); actions.savePersona(layers); return ok(); }
     case '/console/budget': {
       const daily = body?.daily;
@@ -142,10 +147,10 @@ async function write(actions: ConsoleActions, path: string, body: Record<string,
 }
 
 /** Reads are open to the console page; writes need POST, the write header and a JSON body. */
-export async function handleConsole(sources: ConsoleSources, actions: ConsoleActions, request: ConsoleRequest): Promise<JsonResult> {
+export async function handleConsole(prefix: string, sources: ConsoleSources, actions: ConsoleActions, request: ConsoleRequest): Promise<JsonResult> {
   const url = new URL(request.url, 'http://localhost');
-  if (url.pathname !== CONSOLE_PREFIX && !url.pathname.startsWith(CONSOLE_PREFIX + '/')) return { status: 404, body: { error: 'not found' } };
-  const path = url.pathname.slice(CONSOLE_PREFIX.length);
+  if (url.pathname !== prefix && !url.pathname.startsWith(prefix + '/')) return { status: 404, body: { error: 'not found' } };
+  const path = url.pathname.slice(prefix.length);
   if (request.method === 'POST') {
     if (!request.write) return { status: 403, body: { error: 'forbidden' } };
     return write(actions, path, request.body);
@@ -170,9 +175,9 @@ export async function handleConsole(sources: ConsoleSources, actions: ConsoleAct
     default: return { status: 404, body: { error: 'not found' } };
   }
 }
-export function consoleRoute(sources: ConsoleSources, actions: ConsoleActions, allowedHosts: readonly string[] = []) {
+export function consoleRoute(prefix: string, sources: ConsoleSources, actions: ConsoleActions, allowedHosts: readonly string[] = []) {
   return {
-    kind: 'prefix' as const, path: CONSOLE_PREFIX,
+    kind: 'prefix' as const, path: prefix,
     handler: async (req: IncomingMessage, res: ServerResponse) => {
       let result: JsonResult;
       try {
@@ -180,7 +185,7 @@ export function consoleRoute(sources: ConsoleSources, actions: ConsoleActions, a
         else {
           const method = req.method ?? 'GET';
           const url = new URL(req.url ?? '/', 'http://localhost');
-          if (method === 'GET' && url.pathname === CONSOLE_PREFIX + '/console/photo') {
+          if (method === 'GET' && url.pathname === prefix + '/console/photo') {
             const image = sources.photo?.(url.searchParams.get('id') ?? '');
             if (!image) { sendJson(res, { status: 404, body: { error: '找不到这张照片' } }); return; }
             res.writeHead(200, { 'content-type': image.ref.mediaType, 'content-length': image.data.byteLength, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'content-security-policy': "default-src 'none'; sandbox" });
@@ -188,7 +193,7 @@ export function consoleRoute(sources: ConsoleSources, actions: ConsoleActions, a
           }
           const write = method === 'POST' && req.headers[WRITE_HEADER] === '1' && String(req.headers['content-type'] ?? '').startsWith('application/json');
           const body = write ? jsonObject(await readBody(req, MAX_BODY_BYTES)) : undefined;
-          result = write && body === undefined ? bad('a JSON object body is required') : await handleConsole(sources, actions, { method, url: req.url ?? '/', write, body });
+          result = write && body === undefined ? bad('a JSON object body is required') : await handleConsole(prefix, sources, actions, { method, url: req.url ?? '/', write, body });
         }
       } catch { result = { status: 500, body: { error: 'internal error' } }; }
       sendJson(res, result);

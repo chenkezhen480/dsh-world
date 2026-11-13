@@ -1,15 +1,20 @@
+import { createHash } from 'node:crypto';
 import type { Context } from '@deepseek-ai/cordis';
 import type { Agent } from '@deepseek-ai/dsh-agent';
-import { createSystemMessage, createUserMessage, isAgentLoopRequest, type StreamChunk, type UserMessage } from '@deepseek-ai/dsh-llm';
-import type { Session, SessionSeq } from '@deepseek-ai/dsh-session';
+import { createSystemMessage, createUserMessage, isAgentLoopRequest, LlmError, type MessageId, type StreamChunk, type UserMessage } from '@deepseek-ai/dsh-llm';
+import { appendPluginRecord, pluginRecordOf, SessionLogOffset, type Session, type SessionSeq } from '@deepseek-ai/dsh-session';
 import type {} from '@deepseek-ai/dsh-compaction';
 import './hostContract.ts';
 import { isOrdinarySession } from './archive.ts';
+import { compactsWhole } from './compaction.ts';
+import { compactionFor } from './console/homeApply.ts';
 import { Faults } from './faults.ts';
 import { createHistory, excludePresentMessages, renderHistory } from './history.ts';
+import { MOOD_CLEARED, moodText, readMood } from './mood.ts';
 import { createWorldToolRegistry, memoryTools } from './memoryTools.ts';
-import { createPromptSections, type WorldPromptSource } from './promptSection.ts';
-import { belongsToWorld, createSourceArchive, inWorld } from './sourceArchive.ts';
+import { moodTools } from './moodTools.ts';
+import { assembledWorlds, createPromptSections, type WorldPromptSource } from './promptSection.ts';
+import { belongsToWorld, createSourceArchive, inWorld, sessionPreset } from './sourceArchive.ts';
 import type { ArchiveStore } from './store.ts';
 import type { WorldConfig } from './types.ts';
 import { worldNames } from './worldPrompt.ts';
@@ -18,12 +23,153 @@ import { DEFAULT_COLD_HOURS, DEFAULT_MEMORY_TURNS } from './worldSwitch.ts';
 
 export type { WorldPromptSource } from './promptSection.ts';
 const memorySource = 'dsh-world-history';
-const isMemoryBlock = (event: ReturnType<Session['eventAt']>) => event?.type === 'user/message' && event.data.source.kind === memorySource;
+const moodSource = 'dsh-world-mood';
+const isRecall = (source: UserMessage['source'] | undefined, worldId?: string) => source?.kind === memorySource && (worldId === undefined || source.worldId === undefined || source.worldId === worldId);
+type RequestPosition = { turn: number; step: number };
+const promptRecord = 'plugin:dsh-world/system-prompt';
+const legacyPromptReset = 'plugin:dsh-world/legacy-prompt-reset';
+interface WorldPromptIdentity { worldId: string; digest: string }
+interface PromptRecord extends WorldPromptIdentity, RequestPosition {}
+declare module '@deepseek-ai/dsh-session' {
+  interface PluginRecordMap {
+    [promptRecord]: PromptRecord;
+    [legacyPromptReset]: Record<string, never>;
+  }
+}
+const digestPrompt = (text: string) => createHash('sha256').update(text).digest('hex');
+
+function recallNodes(session: Session, match: (source: UserMessage['source']) => boolean): SessionSeq[] {
+  return session.surface.nodes.filter(seq => {
+    const event = session.eventAt(seq);
+    return event?.type === 'user/message' && match(event.data.source);
+  });
+}
+
+/** Empty system nodes retire old context from the model's view and preserve the original events. */
+function retireContext(session: Session, retiring: readonly SessionSeq[], position: RequestPosition): void {
+  for (const seq of retiring) {
+    if (!session.surface.nodes.includes(seq)) continue;
+    session.append('system/message', { ...position, message: createSystemMessage('') }, { surfaceOp: { op: 'replace', startSeq: seq, endSeq: seq }, sourceEventSeqs: [seq] });
+  }
+}
+
+/** A session can outlive its world. Authorization returns false for a stopped world and undefined outside it. */
+export function guardWorldContext(
+  ctx: Context,
+  authorize: (session: Session, worldId?: string) => symbol | false | undefined,
+  hasWorldRoom: (session: Session) => boolean,
+): void {
+  const assemblies = new WeakMap<AbortSignal, WorldPromptIdentity & { token: symbol }>();
+  const promptLogs = new WeakMap<Session, { nextSeq: number; pending?: PromptRecord; owners: Map<MessageId, WorldPromptIdentity>; reset: boolean; sawWorldContext: boolean }>();
+  function promptLog(session: Session) {
+    const log = promptLogs.get(session) ?? { nextSeq: 0, owners: new Map<MessageId, WorldPromptIdentity>(), reset: false, sawWorldContext: false };
+    const end = session.seq;
+    for (let from = log.nextSeq; from < end; from += 128) {
+      for (const event of session.snapshotEvents(SessionLogOffset(from), SessionLogOffset(Math.min(from + 128, end)))) {
+        if (event.type === 'step/start') delete log.pending;
+        if (event.type === 'system/message' && log.pending && event.data.turn === log.pending.turn && event.data.step === log.pending.step) {
+          const block = event.data.message.content[0];
+          if (block?.type === 'text' && digestPrompt(block.text) === log.pending.digest) {
+            log.owners.set(event.data.message.id, { worldId: log.pending.worldId, digest: log.pending.digest });
+          }
+        }
+        if (!log.reset && event.type === 'user/message') {
+          const kind = event.data.source.kind;
+          log.sawWorldContext ||= kind === memorySource || kind === moodSource || kind === 'dsh-world-channel-context';
+        }
+        if (event.type === legacyPromptReset as string && pluginRecordOf(event)) log.reset = true;
+        if (event.type !== promptRecord as string) continue;
+        const data = pluginRecordOf(event)?.data as Partial<PromptRecord> | null | undefined;
+        if (typeof data?.worldId === 'string' && typeof data.digest === 'string' && typeof data.turn === 'number' && typeof data.step === 'number') {
+          log.pending = { worldId: data.worldId, digest: data.digest, turn: data.turn, step: data.step };
+          log.reset = true;
+        }
+      }
+    }
+    log.nextSeq = end;
+    promptLogs.set(session, log);
+    return log;
+  }
+  // Old DSH logs contain a single rendered string with no section boundaries or saved world ownership.
+  const needsLegacyReset = (session: Session, log: ReturnType<typeof promptLog>) =>
+    !log.reset && (log.sawWorldContext || hasWorldRoom(session));
+  function retiredPrompts(session: Session, log: ReturnType<typeof promptLog>, current: WorldPromptIdentity | undefined, reset: boolean): SessionSeq[] {
+    if (!reset && !current && !log.owners.size) return [];
+    return session.surface.nodes.filter(seq => {
+      const event = session.eventAt(seq);
+      if (event?.type !== 'system/message') return false;
+      const block = event.data.message.content[0];
+      if (block?.type !== 'text') return false;
+      if (reset) return true;
+      const owner = log.owners.get(event.data.message.id);
+      return current ? (owner?.digest ?? digestPrompt(block.text)) !== current.digest || (!!owner && owner.worldId !== current.worldId) : !!owner;
+    });
+  }
+  const revoked = (source: UserMessage['source'] | undefined, session: Session | undefined) => {
+    if (source?.kind === memorySource || source?.kind === moodSource) return !session || !authorize(session, source.worldId);
+    return source?.kind === 'dsh-world-channel-context' && (!session || !authorize(session));
+  };
+  ctx.on('system-prompt/assemble', async (_assembly, context, next) => {
+    const result = await next();
+    if (context.signal && context.agent) {
+      const prompt = assembledWorlds.get(context);
+      if (prompt) assemblies.set(context.signal, { worldId: prompt.worldId, token: prompt.token, digest: digestPrompt(prompt.text) });
+      else assemblies.delete(context.signal);
+    }
+    return result;
+  }, { prepend: true });
+  ctx.on('agent/pre-step', async ({ agent, signal }, next) => {
+    const decision = await next();
+    if (decision.kind !== 'enter') return decision;
+    const { session } = agent;
+    const log = promptLog(session);
+    return retiredPrompts(session, log, assemblies.get(signal), needsLegacyReset(session, log)).length || recallNodes(session, source => revoked(source, session)).length
+      ? { ...decision, startsRequestSeries: true as const } : decision;
+  });
+  ctx.on('agent/request', ({ agent: { session }, turn, step, signal }, next) => {
+    const prompt = assemblies.get(signal);
+    const log = promptLog(session);
+    const reset = needsLegacyReset(session, log);
+    retireContext(session, [...retiredPrompts(session, log, prompt, reset), ...recallNodes(session, source => revoked(source, session))], { turn, step });
+    // Record ownership before DSH commits the projected system message, including attempts that never reach a provider.
+    if (prompt) appendPluginRecord(session, promptRecord, { worldId: prompt.worldId, digest: prompt.digest, turn, step });
+    else if (reset) appendPluginRecord(session, legacyPromptReset, {});
+    return next();
+  });
+  ctx.on('llm/stream', async function* (request, next) {
+    const compaction = request.purpose === 'compaction';
+    if (!compaction && !isAgentLoopRequest(request)) { yield* next(); return; }
+    const session = request.sessionId ? ctx.get('sessions')?.get(request.sessionId) : undefined;
+    const prompt = !compaction && request.signal ? assemblies.get(request.signal) : undefined;
+    const scope = session && authorize(session, prompt?.worldId);
+    const stalePrompt = !compaction && scope !== prompt?.token && (Boolean(prompt) || typeof scope === 'symbol');
+    // Compaction can replay system messages before a resumed session has taken a new turn.
+    const log = session && promptLog(session);
+    const legacyCompaction = compaction && scope === undefined && session && log
+      && needsLegacyReset(session, log) && request.messages.some(message => message.role === 'system' && message.content.length > 0);
+    const unauthorizedPrompt = !!session && !!log?.owners.size && request.messages.some(message => {
+      const owner = message.role === 'system' && log.owners.get(message.id);
+      return !!owner && !authorize(session, owner.worldId);
+    });
+    const failure = { code: 'DSH_WORLD_SCOPE_CHANGED', message: legacyCompaction
+      ? 'dsh-world: 会话仍带有旧版世界提示词。请先发送一条消息恢复 DSH 提示词，再压缩。'
+      : compaction
+        ? 'dsh-world: 世界已停止或会话已离开世界工作区，已取消压缩。'
+        : 'dsh-world: 世界权限已变化，已阻止携带旧世界上下文的请求，请重新发送。' };
+    if (stalePrompt || (compaction && scope === false) || legacyCompaction || unauthorizedPrompt || request.messages.some(message => revoked(message.source, session))) {
+      yield { type: 'finish', reason: { kind: 'error', failure } } satisfies StreamChunk;
+      return;
+    }
+    yield* next();
+    if (compaction && session && scope && authorize(session, prompt?.worldId) !== scope) throw new LlmError(failure.message, failure.code);
+  });
+}
 
 /**
- * Per session: whether the memory block must be (re)built at the next step, the position and time of the latest request.
+ * Per session: whether the memory block must be (re)built at the next step, whether this turn opened cold, and the
+ * position and time of the latest request.
  */
-interface MemoryState { reload: boolean; position: { turn: number; step: number }; lastRequestAt?: number; inScope: boolean; restart: boolean; pendingId?: string; retiring: SessionSeq[] }
+interface MemoryState { reload: boolean; cold: boolean; position: RequestPosition; lastRequestAt?: number; inScope: boolean; restart: boolean; pendingId?: string; retiring: SessionSeq[] }
 
 /**
  * The memory line: her conversations are archived as they happen, and every world session gets a memory
@@ -34,8 +180,9 @@ interface MemoryState { reload: boolean; position: { turn: number; step: number 
  *
  * A session silent for `coldHours` (read at each turn start, default 24) is cold (#36): its provider cache has most
  * likely expired (DeepSeek clears an unused one "usually within a few hours to a few days", best effort), so its next
- * turn re-reads her memory block and prompt as a newly opened session would, at the cost of at most one uncached
- * request. A conversation in progress does not pause that long, so its cached prefix stays whole.
+ * turn first summarizes the old conversation, then re-reads her memory block and prompt as a newly opened session
+ * would: that first request misses the cache anyway, and every later step carries the summary instead of the whole old
+ * conversation. A conversation in progress does not pause that long, so its cached prefix stays whole.
  */
 export function createWorldRuntime(ctx: Context, config: WorldConfig, store: ArchiveStore, world?: WorldPromptSource, memoryTurns: () => number = () => DEFAULT_MEMORY_TURNS, coldHours: () => number = () => DEFAULT_COLD_HOURS, now: () => number = Date.now) {
   if (config.archiveScope === 'workspace' && !world?.archiveSession) throw new Error('Workspace archive requires the host workspace selection');
@@ -48,25 +195,33 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
   const history = createHistory(store);
   const names = () => world?.names?.() ?? world?.prompt.names ?? worldNames(config);
   const included = (session: Session) => inWorld(session, config, world?.inWorkspace);
+  const ownMemory = (source: UserMessage['source'] | undefined) => isRecall(source, config.worldId);
   const faults = new Faults();
-  const prompts = world && createPromptSections(config, world, { logger: ctx.logger });
+  const scopeToken = Symbol();
+  const prompts = world && createPromptSections(config, world, scopeToken, { logger: ctx.logger });
   const memory = new WeakMap<Session, MemoryState>();
-  const toolSets = [world?.memory ? (inside: () => boolean) => memoryTools(world.memory!, inside) : undefined].filter(make => !!make);
-  const tools = toolSets.length ? createWorldToolRegistry({ tools: inside => toolSets.flatMap(make => make(inside)), inWorld: agent => !stopped && included(agent.session), faults, logger: ctx.logger }) : undefined;
-  /** The memory tools follow world membership, whatever the life line does. */
+  const service = world?.memory;
+  const worldTools = (inside: () => boolean) => [...service ? memoryTools(service, inside) : [], ...config.moodFile ? moodTools(config.moodFile, inside) : []];
+  const tools = service || config.moodFile ? createWorldToolRegistry({ tools: worldTools, inWorld: agent => !stopped && included(agent.session), faults, logger: ctx.logger }) : undefined;
+  /** The world tools (memory, mood) follow world membership, whatever the life line does. */
   const syncTools = (agent: Agent): boolean => !tools ? false : included(agent.session) ? tools.attach(agent) : tools.detach(agent);
   const disposers: (() => void)[] = [];
   let stopping: Promise<void> | undefined;
   let stopped = false;
+  const catchUpController = new AbortController();
+  const cancelCatchUp = () => catchUpController.abort();
   /**
    * Whether the session may carry her world: her preset, or a memory block inherited onto its surface (a delegated
    * child of her session). Everything else is never read from disk or tracked. The check stays in memory.
    */
-  const mayCarryWorld = (session: Session) => belongsToWorld(session, config) || memory.has(session) || session.surface.nodes.some(seq => isMemoryBlock(session.eventAt(seq)));
+  const mayCarryWorld = (session: Session) => belongsToWorld(session, config) || memory.has(session) || session.surface.nodes.some(seq => {
+    const event = session.eventAt(seq);
+    return event?.type === 'user/message' && ownMemory(event.data.source);
+  });
 
   function newMemoryState(session: Session): MemoryState {
     const inScope = included(session);
-    return { reload: true, position: { turn: 1, step: 1 }, retiring: [], inScope, restart: !inScope && belongsToWorld(session, config) };
+    return { reload: true, cold: false, position: { turn: 1, step: 1 }, retiring: [], inScope, restart: !inScope && belongsToWorld(session, config) };
   }
   /**
    * Archive failures never stop her talking: they stay in the health list, and what she said meanwhile is replayed
@@ -81,8 +236,8 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
    * the host only inside an open turn and step, which pre-step and attach are not, so `flushRetired` writes it from
    * the step's request hook, after the step has started and before the request is assembled (#22).
    */
-  function retireMemory(session: Session, state: MemoryState): void {
-    const found = session.surface.nodes.filter(seq => isMemoryBlock(session.eventAt(seq)));
+  function retireMemory(session: Session, state: MemoryState, all = false): void {
+    const found = recallNodes(session, all ? source => isRecall(source) : ownMemory);
     state.retiring = [...new Set([...state.retiring, ...found])];
     if (found.length) state.restart = true;
     state.reload = true; state.pendingId = undefined;
@@ -99,13 +254,27 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
     }
     return found.length ? found.slice(0, 8).join('、') + (found.length > 8 ? `…共 ${found.length} 个` : '') : '无';
   }
-  /** Empty system nodes retire only our recalled blocks and derive no model message; original logs stay intact. */
-  function flushRetired(session: Session, state: MemoryState, position: { turn: number; step: number }): void {
+  /** The text of her latest mood snapshot still on the surface, if any. */
+  function latestMood(session: Session): string | undefined {
+    const seq = recallNodes(session, source => source?.kind === moodSource && source.worldId === config.worldId).at(-1);
+    const event = seq === undefined ? undefined : session.eventAt(seq);
+    return event?.type === 'user/message' ? event.data.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('') : undefined;
+  }
+  /**
+   * Her mood rides just before the time block, appended like it: only when it differs from the latest one on the
+   * surface, never replacing an old one, so the cached prefix stays whole and compaction clears them all.
+   */
+  function moodMessage(session: Session): UserMessage | undefined {
+    if (!config.moodFile) return undefined;
+    const mood = readMood(config.moodFile);
+    if (mood.kind === 'failed') faults.set('mood', `mood.md 读不出来：${mood.message}`); else faults.clear('mood');
+    const latest = latestMood(session);
+    const text = moodText(mood) ?? (latest === undefined ? undefined : MOOD_CLEARED);
+    return text === undefined || text === latest ? undefined : createUserMessage({ content: [{ type: 'text', text }], source: { kind: moodSource, form: 'snapshot', worldId: config.worldId } });
+  }
+  function flushRetired(session: Session, state: MemoryState, position: RequestPosition): void {
     const retiring = state.retiring; state.retiring = [];
-    for (const seq of retiring) {
-      if (!session.surface.nodes.includes(seq)) continue;
-      session.append('system/message', { ...position, message: createSystemMessage('') }, { surfaceOp: { op: 'replace', startSeq: seq, endSeq: seq }, sourceEventSeqs: [seq] });
-    }
+    retireContext(session, retiring, position);
   }
   async function attach(agent: Agent): Promise<void> {
     const { session } = agent;
@@ -116,31 +285,50 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
     if (included(session)) await archiveNow(session.id);
   }
   /** Retire old blocks, then admit fresh memory through the host's normal append path (#21). The caller checks the scope after the wait. */
+  /**
+   * A cold turn's first step summarizes the old conversation before anything is admitted, so the host's own context
+   * admission sees the compacted surface. Only the tool-free compaction can do this inside a turn; without it, or when it
+   * fails, the memory block and prompt are still rebuilt and the failure shows in health.
+   */
+  async function compactCold(agent: Agent, step: number, pending: number, signal: AbortSignal): Promise<void> {
+    const state = memory.get(agent.session);
+    if (!state?.cold) return;
+    state.cold = false;
+    if (step !== 1 || !pending || signal.aborted || !included(agent.session)) return;
+    const engine = compactionFor(ctx, agent);
+    if (!compactsWhole(engine)) return;
+    await faults.track(`cold:${agent.id}`, `会话 ${agent.id} 久未开口后的压缩失败，已改为只重读记忆块和人设`, async () => { await engine.compactWhole(agent, signal); }).catch(() => {});
+  }
   async function freshBlock(session: Session, state: MemoryState): Promise<UserMessage | undefined> {
     const turns = await history.loadRecentTurns(memoryTurns(), archivedByScope);
     const present = new Set(session.deriveMessages().map(message => message.id));
     const text = renderHistory(excludePresentMessages(turns, present), config.timeZone, names(), config.archiveScope === 'home');
-    retireMemory(session, state);
-    return text ? createUserMessage({ content: [{ type: 'text', text }], source: { kind: memorySource, form: 'recall' } }) : undefined;
+    // A session entering this workspace can still carry an inherited recall from another world.
+    retireMemory(session, state, included(session));
+    return text ? createUserMessage({ content: [{ type: 'text', text }], source: { kind: memorySource, form: 'recall', worldId: config.worldId } }) : undefined;
   }
   /** Reads what the first catch-up had to leave, once the host can say which sessions belong to her. */
   async function retryCatchUp(): Promise<void> {
     if (!undecided) return;
     undecided = false;
-    await archive.catchUp();
+    await archive.catchUp(false, catchUpController.signal);
   }
 
   /** `fresh`: her world was just started from the console, so what was said while it was stopped is not archived. */
   async function start(options: { fresh?: boolean } = {}): Promise<void> {
     try {
       disposers.push(ctx.on('session/event', (session, event) => {
+        if (event.type === 'agent-preset/selected') {
+          const agent = ctx.agents.get(session.id);
+          if (agent) { prompts?.add(agent); syncTools(agent); }
+        }
         const state = memory.get(session);
         const compacted = event.type === 'compaction/end' && event.data.error === undefined;
         if (state && event.type === 'user/message' && event.data.id === state.pendingId) { state.reload = false; state.pendingId = undefined; }
         if (state && compacted) { state.reload = true; }
         // The host assembles the system prompt after turn/start, so a cold session's first request already has both.
         const cold = !!state && event.type === 'turn/start' && state.lastRequestAt !== undefined && now() - state.lastRequestAt >= coldHours() * 60 * 60_000;
-        if (cold) state.reload = true;
+        if (cold) { state.reload = true; state.cold = true; }
         if (compacted || cold) prompts?.refresh(session);
         if (!isOrdinarySession(session.header)) return;
         if (event.type === 'assistant/message' || event.type === 'turn/end' || event.type === 'turn/start' || event.type === 'compaction/end' || (event.type === 'user/message' && event.data.source.kind === 'user')) void archive.schedule(session.id).catch(() => {});
@@ -152,6 +340,7 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
         void attach(agent);
         return undefined;
       }));
+      if (prompts) disposers.push(ctx.on('agent/disposed', ({ agent }) => prompts.forget(agent)));
       if (tools) {
         disposers.push(reassembleOnChange(ctx, syncTools));
         disposers.push(ctx.on('agent/pre-step', ({ agent }, next) => { syncTools(agent); return next(); }, { prepend: true }));
@@ -159,10 +348,12 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
       }
       // Admitted ahead of the step's new input; the host's own admission order (contexts, time-context last) is kept.
       disposers.push(ctx.on('agent/pre-step', async (payload, next) => {
-        const decision = await next();
+        await compactCold(payload.agent, payload.step, payload.messages.length, payload.signal);
+        let decision = await next();
         const { agent, step, signal } = payload;
         // An empty first step ends the turn; any later step runs anyway, so adding to it is safe.
         if (decision.kind !== 'enter' || (step === 1 && !decision.messages.length) || signal.aborted || !mayCarryWorld(agent.session)) return decision;
+        if (prompts?.takeRestart(agent.session)) decision = { ...decision, startsRequestSeries: true };
         await attach(agent);
         const state = memory.get(agent.session)!;
         const leave = () => {
@@ -175,6 +366,8 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
         state.inScope = true;
         await archiveNow(agent.id); signal.throwIfAborted();
         if (!included(agent.session)) return leave();
+        const mood = moodMessage(agent.session);
+        if (mood) decision = { ...decision, messages: [...decision.messages, mood] };
         if (!state.reload) return decision;
         // A block that cannot be built leaves the old one in place; she talks on, the fault shows, and the next step tries again.
         let block: UserMessage | undefined, built = true;
@@ -196,13 +389,13 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
       disposers.push(ctx.on('llm/stream', async function* (request, next) {
         const agent = isAgentLoopRequest(request) && request.sessionId ? ctx.agents.get(request.sessionId) : undefined;
         const owned = agent && included(agent.session);
-        const inRequest = agent && !owned ? request.messages.filter(message => message.source?.kind === memorySource).length : 0;
+        const inRequest = agent && !owned ? request.messages.filter(message => ownMemory(message.source)).length : 0;
         const placed = !!agent && !owned && !!prompts?.active(agent.session);
         if (agent && !owned && (placed || inRequest)) {
           const state = memory.get(agent.session);
           if (state) { retireMemory(agent.session, state); flushRetired(agent.session, state, state.position); state.restart = true; }
           const reasons = [inRequest ? `请求里还带着 ${inRequest} 条世界记忆块` : '', placed ? '世界提示还挂在会话上' : ''].filter(Boolean).join('；');
-          ctx.logger.warn(`dsh-world: 阻止了会话 ${agent.id}（预设 ${agent.session.header.agentPreset ?? '无'}）的一次请求，它不在世界工作区里。原因：${reasons}。${state ? '已尝试退役记忆块' : '这个会话没有记忆状态，没法退役'}；退役后会话表面上仍有的记忆节点：${memoryNodesOn(agent.session)}。DSH_WORLD_SCOPE_CHANGED`);
+          ctx.logger.warn(`dsh-world: 阻止了会话 ${agent.id}（预设 ${sessionPreset(agent.session) ?? '无'}）的一次请求，它不在世界工作区里。原因：${reasons}。${state ? '已尝试退役记忆块' : '这个会话没有记忆状态，没法退役'}；退役后会话表面上仍有的记忆节点：${memoryNodesOn(agent.session)}。DSH_WORLD_SCOPE_CHANGED`);
           yield { type: 'finish', reason: { kind: 'error', failure: { code: 'DSH_WORLD_SCOPE_CHANGED', message: 'dsh-world: 会话已离开世界工作区，已阻止携带世界上下文的请求，请重新发送。' } } } satisfies StreamChunk;
           return;
         }
@@ -213,10 +406,19 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
           else yield chunk;
         }
       }));
-      await archive.catchUp(options.fresh);
-      if (options.fresh) for (const agent of ctx.agents.list()) if (belongsToWorld(agent.session, config)) await archive.skip(agent.id);
+      // Already-open sessions can start a turn before the background archive catch-up finishes.
       for (const agent of ctx.agents.list()) {
         prompts?.add(agent);
+        syncTools(agent);
+      }
+      const { signal } = catchUpController;
+      await archive.catchUp(options.fresh, signal);
+      if (options.fresh) for (const agent of ctx.agents.list()) {
+        if (signal.aborted) return;
+        if (included(agent.session)) await archive.skip(agent.id);
+      }
+      for (const agent of ctx.agents.list()) {
+        if (signal.aborted) return;
         await attach(agent);
       }
     } catch (error) { await stop(); throw error; }
@@ -224,10 +426,11 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
   function stop(): Promise<void> {
     return stopping ??= (async () => {
       stopped = true;
+      cancelCatchUp();
       prompts?.clear(); tools?.clear();
       for (const dispose of disposers.splice(0).reverse()) dispose();
       await archive.flush();
     })();
   }
-  return { start, retryCatchUp, refreshPrompt: (session: Session) => { prompts?.refresh(session); }, flush: archive.flush, stop, faults: () => [...faults.list(), ...archive.faults()] };
+  return { scopeToken, start, retryCatchUp, cancelCatchUp, refreshPrompt: (session: Session) => { prompts?.refresh(session); }, flush: archive.flush, stop, faults: () => [...faults.list(), ...archive.faults()] };
 }

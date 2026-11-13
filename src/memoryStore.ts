@@ -56,7 +56,6 @@ export function decodeRef(ref: string): { kind: 'c'; recordId: string; hash: str
 const hashOf = (content: string) => sha(content).slice(0, 12);
 export const chatRef = (recordId: string, content: string) => encodeRef(['c', recordId, hashOf(content)]);
 export const fileRef = (sourceId: string, content: string) => encodeRef(['a', sourceId, hashOf(content)]);
-export const refHash = hashOf;
 
 /** Explicit links only: a line `引用：memory:<ref> memory:<ref>`. */
 export function extractLinks(content: string): string[] {

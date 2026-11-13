@@ -1,4 +1,4 @@
-import { addAbortListener } from 'node:events';
+import { abortable } from '../abortable.ts';
 import type { Context } from '@deepseek-ai/cordis';
 import type { Agent } from '@deepseek-ai/dsh-agent';
 import type {} from '@deepseek-ai/dsh-llm';
@@ -39,14 +39,6 @@ function failureText(error: unknown): string {
   for (let current = error; current !== undefined && parts.length < 4; current = current instanceof Error ? current.cause : undefined) parts.push(errorText(current));
   return parts.join('：');
 }
-async function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
-  signal.throwIfAborted();
-  let listener: ReturnType<typeof addAbortListener>;
-  const aborted = new Promise<never>((_, reject) => { listener = addAbortListener(signal, () => reject(signal.reason)); });
-  try { return await Promise.race([promise, aborted]); }
-  finally { listener![Symbol.dispose](); }
-}
-
 /** One explicit request, held behind existing turns and cancelled with the life line. */
 export function createHomeApply(deps: HomeApplyDeps) {
   let state: HomeApplyState = { status: 'idle' };

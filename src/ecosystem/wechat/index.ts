@@ -6,7 +6,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { jsonObject, knownHost, readBody, sendJson, type JsonResult } from '../../http.ts';
 import { speakerIdentity, type SpeakerIdentity } from '../shared/identity.ts';
 import { durableWrite } from '../../life/lifeStore.ts';
-import { createWechatHome } from './home.ts';
+import { createWechatHome, WechatHomeBusy } from './home.ts';
 import type { PreparedReply, WechatReceipt } from './archive.ts';
 import { channelContext, channelMedia, channelReference, type ChannelContextMessage, type ChannelReference } from '../shared/context.ts';
 import { admitContextImages } from './images.ts';
@@ -16,11 +16,12 @@ import { createWechatReading } from './reading.ts';
 import { createStickerLibrary } from './stickerLibrary.ts';
 import { createStickerTools } from './stickerTools.ts';
 import { createWechatPresence } from './presence.ts';
-import { reassembleOnChange, scopedTool, type InWorld } from '../../worldScope.ts';
+import { reassembleOnChange, registerScopedTool, type InWorld } from '../../worldScope.ts';
 
-export const WECHAT_PATH = '/dsh-world/wechat/ask';
+import { worldPath } from '../../worldRoutes.ts';
 
 export function createWechatModule(deps: { ctx: Context; home(identity: SpeakerIdentity): Promise<Agent>; file: string; worldId?: string; inWorld?: InWorld; incomingDir?: string; origin(): string; allowedHosts: readonly string[]; settings?(): { contextMessages: number; bufferSeconds: number }; record?(reply: PreparedReply): Promise<string>; receipt?(receipt: WechatReceipt): Promise<void> }) {
+  const path = worldPath(deps.worldId ?? 'default') + '/wechat/ask';
   const token = randomBytes(32).toString('hex');
   const stickerDir = join(dirname(deps.file), 'stickers');
   const stickers = createStickerLibrary(stickerDir);
@@ -55,7 +56,7 @@ export function createWechatModule(deps: { ctx: Context; home(identity: SpeakerI
     if (attached.has(agent)) return false;
     const disposers: (() => void)[] = [];
     try {
-      for (const tool of [...sending.tools, reading.tool, reading.imageTool, ...stickerTools]) disposers.push(agent.ctx.tools.register(scopedTool(tool, () => inside(agent), () => detach(agent))));
+      for (const tool of [...sending.tools, reading.tool, reading.imageTool, ...stickerTools]) disposers.push(registerScopedTool(agent, tool, () => !stopped && inside(agent), () => detach(agent)));
       attached.set(agent, disposers);
     }
     catch (error) { for (const dispose of disposers.reverse()) dispose(); throw error; }
@@ -113,13 +114,16 @@ export function createWechatModule(deps: { ctx: Context; home(identity: SpeakerI
     if (identity.channel !== 'wechat') return { status: 400, body: { error: 'bad channel' } };
     if ((identity.conversationType === 'group') !== identity.conversationId.endsWith('@chatroom')) return { status: 400, body: { error: 'bad conversation type' } };
     try { return { status: 200, body: { accepted: true, ...(await home.ask(text, identity, context, media, reference)) } }; }
-    catch (error) { deps.ctx.logger.warn('dsh-world WeChat request failed:', error); return { status: 503, body: { error: 'home request failed; delivery must be checked before retrying' } }; }
+    catch (error) {
+      if (error instanceof WechatHomeBusy) return { status: 409, body: { error: 'home busy; message not taken in, ask again later' } };
+      deps.ctx.logger.warn('dsh-world WeChat request failed:', error); return { status: 503, body: { error: 'home request failed; delivery must be checked before retrying' } };
+    }
   }
   return {
     presence: (now: Date) => !stopped && accountState === 'online' ? presence.summary(now) : undefined,
     status() { return { ...sending.status(), lastContactAt: lastContactAt ?? null, account: accountState ?? null, ...settings() }; },
     start() {
-      durableWrite(deps.file, JSON.stringify({ origin: deps.origin(), token, path: WECHAT_PATH, pid: process.pid, protocol: 4, references: true }, null, 2));
+      durableWrite(deps.file, JSON.stringify({ origin: deps.origin(), token, path, pid: process.pid, protocol: 4, references: true }, null, 2));
       if (inWorld) for (const agent of deps.ctx.agents.list()) attach(agent);
     },
     stop() {
@@ -130,7 +134,7 @@ export function createWechatModule(deps: { ctx: Context; home(identity: SpeakerI
       try { if (JSON.parse(readFileSync(deps.file, 'utf8')).token === token) rmSync(deps.file, { force: true }); } catch { /* already absent, or a newer module owns the file */ }
       return closing = Promise.allSettled([...requests]).then(() => sending.stop());
     },
-    route: { kind: 'exact' as const, path: WECHAT_PATH, handler: async (req: IncomingMessage, res: ServerResponse) => {
+    route: { kind: 'exact' as const, path, handler: async (req: IncomingMessage, res: ServerResponse) => {
       let result: JsonResult;
       const request = handle(req); requests.add(request);
       try { result = await request; } catch { result = { status: 500, body: { error: 'internal error' } }; }

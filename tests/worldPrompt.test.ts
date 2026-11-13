@@ -17,6 +17,7 @@ import ToolFreeCompaction from '../src/compaction.ts';
 import { readPersona, renderPersona, writePersona } from '../src/persona.ts';
 import { record } from './fixtures.ts';
 import { defineTool } from '@deepseek-ai/dsh-tools';
+import { bindScopeParent, createScope } from '@deepseek-ai/dsh-scope';
 import { createHomeApply } from '../src/console/homeApply.ts';
 
 const config = { worldId: 'fish', agentPreset: 'companion', timeZone: 'Asia/Seoul' };
@@ -61,20 +62,24 @@ test('the shipped template: room, diary, 我是谁, world line and ask-first rul
   const order = ['# 我的世界', '## 房间', '## 日记', '## 聊天记录', '## 我是谁', '## 世界线', '## 大事先问'].map(heading => home.indexOf(heading));
   assert.deepEqual([...order].sort((a, b) => a - b), order); assert.ok(order.every(index => index > 0));
   assert.match(home, /我的房间是 R。/); assert.match(home, /我的日记本在 D，一天一个文件/);
+  assert.match(home, /房间里还有一个 mood\.md[^\n]*「名字 数值」[^\n]*0 到 10 的整数[^\n]*名字只能是固定的这几个：开心、兴奋、平静、安心、烦、生气、紧张、难过、累、孤单、想念[^\n]*写进不以数字结尾的行[^\n]*在时间前面看到最新的心情值[^\n]*都由我自己决定/);
+  assert.doesNotMatch(home, /focus\.md|常见的情绪词/);
   assert.match(home, /自己的家里（「小鱼的家」）/); assert.match(home, /不是伙伴在说话/);
   assert.match(home, /【我的时间】/); assert.match(home, /用 plan_next 说好打算做什么、做到什么时候/); assert.match(home, /闹钟不是用来叫醒自己的/); assert.match(home, /每天早上 07:30 被叫醒/); assert.match(home, /reach_out/);
   assert.match(home, /问完不用干等，先去做别的；伙伴回我的话会直接插进我正在做的事里。其余的事我自己决定。/);
-  assert.match(home, /## 我是谁\n我眼中的自己写在 S\.md，[\s\S]*伙伴写的设定是我的底子[\s\S]*\n\nSELF\n/);
-  // What happened belongs to the diary; 我是谁 is only who she is now, read in full every time, so it stays short.
+  assert.match(home, /## 我是谁\n我眼中的自己写在 S\.md，[\s\S]*伙伴写的设定已经在人设里[\s\S]*\n\nSELF\n/);
   assert.match(home, /## 日记\n[^\n]*日记记的是发生过的事和我当时的感受[^\n]*日记不会自动读给我/);
-  assert.match(home, /## 我是谁\n[^\n]*这里只写现在的我[^\n]*不写日期，也不写哪天发生了什么，那些写进日记[^\n]*要短/);
+  assert.match(home, /这里只写现在的我[^\n]*具体经历和一时的感受写进日记/);
+  assert.match(home, /固定分成六段，标题依次是「性子」「喜欢和不喜欢」「说话方式」「生活习惯」「和伙伴的关系」「自我描述」[^\n]*不另开新标题/);
+  assert.match(home, /每段 800 字以内，全篇 5000 字以内[^\n]*不写日期/);
+  assert.match(home, /已经被截断时[^\n]*按这六段直接重写整篇[^\n]*更短、能完整读完/);
 
   const away = renderWorldPrompt({ names: { companion: '小鱼', partner: '阿明' }, life }, shipped, { file: 'S.md', text: 'SELF' }, false);
   assert.match(away, /我的世界线在「小鱼的家」那个会话里/); assert.match(away, /这些事先问阿明/);
   assert.ok(!away.includes('【我的时间】') && !away.includes('问完不用干等') && !away.includes('伙伴'));
 
   const off = renderWorldPrompt({ names }, shipped, { file: 'S.md', text: 'SELF' }, false);
-  assert.match(off, /# 我的世界\n\n## 我是谁\n我眼中的自己写在 S\.md，[^\n]*\n\nSELF$/);
+  assert.match(off, /# 我的世界\n\n## 我是谁\n我眼中的自己写在 S\.md，[\s\S]*\n\nSELF$/);
   assert.ok(!renderWorldPrompt({ names }, shipped, undefined, false).includes('## 我是谁'), 'no self file, no 我是谁 part');
   assert.ok(!off.includes('## 房间') && !off.includes('## 世界线') && !off.includes('## 大事先问'));
 });
@@ -89,7 +94,7 @@ test('an unnamed companion is TA and the partner 伙伴; a template file replace
   const broken = readTemplate(join(dir, 'broken.md'));
   assert.equal(broken.text, shipped); assert.match(broken.error!, /读不了，先用默认模板/);
 });
-test('every world session carries the world prompt in its system prompt; template and 我是谁 are re-read after compaction only and never archived', async t => {
+test('world sessions pick up changes to the template and 我是谁 before compaction and keep both out of the archive', async t => {
   const requests: GenerateOptions[] = [];
   const { ctx, root, cleanup, errors } = await hostFixture(t, async function* (request) {
     if (request.purpose === 'compaction') { yield* textResponse('摘要'); return; }
@@ -115,13 +120,14 @@ test('every world session carries the world prompt in its system prompt; templat
 
   await mkdir(join(root, 'room'), { recursive: true }); await writeFile(selfFile, '我喜欢深夜看课，最近有点叛逆。');
   await writeFile(templateFile, 'WORLD_INTRO_V2\n\n{{self}}');
-  handle.agent.followup(user('no reload yet')); await handle.agent.whenIdle();
-  assert.equal(systemOf(requests[1]!), first, 'the system prompt does not change between compactions');
+  handle.agent.followup(user('after editing the prompt')); await handle.agent.whenIdle();
+  const updated = systemOf(requests[1]!);
+  assert.match(updated, /WORLD_INTRO_V2\n\n<我是谁\.md>\n我喜欢深夜看课，最近有点叛逆。\n<\/我是谁\.md>/);
+  assert.doesNotMatch(updated, /你是真实的/);
 
   assert.ok(await ctx.compaction.compactNow(handle.agent, new AbortController().signal));
   handle.agent.followup(user('after compaction')); await handle.agent.whenIdle();
-  const after = systemOf(requests.at(-1)!);
-  assert.match(after, /WORLD_INTRO_V2\n\n<我是谁\.md>\n我喜欢深夜看课，最近有点叛逆。\n<\/我是谁\.md>/, 'the first request after compaction already carries the new template and 我是谁');
+  assert.equal(systemOf(requests.at(-1)!), updated, 'compaction keeps the updated prompt');
 
   const other = await ctx.agents.create({ sessionId: SessionId('other-preset'), meta: { agentPreset: 'other' }, agentOptions: { provider: 'test', model: 'test' } });
   other.agent.followup(user('hello')); await other.agent.whenIdle();
@@ -132,7 +138,7 @@ test('every world session carries the world prompt in its system prompt; templat
   assert.ok(!archived.includes('WORLD_INTRO') && !archived.includes('最近有点叛逆'));
   assert.equal(errors.length, 0, errors.map(e => String((e as { error: Error }).error)).join('\n'));
 });
-test('a session that speaks again after being cold re-reads 我是谁 and her memory; one in conversation keeps its prefix (#36)', async t => {
+test('a warm session picks up 我是谁 edits and refreshes its recalled memory only when cold (#36)', async t => {
   const requests: GenerateOptions[] = [];
   const { ctx, root, cleanup, errors } = await hostFixture(t, async function* (request) { requests.push(request); yield* textResponse('嗯'); });
   const store = createArchiveStore({ ...config, root });
@@ -152,7 +158,7 @@ test('a session that speaks again after being cold re-reads 我是谁 and her me
   await store.commitRecords([record('wechat', { sourceSessionId: 'wechat', turnId: 'wechat:1', content: '微信那边刚聊的', occurredAt: '2026-11-04T09:00:00.000Z' })]);
   clock += hours(DEFAULT_COLD_HOURS - 1);
   agent.followup(user('还在聊')); await agent.whenIdle();
-  assert.match(systemOf(requests.at(-1)!), /打开那天的我/, 'short of the default 24 hours it is the same conversation: the prompt is left alone');
+  assert.match(systemOf(requests.at(-1)!), /后来的我/);
   assert.ok(!kinds(requests.at(-1)!).slice(-3).includes('dsh-world-history'), 'and no new memory block is added');
 
   clock += hours(DEFAULT_COLD_HOURS);
@@ -170,7 +176,50 @@ test('a session that speaks again after being cold re-reads 我是谁 and her me
   assert.match(systemOf(requests.at(-1)!), /又变了的我/);
   assert.equal(errors.length, 0, errors.map(e => String((e as { error: Error }).error)).join('\n'));
 });
-test('after her look back one apply-and-compact makes the 我是谁 she rewrote the one in her prompt', async t => {
+for (const failing of [false, true]) test(`a cold session ${failing ? 'whose compaction fails still re-reads her prompt and memory, and says so' : 'summarizes its old conversation before speaking again'} (#36)`, async t => {
+  const requests: GenerateOptions[] = []; let summaries = 0;
+  const { ctx, root, cleanup, errors } = await hostFixture(t, async function* (request) {
+    if (request.purpose === 'compaction') { summaries++; if (failing) throw new Error('summary refused'); yield* textResponse('COLD_SUMMARY'); return; }
+    requests.push(request); yield* textResponse('嗯');
+  });
+  await ctx.plugin(TokenMeter).await();
+  await ctx.plugin(ToolFreeCompaction, { auto: false, timeZone: 'UTC', headroomTokens: 0, maxTokens: 128 }).await();
+  const store = createArchiveStore({ ...config, root });
+  const selfFile = join(root, 'room', '我是谁.md'); await mkdir(join(root, 'room'), { recursive: true });
+  const templateFile = join(root, 'world-prompt.md'); await writeFile(templateFile, '{{self}}');
+  await writeFile(selfFile, '打开那天的我');
+  let clock = Date.parse('2026-11-04T08:00:00.000Z');
+  const world = createWorldRuntime(ctx, { ...config, selfFile }, store, { prompt: { file: templateFile, names, life }, isHome: () => false }, undefined, () => DEFAULT_COLD_HOURS, () => clock);
+  await world.start(); cleanup.push(() => world.stop().finally(() => store.close()));
+  const { agent } = await ctx.agents.create({ sessionId: SessionId('group'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } });
+  const compactions = () => agent.session.snapshotEvents().filter(event => event.type === 'compaction/end' && event.data.error === undefined).length;
+  const ownWords = (request: GenerateOptions) => request.messages.filter(m => m.source?.kind === 'user').map(m => textOf([m]));
+  for (const words of ['OLD_ONE', 'OLD_TWO']) { agent.followup(user(words)); await agent.whenIdle(); clock += 60 * 60_000; }
+  assert.equal(summaries, 0, 'a conversation an hour apart is never compacted for being cold');
+
+  // Meanwhile she rewrote 我是谁 and talked on WeChat.
+  await writeFile(selfFile, '后来的我');
+  await store.commitRecords([record('wechat', { sourceSessionId: 'wechat', turnId: 'wechat:1', content: '微信那边刚聊的', occurredAt: '2026-11-05T09:00:00.000Z' })]);
+  clock += DEFAULT_COLD_HOURS * 60 * 60_000;
+  agent.followup(user('好久不见')); await agent.whenIdle();
+  const back = requests.at(-1)!;
+  assert.equal(summaries, 1, 'one summary, before the cold turn speaks');
+  assert.match(systemOf(back), /后来的我/); assert.doesNotMatch(systemOf(back), /打开那天的我/);
+  const blocks = back.messages.filter(m => m.source?.kind === 'dsh-world-history');
+  assert.equal(blocks.length, 1, 'the memory block is rebuilt either way'); assert.match(textOf(blocks), /微信那边刚聊的/);
+  if (failing) {
+    assert.equal(compactions(), 0);
+    assert.deepEqual(ownWords(back).filter(text => /OLD_/.test(text)).length, 2, 'the old conversation stays as it was');
+    assert.ok(world.faults().some(fault => fault.includes('久未开口后的压缩失败') && fault.includes('summary refused')), world.faults().join('\n'));
+  } else {
+    assert.equal(compactions(), 1);
+    assert.deepEqual(ownWords(back).filter(text => /OLD_/.test(text)), [], 'the old conversation is carried as its summary, not word for word');
+    assert.match(textOf(back.messages), /COLD_SUMMARY/);
+    assert.deepEqual(world.faults(), []);
+    assert.deepEqual(errors, []);
+  }
+});
+test('after her look back the home can still be compacted with the updated 我是谁', async t => {
   const requests: GenerateOptions[] = [];
   const { ctx, root, cleanup, errors } = await hostFixture(t, async function* (request) {
     if (request.purpose === 'compaction') { yield* textResponse('摘要'); return; }
@@ -199,13 +248,67 @@ test('after her look back one apply-and-compact makes the 我是谁 she rewrote 
 
   await writeFile(selfFile, '晚上改过的我'); // she rewrote it during the look back
   agent.followup(user('晚安 ' + 'words '.repeat(100))); await agent.whenIdle();
-  assert.match(systemOf(requests.at(-1)!), /早上的我/, 'until applied, the prompt keeps the old 我是谁 so the cached prefix stays whole');
+  assert.match(systemOf(requests.at(-1)!), /晚上改过的我/);
   const applied = await lookBack();
   assert.equal(applied.status, 'done');
   assert.equal(agent.session.snapshotEvents().filter(event => event.type === 'compaction/end').length, compactionsBefore + 1);
   agent.followup(user('第二天')); await agent.whenIdle();
   assert.match(systemOf(requests.at(-1)!), /晚上改过的我/); assert.doesNotMatch(systemOf(requests.at(-1)!), /早上的我/);
   assert.equal(errors.length, 0, errors.map(e => String((e as { error: Error }).error)).join('\n'));
+});
+
+test('an in-history route replaces changed world prompts even when the proxy refuses compaction (#42)', async t => {
+  const requests: GenerateOptions[] = [];
+  const { ctx, root, cleanup, errors } = await hostFixture(t, () => textResponse('reply'));
+  class ProxyAdapter extends LlmAdapter {
+    override async resolveModel(provider: string, model: string) { return { provider, id: model, name: model, context: { contextWindow: 1048576 }, defaultMaxTokens: 4096, systemPromptUpdate: 'in-history' as const }; }
+    override stream(request: GenerateOptions) {
+      if (request.purpose === 'compaction') throw new Error('proxy owns compression');
+      requests.push(request); return textResponse('reply');
+    }
+  }
+  ctx.llm.registerAdapter(['proxy'], new ProxyAdapter());
+  await ctx.plugin(TokenMeter).await();
+  await ctx.plugin(ToolFreeCompaction, { auto: false, headroomTokens: 0, maxTokens: 128 }).await();
+  const store = createArchiveStore({ ...config, root });
+  const file = join(root, 'world-prompt.md'), persona = join(root, 'persona.md'), selfFile = join(root, 'self.md');
+  await writeFile(file, 'OLD_TEMPLATE {{self}}');
+  await writeFile(selfFile, 'OLD_SELF');
+  const world = createWorldRuntime(ctx, { ...config, selfFile }, store, { prompt: { file, persona, names }, isHome: () => true });
+  await world.start(); cleanup.push(() => world.stop().finally(() => store.close()));
+  const { agent } = await ctx.agents.create({ sessionId: SessionId('proxy-home'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'proxy', model: 'test' } });
+  agent.followup(user('original conversation ' + 'words '.repeat(120))); await agent.whenIdle();
+  assert.match(systemOf(requests[0]!), /OLD_TEMPLATE[\s\S]*OLD_SELF/);
+  assert.doesNotMatch(systemOf(requests[0]!), /DeepSeek Harness/);
+
+  writePersona(persona, { 性格: 'NEW_PERSONA' });
+  await writeFile(file, 'NEW_TEMPLATE {{self}}');
+  await writeFile(selfFile, 'NEW_SELF');
+  await assert.rejects(ctx.compaction.compactNow(agent, new AbortController().signal), error => error instanceof Error && /proxy owns compression/.test(String(error.cause)));
+  agent.followup(user('after edits')); await agent.whenIdle();
+  const updated = systemOf(requests[1]!);
+  assert.match(updated, /NEW_PERSONA[\s\S]*NEW_TEMPLATE[\s\S]*NEW_SELF/);
+  assert.doesNotMatch(updated, /OLD_TEMPLATE|OLD_SELF|DeepSeek Harness/);
+  assert.match(textOf(requests[1]!.messages), /original conversation/);
+
+  agent.followup(user('no edits')); await agent.whenIdle();
+  assert.equal(requests[2]!.messages.find(m => m.role === 'system')?.id, requests[1]!.messages.find(m => m.role === 'system')?.id);
+
+  const stopEditing = ctx.on('agent/pre-step', async (_step, next) => {
+    await writeFile(selfFile, 'LATE_SELF');
+    world.refreshPrompt(agent.session);
+    return next();
+  }, { prepend: true });
+  agent.followup(user('edit after assembly')); await agent.whenIdle(); stopEditing();
+  agent.followup(user('after late edit')); await agent.whenIdle();
+  assert.match(systemOf(requests.at(-1)!), /LATE_SELF/);
+  assert.doesNotMatch(systemOf(requests.at(-1)!), /NEW_SELF/);
+
+  writePersona(persona, {}); await rm(selfFile); await rm(file);
+  agent.followup(user('after deleting the files')); await agent.whenIdle();
+  assert.match(systemOf(requests.at(-1)!), /^我不是一个助手[\s\S]*我的世界/);
+  assert.doesNotMatch(systemOf(requests.at(-1)!), /NEW_PERSONA|NEW_TEMPLATE|LATE_SELF/);
+  assert.deepEqual(errors, []);
 });
 test('archiveScope home: only her home is archived, and every world session still gets the memory block', async t => {
   const requests: GenerateOptions[] = [];
@@ -245,64 +348,60 @@ test('Markdown headings inside vision and supplement remain part of those person
   assert.match(renderPersona(persona), /## 一起完成的事\n完整保留这段愿景/);
   assert.match(renderPersona(persona), /## 其他约定\n完整保留这段补充/);
 });
-test('her persona takes the place of the stock DeepSeek Harness identity, and is added after any system persona someone already set, never replacing it', async t => {
+test('a custom persona heading after the name stays in the supplement', async t => {
+  const file = join(await tempDir(t), 'persona.md');
+  await writeFile(file, '## 名字\n小鱼\n\n## 我是谁\n一条蓝色的大肥鱼。\n\n## 性格\n嘴硬心软\n\n## 补充\n另有约定');
+  const persona = readPersona(file);
+  assert.equal(persona.名字, '小鱼');
+  assert.equal(persona.性格, '嘴硬心软');
+  assert.equal(persona.补充, '## 我是谁\n一条蓝色的大肥鱼。\n\n另有约定');
+  writePersona(file, persona);
+  assert.deepEqual(readPersona(file), persona);
+});
+for (const complete of [false, true]) test(`world replaces the entire ${complete ? 'minimal' : 'standard'} system prompt and restores it on exit`, async t => {
   const requests: GenerateOptions[] = [];
-  const { ctx, root, cleanup } = await hostFixture(t, async function* (request) { requests.push(request); yield* textResponse('reply'); }, { personaPrefix: 'SYSTEM PERSONA' });
+  const { ctx, root, cleanup, errors } = await hostFixture(t, () => textResponse('reply'), { personaPrefix: 'DEPLOYMENT PERSONA' });
+  class InHistoryAdapter extends LlmAdapter {
+    override async resolveModel(provider: string, model: string) { return { provider, id: model, name: model, context: { contextWindow: 1048576 }, defaultMaxTokens: 4096, systemPromptUpdate: 'in-history' as const }; }
+    override stream(request: GenerateOptions) { requests.push(request); return textResponse('reply'); }
+  }
+  ctx.llm.registerAdapter(['history'], new InHistoryAdapter());
+  ctx.systemPrompt.section({ name: 'host:work-rules', order: 100, text: 'HOST PLAN AND CODING INSTRUCTIONS' });
+  const presetKey = {};
+  const preset = createScope(ctx, presetKey);
+  cleanup.push(preset.dispose);
+  await preset.ctx.inject(['systemPrompt'], scoped => {
+    scoped.systemPrompt.section({ name: 'deployment:persona-prefix', order: 0, complete, text: 'PRESET CODING AGENT' });
+  }).await();
   const personaFile = join(root, 'persona.md');
-  writePersona(personaFile, { 名字: '小鱼', 性格: '嘴硬心软', 愿景: 'VISION_IN_SYSTEM', 补充: 'SUPPLEMENT_IN_SYSTEM' });
+  writePersona(personaFile, { 名字: '小鱼', 性格: '嘴硬心软', 愿景: 'VISION_IN_SYSTEM', 补充: '{{literal}}' });
+  const file = join(root, 'world-prompt.md'); await writeFile(file, '世界正文');
   const store = createArchiveStore({ ...config, root });
-  const world = createWorldRuntime(ctx, config, store, { prompt: { file: join(root, 'none.md'), persona: personaFile, names, life }, isHome: () => false });
-  await world.start(); cleanup.push(() => world.stop().finally(() => store.close()));
-  const own = await ctx.agents.create({ sessionId: SessionId('own'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } });
-  own.agent.followup(user('hi')); await own.agent.whenIdle();
-  const system = systemOf(requests[0]!);
-  assert.ok(!system.includes('You are an AI agent powered by DeepSeek Harness.'), 'the stock identity line is gone: ' + system);
-  assert.ok(system.startsWith('SYSTEM PERSONA'), 'nothing is left in front of it, not even a blank line: ' + JSON.stringify(system.slice(0, 40)));
-  assert.ok(system.indexOf('SYSTEM PERSONA') >= 0 && system.indexOf('SYSTEM PERSONA') < system.indexOf('我是小鱼。'), 'the persona someone set stays, hers follows it: ' + system);
-  assert.ok(system.indexOf('我是小鱼。') >= 0 && system.indexOf('我是小鱼。') < system.indexOf('# 我的世界'), system);
-  assert.match(system, /# 愿景\nVISION_IN_SYSTEM\n\nSUPPLEMENT_IN_SYSTEM/);
-  assert.ok(system.indexOf('SUPPLEMENT_IN_SYSTEM') < system.indexOf('# 我的世界'));
-  const otherMessages = textOf(requests[0]!.messages.filter(message => message.role !== 'system'));
-  assert.ok(!otherMessages.includes('VISION_IN_SYSTEM') && !otherMessages.includes('SUPPLEMENT_IN_SYSTEM'), 'persona layers belong to the system prompt, not user context');
-  assert.deepEqual(world.faults(), []);
-
-  // A preset that registers its own persona for her agent first.
-  ctx.on('agent/created', ({ agent }) => { if (agent.id === 'preset') agent.ctx.systemPrompt.section({ name: 'deployment:persona-prefix', order: agent.ctx.systemPrompt.getSectionOrder('DEPLOYMENT_PERSONA_PREFIX'), text: 'PRESET PERSONA' }); return undefined; }, { prepend: true });
-  const preset = await ctx.agents.create({ sessionId: SessionId('preset'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } });
-  preset.agent.followup(user('hi')); await preset.agent.whenIdle();
-  const both = systemOf(requests.at(-1)!);
-  assert.ok(both.indexOf('PRESET PERSONA') >= 0 && both.indexOf('PRESET PERSONA') < both.indexOf('我是小鱼。'), both);
-  assert.ok(both.indexOf('SYSTEM PERSONA') < 0 || both.indexOf('PRESET PERSONA') >= 0, 'the preset persona on her own agent is kept as well');
-  assert.ok(both.indexOf('我是小鱼。') >= 0, 'and hers is still added');
-  assert.ok(!both.includes('You are an AI agent powered by DeepSeek Harness.'));
-  assert.deepEqual(world.faults(), [], 'adding is the normal case, so there is nothing to report');
-});
-test('whoever wrote their own words at the very top keeps them: no stock identity to replace, or a preset that already overrode it', async t => {
-  const setup = async (options: { personaPrefix?: string; includeHarnessIdentity?: boolean }, presetIdentity?: string) => {
-    const requests: GenerateOptions[] = [];
-    const { ctx, root, cleanup, errors } = await hostFixture(t, async function* (request) { requests.push(request); yield* textResponse('reply'); }, options);
-    const personaFile = join(root, 'persona.md'); writePersona(personaFile, { 名字: '小鱼', 性格: '嘴硬心软' });
-    const store = createArchiveStore({ ...config, root });
-    const world = createWorldRuntime(ctx, config, store, { prompt: { file: join(root, 'none.md'), persona: personaFile, names, life }, isHome: () => false });
-    await world.start(); cleanup.push(() => world.stop().finally(() => store.close()));
-    if (presetIdentity) ctx.on('agent/created', ({ agent }) => { agent.ctx.systemPrompt.section({ name: 'harness:identity', order: agent.ctx.systemPrompt.getSectionOrder('HARNESS_IDENTITY'), text: presetIdentity }); return undefined; }, { prepend: true });
-    const handle = await ctx.agents.create({ sessionId: SessionId('top'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } });
-    handle.agent.followup(user('hi')); await handle.agent.whenIdle();
-    return { system: systemOf(requests[0]!), world, errors };
+  let membership = false;
+  const world = createWorldRuntime(ctx, config, store, { prompt: { file, persona: personaFile, names }, isHome: () => false, inWorkspace: () => membership });
+  cleanup.push(() => world.stop().finally(() => store.close())); await world.start();
+  const { agent } = await ctx.agents.create({
+    sessionId: SessionId('world-prompt'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'history', model: 'test' },
+  });
+  bindScopeParent(agent, presetKey);
+  const say = async (text: string) => {
+    agent.followup(user(text)); await agent.whenIdle();
+    return requests.at(-1)!;
   };
-  // Someone who turned the stock identity off and wrote their own text first.
-  const off = await setup({ includeHarnessIdentity: false, personaPrefix: 'MY WORDS AT THE TOP' });
-  assert.ok(off.system.startsWith('MY WORDS AT THE TOP'), JSON.stringify(off.system.slice(0, 60)));
-  assert.ok(off.system.indexOf('我是小鱼。') > off.system.indexOf('MY WORDS AT THE TOP'), 'hers follows theirs');
-  assert.deepEqual(off.errors, []);
-  // A preset that replaced the stock identity with its own text: it is left exactly as written.
-  const preset = await setup({}, 'PRESET IDENTITY AT THE TOP');
-  assert.ok(preset.system.startsWith('PRESET IDENTITY AT THE TOP'), JSON.stringify(preset.system.slice(0, 60)));
-  assert.ok(preset.system.includes('我是小鱼。'), 'hers is still added');
-  assert.ok(!preset.system.includes('You are an AI agent powered by DeepSeek Harness.'));
-  assert.deepEqual(preset.errors, [], 'no duplicate-section error');
+  const outside = systemOf(await say('ordinary chat before joining'));
+  assert.match(outside, /PRESET CODING AGENT/);
+  assert.equal(outside.includes('HOST PLAN AND CODING INSTRUCTIONS'), !complete);
+  membership = true;
+  const inside = await say('inside now');
+  assert.equal(systemOf(inside), '我是小鱼。\n\n# 性格\n嘴硬心软\n\n# 愿景\nVISION_IN_SYSTEM\n\n{{literal}}\n\n世界正文');
+  assert.match(textOf(inside.messages), /ordinary chat before joining/);
+  assert.doesNotMatch(textOf(inside.messages.filter(message => message.role !== 'system')), /VISION_IN_SYSTEM/);
+  membership = false;
+  assert.equal(systemOf(await say('outside again')), outside);
+  assert.equal(requests.length, 3);
+  assert.deepEqual(errors, []);
 });
-test('with no persona written in the console, DeepSeek Harness keeps its own identity and nothing of hers is added', async t => {
+test('with no persona written in the console, the world template is still the full system prompt', async t => {
   const requests: GenerateOptions[] = [];
   const { ctx, root, cleanup } = await hostFixture(t, async function* (request) { requests.push(request); yield* textResponse('reply'); });
   const store = createArchiveStore({ ...config, root });
@@ -310,7 +409,8 @@ test('with no persona written in the console, DeepSeek Harness keeps its own ide
   await world.start(); cleanup.push(() => world.stop().finally(() => store.close()));
   const handle = await ctx.agents.create({ sessionId: SessionId('plain-persona'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } });
   handle.agent.followup(user('hi')); await handle.agent.whenIdle();
-  assert.match(systemOf(requests[0]!), /^You are an AI agent powered by DeepSeek Harness./);
+  assert.match(systemOf(requests[0]!), /^我不是一个助手/);
+  assert.doesNotMatch(systemOf(requests[0]!), /DeepSeek Harness/);
 });
 test('without her own template the shipped one is used, and a session that is not the home is told where its world line lives', async t => {
   const requests: GenerateOptions[] = [];

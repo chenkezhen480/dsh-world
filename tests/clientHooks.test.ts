@@ -50,7 +50,7 @@ function runtime(values: readonly unknown[]): { run(name: string, props?: object
     run(name: string, props: object = filled) {
       at = 0;
       hooks.length = 0;
-      const component = exports.__test[name];
+      const component = exports.__test('fish')[name];
       assert.equal(typeof component, 'function', `${name} 应该在 __test 里`);
       const tree = component({ ...props, snapshot: props, snap: props });
       return { hooks: [...hooks], tree };

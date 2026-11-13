@@ -108,6 +108,14 @@ import {
 } from '@snowluma/sdk';
 import WebSocket from 'ws';
 
+class SnowlumaSocket extends WebSocket {
+  override close(code?: number, reason?: string): void {
+    // The SDK removes its error listener before closing, but ws emits an error when a handshake is cancelled.
+    if (this.readyState === WebSocket.CONNECTING) this.once('error', () => {});
+    super.close(code, reason);
+  }
+}
+
 /**
  * 交付物里进出的都是未知形状的 JSON。这个别名只干一件事：让字段访问合法。
  * 交付模块逐字保留，所以注解只加在参数上；真正的形状契约写在文件头那段注释里。
@@ -150,8 +158,8 @@ function escapeOutgoingText(value: Loose) {
  * @returns {string}
  */
 export function segmentsToText(message: Loose) {
-  // 有些 OneBot 实现直接把纯文本消息放在 message 字段里（string）
-  if (typeof message === 'string') return message.trim();
+  // CQ 字符串里的图片链接也不交给模型，取图只使用解析出的 file 标识。
+  if (typeof message === 'string') return message.replace(/\[CQ:image(?:,[^\]]*)?\]/g, '[图片]').trim();
   const list = Array.isArray(message)
     ? message
     : (message && typeof message === 'object' ? [message] : []);
@@ -170,8 +178,7 @@ export function segmentsToText(message: Loose) {
       case 'face': out.push(`[表情${d.id ?? ''}]`); break;
       // 市场表情（mface）在部分网关实现里出现：有 summary 就用它，别让模型只看到 "[mface]"。
       case 'mface': out.push(`[表情${d.summary ? `:${d.summary}` : ''}]`); break;
-      // 带上 file 名：光写「[图片]」等于把图丢了，有 file 才能再向 OneBot 换直链。
-      case 'image': out.push(d.file ? `[图片 file=${d.file}]` : '[图片]'); break;
+      case 'image': out.push('[图片]'); break;
       case 'record': out.push(d.file ? `[语音 file=${d.file}]` : '[语音]'); break;
       case 'video': out.push('[视频]'); break;
       case 'file': out.push(`[文件${d.name ?? ''}]`); break;
@@ -360,7 +367,7 @@ export function createBridge(options: Loose) {
   /** @type {BridgeState} */
   let state = 'closed';
   /** @type {SnowLumaWebSocketClient|null} */
-  let client: Loose = null;
+  let client: SnowLumaWebSocketClient | null = null;
   let stopped = true;   // start() 未调用、或已 stop()
 
   // 上层回调的异常只记日志，不允许打断收发主链路（SDK 会把 handler 抛错吞进 error 事件，
@@ -487,7 +494,7 @@ export function createBridge(options: Loose) {
     const bot = new SnowLumaWebSocketClient({
       url: opts.wsUrl || DEFAULT_WS_URL,
       // Node 22's built-in WebSocket can error without close; ws lets the SDK settle failed connects.
-      webSocket: WebSocket,
+      webSocket: SnowlumaSocket,
       // 空串会让鉴权头变成 `Bearer `，某些网关直接 401 —— 必须 || undefined（切片第 1 节）
       accessToken: opts.accessToken || undefined,
       requestTimeoutMs: 30000,
@@ -542,7 +549,7 @@ export function createBridge(options: Loose) {
       } catch (error) {
         // 首连失败按契约 reject 得清楚；客户端保留，SDK reconnect 会按退避自动重试
         // （closed-before-opening 属于「非用户主动关闭」，重连条件成立），状态保持 connecting
-        log('error', `首次连接失败: ${(error as Loose)?.message ?? error}（SDK 将按退避自动重连）`);
+        if (client === bot) log('error', `首次连接失败: ${(error as Loose)?.message ?? error}（SDK 将按退避自动重连）`);
         throw error;
       }
     },
@@ -569,6 +576,14 @@ export function createBridge(options: Loose) {
       const id = Number(userId);
       if (!Number.isFinite(id)) throw new Error(`sendPrivate: 无效的 QQ 号 ${JSON.stringify(userId ?? null)}`);
       return enqueueSend('private', id, parts);
+    },
+
+    async getImage(file: string): Promise<string> {
+      if (!client) throw new Error('QQ 桥未启动或已停止，无法取图');
+      const { url, file_url: fileUrl } = (await client.getImage({ file }, { timeoutMs: SEND_TIMEOUT_MS })) ?? {};
+      if (typeof url === 'string' && url) return url;
+      if (typeof fileUrl === 'string' && fileUrl) return fileUrl;
+      throw new Error('SnowLuma 未返回图片直链');
     },
 
     /**

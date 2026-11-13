@@ -1,10 +1,36 @@
+import contextlib
+import io
+import json
+import runpy
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 from adapter import syncSettings, MessageStore, baselineChat, flushReceipts, messageKey, newMessages, normalizeMessage, validateConfig, watch
+from sender import selectProfile
 
 
 class AdapterTest(unittest.TestCase):
+    def test_unknown_core_build_exits_with_the_supervisors_non_retryable_code(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            core = root / '4.2.0.52' / 'Weixin.dll'
+            core.parent.mkdir()
+            core.write_bytes(b'unknown build')
+            moduleFile = root / 'wechat.json'
+            moduleFile.write_text('{"references":true}', encoding='utf-8')
+            config = root / 'config.json'
+            config.write_text(json.dumps(dict(account='wxid_bot_abcd', selfId='wxid_bot', dbDir=str(root),
+                                              moduleFile=str(moduleFile), chats=[dict(id='family@chatroom', name='家庭群', trigger='mention')])), encoding='utf-8')
+            argv = ['adapter.py', 'watch', '--config', str(config), '--allow-send']
+            error = io.StringIO()
+            with patch.object(sys, 'argv', argv), patch('native.connect', side_effect=lambda *_: selectProfile(core, [])), \
+                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(error), self.assertRaises(SystemExit) as exit:
+                runpy.run_module('adapter', run_name='__main__')
+            self.assertEqual(exit.exception.code, 4, error.getvalue())
+            self.assertIn('不支持当前微信构建', error.getvalue())
+
     def test_receipts_survive_restart_and_only_retry_writeback(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'state.sqlite'

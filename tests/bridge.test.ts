@@ -8,10 +8,11 @@ import { createUserMessage, ToolCallId, type GenerateOptions, type StreamChunk }
 import { SessionId } from '@deepseek-ai/dsh-session';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { hostFixture, textResponse } from './hostFixture.ts';
-import { createBridge, HomeUnavailable, REPLY_TIMEOUT_MS, type Bridge } from '../src/ecosystem/bridge/bridge.ts';
-import { BRIDGE_PATH, COMPACT_PATH, bridgeRoute, compactRoute } from '../src/ecosystem/bridge/route.ts';
+import { bridgePaths, createBridge, HomeUnavailable, REPLY_TIMEOUT_MS, type Bridge } from '../src/ecosystem/bridge/bridge.ts';
+import { bridgeRoute, compactRoute } from '../src/ecosystem/bridge/route.ts';
 import type { Push } from '../src/ecosystem/shared/outlets.ts';
 
+const { sayPath: BRIDGE_PATH, compactPath: COMPACT_PATH } = bridgePaths('/dsh-world/worlds/fish');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const userMessage = (text: string) => createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text }] });
 const userTexts = (request: GenerateOptions) => request.messages.filter(m => m.role === 'user' && m.source?.kind === 'user').map(m => m.content.filter(b => b.type === 'text').map(b => b.text).join(''));
@@ -50,7 +51,7 @@ async function setup(t: test.TestContext, model: (request: GenerateOptions, inde
   const pushes: Omit<Push, 'name'>[] = []; const names: string[] = []; const reachOnly: Push[] = []; const control = { pushFails: false, homeFails: undefined as string | undefined };
   const file = join(root, 'world', 'bridge.json'); await mkdir(join(root, 'world'), { recursive: true });
   const make = (bridgeFile = file) => createBridge({
-    ctx, file: bridgeFile, origin: () => 'http://127.0.0.1:5173', timers, clock: () => clock.now,
+    ctx, prefix: '/dsh-world/worlds/fish', file: bridgeFile, origin: () => 'http://127.0.0.1:5173', timers, clock: () => clock.now,
     home: async () => { if (control.homeFails) throw new Error(control.homeFails); return home; },
     outlets: [
       { name: '桌面桌宠', kinds: ['reply', 'busy', 'reach'], send: async ({ name, ...push }) => { names.push(name); pushes.push(push); if (control.pushFails) throw new Error('connect ECONNREFUSED'); } },
@@ -65,7 +66,7 @@ async function setup(t: test.TestContext, model: (request: GenerateOptions, inde
   ctx.tools.register(testTool('look', async () => 'a puzzle'));
   const busy = async () => { home.followup(userMessage('先玩会儿')); await playing; assert.equal(home.status, 'running'); };
   const idle = async () => { await home.whenIdle(); await tick(); await tick(); };
-  return { ctx, root, home, bridge, make, file, pushes, names, reachOnly, control, requests, errors, timers, release, busy, idle };
+  return { ctx, root, home, bridge, make, file, pushes, names, reachOnly, control, requests, errors, timers, playing, release, busy, idle };
 }
 
 test('her partner\'s words reach an idle home as a followup from the user, and her reply goes to the pet', async t => {
@@ -79,7 +80,7 @@ test('her partner\'s words reach an idle home as a followup from the user, and h
   assert.deepEqual(s.names, ['TA'], 'an unnamed companion is TA'); assert.deepEqual(s.reachOnly, [], 'an outlet that takes only reach gets no reply');
   assert.deepEqual(s.errors, []);
 });
-test('while she is busy the words are steered into the running turn, and the reply is her first visible text after them', async t => {
+test('while she is busy the words are steered into the running turn', async t => {
   const s = await setup(t, (_request, index) => index === 0 ? textThenTool('我去玩游戏了', 'play_game') : index === 1 ? toolOnly('look') : index === 2 ? textResponse('在玩消消乐') : textResponse('不该出现'));
   await s.busy();
   await s.bridge.say('在玩什么');
@@ -108,16 +109,62 @@ test('only the reply after the latest of several messages is pushed', async t =>
   s.timers.advance(REPLY_TIMEOUT_MS); await tick();
   assert.equal(s.pushes.length, 1, 'no busy after the reply');
 });
-test('no reply within three minutes pushes busy, and the later reply is still pushed', async t => {
-  const s = await setup(t, (_request, index) => index === 0 ? toolOnly('play_game') : textResponse('忙完啦'));
-  await s.busy();
+test('a turn still in progress pushes busy after three minutes, then only its last visible reply', async t => {
+  const s = await setup(t, (_request, index) => index === 0 ? textThenTool('先看看是什么', 'play_game') : textResponse('忙完啦'));
   await s.bridge.say('在吗');
-  s.timers.advance(REPLY_TIMEOUT_MS - 1); await tick();
-  assert.equal(s.pushes.length, 0);
-  s.timers.advance(1); await tick();
-  assert.deepEqual([...s.pushes], [{ text: 'TA在忙，忙完会在家里回你', kind: 'busy' }]);
-  s.release(); await s.idle();
+  await s.playing;
+  try {
+    s.timers.advance(REPLY_TIMEOUT_MS - 1); await tick();
+    assert.equal(s.pushes.length, 0);
+    s.timers.advance(1); await tick();
+    assert.deepEqual([...s.pushes], [{ text: 'TA在忙，忙完会在家里回你', kind: 'busy' }]);
+  } finally { s.release(); await s.idle(); }
   assert.deepEqual([...s.pushes], [{ text: 'TA在忙，忙完会在家里回你', kind: 'busy' }, { text: '忙完啦', kind: 'reply' }]);
+});
+test('an empty reply clears tracking before a later turn', async t => {
+  const s = await setup(t, (_request, index) => textResponse(index === 0 ? ' ' : '这是另一轮的回复'));
+  await s.bridge.say('处理通知'); await s.idle();
+  s.home.followup(userMessage('新话题')); await s.idle();
+  s.timers.advance(REPLY_TIMEOUT_MS);
+  assert.deepEqual(s.pushes, []);
+});
+test('an empty final reply after a tool does not push the earlier narration', async t => {
+  const s = await setup(t, (_request, index) => index === 0 ? textThenTool('收件箱里有一条通知', 'look') : (async function* () {
+    yield { type: 'finish', reason: { kind: 'stop' } } satisfies StreamChunk;
+  })());
+  await s.bridge.say('处理通知'); await s.idle();
+  assert.equal(s.requests.length, 2);
+  s.timers.advance(REPLY_TIMEOUT_MS);
+  assert.deepEqual(s.pushes, []);
+});
+test('a tool that ends the turn does not push the narration accompanying its call', async t => {
+  const s = await setup(t, () => textThenTool('我去处理一下', 'external_reply'));
+  s.ctx.tools.register(defineTool({
+    name: 'external_reply', description: 'Reply in the external app', parameters: {},
+    output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
+    execute: async (_args, execution) => { execution.concludeTurn(); return 'sent'; },
+  }));
+  await s.bridge.say('处理通知'); await s.idle();
+  assert.equal(s.requests.length, 1);
+  assert.deepEqual(s.pushes, []);
+});
+test('another user message steered in before turn end cancels the pending outlet reply', async t => {
+  const s = await setup(t, (_request, index) => index === 0 ? textThenTool('先看看是什么', 'play_game') : textResponse('家里的回复'));
+  await s.bridge.say('处理通知');
+  await s.playing;
+  try { s.home.steer(userMessage('家里换个话题')); }
+  finally { s.release(); await s.idle(); }
+  s.timers.advance(REPLY_TIMEOUT_MS);
+  assert.deepEqual(s.pushes, []);
+});
+test('an aborted turn drops its pending outlet reply and clears the busy timer', async t => {
+  const s = await setup(t, () => textThenTool('这句还没说完', 'play_game'));
+  await s.bridge.say('在吗');
+  await s.playing;
+  try { s.home.cancel({ kind: 'user' }); }
+  finally { s.release(); await s.idle(); }
+  s.timers.advance(REPLY_TIMEOUT_MS);
+  assert.deepEqual(s.pushes, []);
 });
 test('a failed push is a fault until the next push works', async t => {
   const s = await setup(t, () => textResponse('嗯'));
@@ -148,7 +195,7 @@ test('the bridge rechecks workspace membership after resolving an idle or runnin
     const messages: string[] = [];
     s.ctx.on('session/event', (session, event) => { if (session.id === s.home.id && event.type === 'user/message') messages.push(event.data.id); });
     const bridge = createBridge({
-      ctx: s.ctx, home: async () => { resolving(); await gate; return s.home; },
+      ctx: s.ctx, prefix: '/dsh-world/worlds/fish', home: async () => { resolving(); await gate; return s.home; },
       inWorld: agent => members.has(agent.id),
       outlets: [], origin: () => 'http://127.0.0.1:5173', file: join(s.root, 'guarded-bridge.json'),
     });
@@ -169,7 +216,8 @@ test('the bridge rechecks workspace membership after resolving an idle or runnin
 test('bridge.json carries the origin, a fresh token, the pid and the start time, and is removed on stop', async t => {
   const s = await setup(t, () => textResponse('嗯'));
   const written = JSON.parse(await readFile(s.file, 'utf8'));
-  assert.deepEqual(Object.keys(written).sort(), ['name', 'origin', 'pid', 'startedAt', 'token']); assert.equal(written.name, 'TA');
+  assert.deepEqual(Object.keys(written).sort(), ['compactPath', 'name', 'origin', 'pid', 'sayPath', 'startedAt', 'token']); assert.equal(written.name, 'TA');
+  assert.equal(written.sayPath, BRIDGE_PATH); assert.equal(written.compactPath, COMPACT_PATH);
   assert.equal(written.origin, 'http://127.0.0.1:5173'); assert.equal(written.pid, process.pid);
   assert.equal(written.startedAt, '2026-10-23T03:00:00.000Z'); assert.match(written.token, /^[0-9a-f]{64}$/);
   assert.ok(s.bridge.checkToken(written.token)); assert.ok(!s.bridge.checkToken(written.token.slice(1))); assert.ok(!s.bridge.checkToken(undefined));
@@ -199,15 +247,15 @@ function fakeBridge(say: (text: string) => Promise<{ id: string }> = async () =>
 async function call(bridge: Bridge | undefined, request: { method?: string; url?: string; headers?: Record<string, string>; body?: string }) {
   const req = Object.assign(Readable.from(request.body === undefined ? [] : [Buffer.from(request.body)]), { method: request.method ?? 'POST', url: request.url ?? BRIDGE_PATH, headers: { host: '127.0.0.1:3080', ...request.headers } });
   let status = 0; let headers: Record<string, string> = {}; let body = '';
-  await bridgeRoute(() => bridge).handler(req as never, { writeHead: (code: number, extra: Record<string, string>) => { status = code; headers = extra; }, end: (text: string) => { body = text; } } as never);
+  await bridgeRoute('/dsh-world/worlds/fish', () => bridge).handler(req as never, { writeHead: (code: number, extra: Record<string, string>) => { status = code; headers = extra; }, end: (text: string) => { body = text; } } as never);
   return { status, headers, body: JSON.parse(body) };
 }
 const ok = { 'x-dsh-world-token': 'secret', 'content-type': 'application/json' };
 
 test('the say route accepts trimmed text with the right token and answers 202 without waiting', async () => {
   const bridge = fakeBridge();
-  const route = bridgeRoute(() => bridge);
-  assert.deepEqual({ kind: route.kind, path: route.path }, { kind: 'exact', path: '/dsh-world/bridge/say' });
+  const route = bridgeRoute('/dsh-world/worlds/fish', () => bridge);
+  assert.deepEqual({ kind: route.kind, path: route.path }, { kind: 'exact', path: '/dsh-world/worlds/fish/bridge/say' });
   assert.deepEqual(await call(bridge, { headers: ok, body: JSON.stringify({ text: '  在吗  ' }) }), { status: 202, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }, body: { accepted: true, id: 'm1' } });
   assert.deepEqual(bridge.said, ['在吗']);
   assert.equal((await call(bridge, { headers: ok, body: JSON.stringify({ text: '鲸'.repeat(2000) }) })).status, 202);
@@ -241,7 +289,7 @@ test('the say route answers 503 when the home is unavailable and never echoes in
 async function callCompact(bridge: Bridge | undefined, request: () => string | undefined, init: { method?: string; headers?: Record<string, string> }) {
   const req = Object.assign(Readable.from([]), { method: init.method ?? 'POST', url: COMPACT_PATH, headers: { host: '127.0.0.1:3080', ...init.headers } });
   let status = 0; let body = '';
-  await compactRoute(() => bridge, request).handler(req as never, { writeHead: (code: number) => { status = code; }, end: (text: string) => { body = text; } } as never);
+  await compactRoute('/dsh-world/worlds/fish', () => bridge, request).handler(req as never, { writeHead: (code: number) => { status = code; }, end: (text: string) => { body = text; } } as never);
   return { status, body: JSON.parse(body) };
 }
 test('the compact route asks for one compaction with the right token, and says why when it cannot', async () => {

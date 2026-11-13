@@ -47,9 +47,6 @@ export interface BridgeConfig {
   contextMessages: number;
 }
 
-// 默认不开：插件不该不打招呼就在别人的机器上开一个端口。要用的人在控制台那张卡上拨开（拨开就是 3210）。
-export const DEFAULT_BRIDGE_PORT = 0;
-
 export interface BridgeStatus {
   serving: boolean;
   port: number;

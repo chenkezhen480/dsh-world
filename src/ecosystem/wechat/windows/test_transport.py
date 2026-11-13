@@ -6,7 +6,7 @@ from http.client import IncompleteRead
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from unittest.mock import patch
-from adapter import postHome
+from adapter import HomeBusy, postHome
 
 
 class TransportTest(unittest.TestCase):
@@ -19,7 +19,7 @@ class TransportTest(unittest.TestCase):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.file = Path(directory.name) / 'wechat.json'
-        self.connection = dict(origin='http://127.0.0.1:1234', path='/dsh-world/wechat/ask', token='old', protocol=4, references=True)
+        self.connection = dict(origin='http://127.0.0.1:1234', path='/dsh-world/worlds/default/wechat/ask', token='old', protocol=4, references=True)
         self.file.write_text(json.dumps(self.connection), encoding='utf-8')
 
     def unavailable(self, code=503, detail='receipt not recorded; retry receipt only'):
@@ -38,7 +38,7 @@ class TransportTest(unittest.TestCase):
             self.file.write_text(json.dumps({**self.connection, 'origin': 'http://127.0.0.1:5678', 'token': 'new'}), encoding='utf-8')
         with patch('adapter.urlopen', side_effect=[URLError(ConnectionRefusedError()), io.BytesIO(b'{"accepted":true}')]) as request, patch('adapter.time.sleep', side_effect=restart):
             postHome(self.file, dict(outbox={}))
-        self.assertEqual([call.args[0].full_url for call in request.call_args_list], ['http://127.0.0.1:1234/dsh-world/wechat/ask', 'http://127.0.0.1:5678/dsh-world/wechat/ask'])
+        self.assertEqual([call.args[0].full_url for call in request.call_args_list], ['http://127.0.0.1:1234/dsh-world/worlds/default/wechat/ask', 'http://127.0.0.1:5678/dsh-world/worlds/default/wechat/ask'])
         self.assertEqual([call.args[0].get_header('X-dsh-world-token') for call in request.call_args_list], ['old', 'new'])
 
     def test_generation_and_mixed_requests_never_retry_and_keep_the_error_body(self):
@@ -48,6 +48,13 @@ class TransportTest(unittest.TestCase):
                     postHome(self.file, message)
                 self.assertEqual(request.call_count, 1)
                 sleep.assert_not_called()
+
+    def test_a_busy_home_is_its_own_failure_and_is_not_retried_inside_the_request(self):
+        with patch('adapter.urlopen', side_effect=self.unavailable(409, 'home busy; message not taken in, ask again later')) as request, patch('adapter.time.sleep') as sleep:
+            with self.assertRaisesRegex(HomeBusy, '409.*not taken in'):
+                postHome(self.file, dict(text='她在忙'))
+            self.assertEqual(request.call_count, 1)
+            sleep.assert_not_called()
 
     def test_connection_failures_have_five_attempts_and_no_final_sleep(self):
         for error in (URLError(ConnectionRefusedError('refused')), TimeoutError('timeout'), ConnectionResetError('reset')):

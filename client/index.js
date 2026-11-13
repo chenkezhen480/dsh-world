@@ -1,12 +1,13 @@
 /**
  * dsh-world — 浏览器半侧：设置里的「世界控制台」。
- * 模块 id 必须等于 bundle 行名 dsh-world；数据来自宿主半侧的 /dsh-world/console/* 路由。
+ * 模块 id 必须等于 bundle 行名 dsh-world；数据来自当前世界的路由。
  * 读取是 GET；会改变东西的（开始、停止、人设、世界提示词、额度、记忆轮数）是带 x-dsh-world 头的 JSON POST。
  */
-window.__ModuleLoader__.load({
-  id: 'dsh-world',
-  factory: (require) => {
-    var react = require('react')
+;(function () {
+  var worldsPath = '/dsh-world/worlds'
+
+  function worldConsole(react, worldId) {
+    var prefix = worldsPath + '/' + encodeURIComponent(worldId)
     var h = react.createElement
     var useState = react.useState
     var useEffect = react.useEffect
@@ -24,11 +25,11 @@ window.__ModuleLoader__.load({
     function postTo(base, path, body) {
       return fetch(base + path, { method: 'POST', cache: 'no-store', headers: { 'content-type': 'application/json', 'x-dsh-world': '1' }, body: JSON.stringify(body || {}) }).then(settle)
     }
-    function api(path) { return getFrom('/dsh-world/console/', path) }
-    function post(path, body) { return postTo('/dsh-world/console/', path, body) }
-    /** QQ 那几扇门在自己的前缀下（/dsh-world/qq/*），不和 console 混在一起。 */
-    function qqGet(path) { return getFrom('/dsh-world/qq/', path) }
-    function qqPost(path, body) { return postTo('/dsh-world/qq/', path, body) }
+    function api(path) { return getFrom(prefix + '/console/', path) }
+    function post(path, body) { return postTo(prefix + '/console/', path, body) }
+    /** QQ 那几扇门在自己的前缀下（…/qq/*），不和 console 混在一起。 */
+    function qqGet(path) { return getFrom(prefix + '/qq/', path) }
+    function qqPost(path, body) { return postTo(prefix + '/qq/', path, body) }
     /** 保存没成时的那句话。 */
     function failedTo(setMsg) { return function (e) { setMsg('保存失败：' + (e.message || e)) } }
     /** 设置卡下面那行状态：没成（失败、请填…）标红，其余灰色。 */
@@ -206,7 +207,7 @@ window.__ModuleLoader__.load({
             return h('div', { className: 'dw-setting', key: photo.id },
               h('span', { style: { flex: '1 1 180px', overflowWrap: 'anywhere' } }, photo.description || '未写说明', ' · ', photo.width + '×' + photo.height, ' · ', local(photo.savedAt, props.zone), photo.tags.length ? ' · ' + photo.tags.join('、') : ''),
               h('button', { className: 'dw-btn', onClick: function () { setOpen(open === photo.id ? null : photo.id) } }, open === photo.id ? '收起照片' : '查看照片'),
-              open === photo.id ? h('img', { src: '/dsh-world/console/photo?id=' + encodeURIComponent(photo.id), alt: photo.description || '收藏的照片', style: { display: 'block', width: '100%', maxHeight: 480, objectFit: 'contain' }, onError: function () { setError('照片读取失败，请刷新后重试。') } }) : null)
+              open === photo.id ? h('img', { src: prefix + '/console/photo?id=' + encodeURIComponent(photo.id), alt: photo.description || '收藏的照片', style: { display: 'block', width: '100%', maxHeight: 480, objectFit: 'contain' }, onError: function () { setError('照片读取失败，请刷新后重试。') } }) : null)
           }) : h('div', { className: 'dw-muted' }, '她还没有收藏照片。'),
           h('div', { className: 'dw-setting' },
             h('button', { className: 'dw-btn', disabled: offset === 0, onClick: function () { setOffset(Math.max(0, offset - 12)); setOpen(null) } }, '上一页'),
@@ -227,7 +228,7 @@ window.__ModuleLoader__.load({
       function set(key, value) { var next = Object.assign({}, persona); next[key] = value; setPersona(next); setMsg('') }
       function save() {
         setBusy(true)
-        post('persona', persona).then(function () { setSaved(persona); setMsg('已保存。新会话或下次压缩后生效，也可点击「应用并压缩家会话」。'); if (props.onSaved) props.onSaved() },
+        post('persona', persona).then(function () { setSaved(persona); setMsg('已保存。下一轮对话生效。'); if (props.onSaved) props.onSaved() },
           failedTo(setMsg)).then(function () { setBusy(false) })
       }
       var preview = renderPersona(persona)
@@ -264,7 +265,7 @@ window.__ModuleLoader__.load({
           h('div', { className: 'dw-muted' }, '你自己的这份没有用到：' + list(prompt.memory.missing).join('、') + '。工具照样可用，但她在提示里读不到它们的来历。想加的话，把下面这段贴进去；插件不会自动改你的模板。'),
           h('pre', { className: 'dw-diary' }, prompt.memory.snippet)) : null,
         h('div', { className: 'dw-bar' },
-          h('button', { className: 'dw-btn primary', disabled: text === prompt.text, onClick: function () { save(text, '已保存。新会话或下次压缩后生效，也可点击「应用并压缩家会话」。') } }, '保存'),
+          h('button', { className: 'dw-btn primary', disabled: text === prompt.text, onClick: function () { save(text, '已保存。下一轮对话生效。') } }, '保存'),
           prompt.custom ? h('button', { className: 'dw-btn', onClick: function () { if (window.confirm('删掉你自己的这份，换回插件自带的模板？')) save('', '已换回插件自带的模板。') } }, '恢复默认') : null,
           h('span', { className: msg.indexOf('失败') >= 0 ? 'dw-bad' : 'dw-muted' }, msg)))
     }
@@ -279,10 +280,29 @@ window.__ModuleLoader__.load({
         post('apply-home').then(function () { props.refresh() }, function (e) { setError(String(e.message || e)) }).then(function () { setSending(false) })
       }
       return h(Card, { title: '应用已保存配置' },
-        h('div', { className: 'dw-muted' }, '先保存人设和世界提示词，再提交。等待家空闲后压缩一次；压缩会调用模型并重建上下文缓存。'),
+        h('div', { className: 'dw-muted' }, '保存的提示词会在下一轮对话生效。此操作等待家空闲后调用模型压缩聊天历史，并重建上下文缓存。'),
         h('div', { className: 'dw-setting' },
           h('button', { className: 'dw-btn', disabled: sending || waiting || compacting || !snap.running || !snap.life || !snap.homeApply, onClick: apply }, waiting ? '等待家空闲…' : compacting ? '正在压缩家会话…' : sending ? '提交中…' : '应用并压缩家会话'),
           h('span', { role: 'status', 'aria-live': 'polite', className: error || state.status === 'failed' ? 'dw-bad' : 'dw-muted' }, error || (waiting ? '已排队，不打断当前对话。' : compacting ? '正在执行，请稍候。' : state.message) || (!snap.running || !snap.life ? '请先启动世界生活线。' : ''))))
+    }
+
+    function CompactionPreset(props) {
+      var info = props.info
+      var sendingState = useState(false), sending = sendingState[0], setSending = sendingState[1]
+      var resultState = useState(null), result = resultState[0], setResult = resultState[1]
+      function restore() {
+        if (!window.confirm('还原预设「' + info.preset + '」？这会移除该预设在当前 profile 中的整份覆盖（包括你自己改过的设置），操作前会备份。')) return
+        setSending(true); setResult(null)
+        post('restore-compaction-preset').then(function () {
+          setResult({ text: '已移除覆盖并备份。请重启 DSH，让已有会话使用还原后的预设。' })
+          props.refresh()
+        }, function (e) { setResult({ text: e.message || String(e), error: true }) }).then(function () { setSending(false) })
+      }
+      if (!info && !result) return null
+      return h(Card, { title: '会话预设' },
+        info ? h('div', { className: 'dw-muted' }, '预设「' + info.preset + '」正在使用 profile 中的压缩配置副本。DSH 升级时，自带预设的更新不会合入这份副本。') : null,
+        info && info.canRestore ? h('div', { className: 'dw-setting' }, h('button', { className: 'dw-btn', disabled: sending, onClick: restore }, sending ? '还原中…' : '还原 DSH 预设')) : null,
+        result ? h('div', { role: 'status', className: result.error ? 'dw-bad' : 'dw-muted' }, result.text) : null)
     }
 
     /** 今天家里花了多少，和每天的额度（留空不限）。 */
@@ -384,12 +404,12 @@ window.__ModuleLoader__.load({
       function toggle(on) {
         setBusy(true)
         post('compact-after-review', { on: on }).then(function () {
-          setMsg(on ? '已开启。每晚回顾后会自动应用并压缩家会话。' : '已关闭。“我是谁”要等下一次压缩才生效。')
+          setMsg(on ? '已开启。每晚回顾后会自动压缩家会话。' : '已关闭。')
           if (props.onSaved) props.onSaved()
         }, failedTo(setMsg)).then(function () { setBusy(false) })
       }
       return h(Card, { title: '回顾后自动压缩' },
-        h('div', { className: 'dw-muted' }, '每晚回顾结束、家空闲后，自动应用并压缩一次家会话，让她刚改写的“我是谁”生效；压缩后最近的聊天会重新放回她眼前。'),
+        h('div', { className: 'dw-muted' }, '每晚回顾结束、家空闲后，自动压缩一次家会话，随后重读近期聊天。“我是谁”的改动在下一轮对话生效。'),
         h('label', { className: 'dw-setting' },
           h('input', { type: 'checkbox', checked: props.on, disabled: busy, 'aria-label': '回顾后自动压缩', onChange: function (e) { toggle(e.target.checked) } }),
           ' ', props.on ? '已开启' : '已关闭'),
@@ -470,7 +490,7 @@ window.__ModuleLoader__.load({
       var busyState = useState(false), busy = busyState[0], setBusy = busyState[1]
       var msgState = useState(''), msg = msgState[0], setMsg = msgState[1]
       // 两个控制台都带 X-Frame-Options: DENY，塞不进 iframe，所以交给系统浏览器开。
-      // 地址和令牌由宿主半侧现给（/dsh-world/qq/console），所以打开就是登录态。
+      // 地址和令牌由宿主半侧现给（…/qq/console），所以打开就是登录态。
       function openDoor(kind) {
         var label = 'SnowLuma'
         setBusy(true); setMsg('')
@@ -532,6 +552,7 @@ window.__ModuleLoader__.load({
       function startSnowluma() {
         change({ startSnowluma: true }, function (state) {
           var r = state && state.launch
+          if (r && r.alreadyRunning) return 'SnowLuma 已在运行或启动中，无需重复拉起'
           if (!r || !r.started) return '没起来：' + ((r && r.error) || '原因不明')
           return '已经让 SnowLuma 起来' + (r.how === 'spawn' ? '（直接起的，这条线只活到 DSH 退出）' : '') + (r.error ? '；' + r.error : '')
         })
@@ -682,6 +703,20 @@ window.__ModuleLoader__.load({
         h('button', { className: 'dw-btn', disabled: c.browser.state === 'missing', onClick: open }, '打开她的浏览器'),
         msg ? h('div', { className: msg.indexOf('打不开') >= 0 ? 'dw-bad' : 'dw-muted', role: 'status' }, msg) : null)
     }
+    // Read-only: what she wrote in mood.md and reads before each turn's time block. Only she changes it.
+    function MoodCard(props) {
+      var mood = props.mood
+      var body = !mood || mood.kind === 'none' ? h('div', { className: 'dw-muted' }, '她还没有写 mood.md')
+        : mood.kind === 'failed' ? h('div', { className: 'dw-bad' }, 'mood.md 读不出来：' + mood.message)
+        : [
+          h('div', { key: 'v', className: 'dw-trail' }, list(mood.values).map(function (v) { return h('span', { key: v.name, className: v.value ? null : 'dw-muted' }, v.name + ' ' + v.value) })),
+          list(mood.trivia).length ? h('div', { key: 't', style: { marginTop: 8 } }, '旁边：' + list(mood.trivia).join('；') + (mood.cut ? '……后面还有' : '')) : null,
+          list(mood.outside).length ? h('div', { key: 'o', className: 'dw-muted' }, list(mood.outside).join('、') + ' 不在固定的心情里，没有算进去') : null,
+          mood.unread ? h('div', { key: 'u', className: 'dw-muted' }, '有 ' + mood.unread + ' 行没读懂，她在快照里能看到') : null,
+          h('div', { key: 'at', className: 'dw-muted', style: { marginTop: 8 } }, mood.updatedAt ? '她最后改于 ' + local(mood.updatedAt, props.zone) : ''),
+        ]
+      return h(Card, { title: '心情', delay: 90 }, body)
+    }
     function Overview(props) {
       var snap = props.snap, zone = snap.timeZone, life = snap.life, alarm = life && life.alarm, mem = snap.memory
       var health = list(snap.health), wakes = life ? list(life.recentWakes) : []
@@ -703,9 +738,11 @@ window.__ModuleLoader__.load({
             ['会话', String(life.homeSessionId || '还没有家').replace(/^session-/, '').slice(0, 8)],
             ['下次回顾', life.review ? local(life.review.at, zone) : '—'],
             ['最近', wakes.length ? h('div', { className: 'dw-trail' }, wakes.map(function (w, i) { return h('span', { key: i }, local(w.deliveredAt, zone) + ' ' + (sourceLabel[w.source] || w.source) + (w.lateMs >= 120000 ? ' · 晚 ' + Math.round(w.lateMs / 60000) + ' 分' : '')) })) : '—'],
-          ]))) : null,
+          ])),
+          h(MoodCard, { mood: snap.mood, zone: zone })) : null,
         h('div', { className: 'dw-grid' },
           h(Card, { title: '健康', delay: 120 }, health.length ? health.map(function (f, i) { return h('div', { key: i, className: 'dw-bad' }, '● ' + f) }) : h('div', { className: 'dw-ok' }, '● 一切正常')),
+          h(CompactionPreset, { info: snap.compactionPreset, refresh: props.refresh }),
           h(Memory, { mem: mem, onSaved: props.refresh }),
           h(Budget, { budget: snap.budget, onSaved: props.refresh }),
           snap.workspace ? h(WorkspacePermission, { workspace: snap.workspace, onSaved: props.refresh }) : null,
@@ -905,14 +942,59 @@ window.__ModuleLoader__.load({
       return h(View, { snap: snap, error: error, tick: tick, refresh: function () { if (loadRef.current) loadRef.current() } })
     }
 
-    var exports = { inject: ['slots'] }
-    Object.defineProperty(exports, Symbol.toStringTag, { value: 'Module' })
-    exports.apply = function (ctx) {
-      ctx.slots.inject('settings.section', function () {
-        return ctx.slots.register({ name: 'settings.section', id: 'world-console', order: 28, label: '世界控制台' }, function () { return h(Console) })
-      })
+    return { Console: Console, test: { MoodCard: MoodCard, Memory: Memory, MemorySearch: MemorySearch, latest: latest, searchMemory: searchMemory, memoryQuery: memoryQuery, dayStartIso: dayStartIso, WorkspacePermission: WorkspacePermission, CompactAfterReview: CompactAfterReview, Schedule: Schedule, Modules: Modules, HomeApply: HomeApply, PhotoAlbum: PhotoAlbum, Wechat: Wechat, Activity: Activity, Diary: Diary, Qq: Qq, Panel: Panel, View: View, Overview: Overview, PersonaEditor: PersonaEditor, PromptEditor: PromptEditor, loadSnapshot: loadSnapshot, renderPersona: renderPersona } }
+  }
+
+  async function loadWorldIds() {
+    var ids = [], offset = 0
+    do {
+      var response = await fetch(worldsPath + '?limit=100&offset=' + offset, { cache: 'no-store' })
+      if (!response.ok) throw new Error('HTTP ' + response.status)
+      var page = await response.json()
+      ids.push.apply(ids, page.worldIds)
+      offset = page.nextOffset
+    } while (offset !== null)
+    return ids
+  }
+
+  window.__ModuleLoader__.load({
+    id: 'dsh-world',
+    factory: function (require) {
+      var react = require('react')
+      var h = react.createElement
+      function SelectedWorld(props) {
+        var components = react.useState(function () { return worldConsole(react, props.worldId) })[0]
+        return h(components.Console)
+      }
+      function WorldSettings() {
+        var idsState = react.useState(null), ids = idsState[0], setIds = idsState[1]
+        var selectedState = react.useState(''), selected = selectedState[0], select = selectedState[1]
+        var errorState = react.useState(''), error = errorState[0], setError = errorState[1]
+        react.useEffect(function () {
+          var alive = true
+          loadWorldIds().then(function (items) {
+            if (alive) { setIds(items); select(items[0] || '') }
+          }, function (e) { if (alive) setError(String(e.message || e)) })
+          return function () { alive = false }
+        }, [])
+        if (error) return h('p', { role: 'alert' }, '读取世界列表失败：' + error)
+        if (!ids) return h('p', null, '读取中…')
+        if (!selected) return h('p', null, '没有已加载的世界')
+        return h('div', null,
+          ids.length > 1 ? h('label', null, '世界 ', h('select', { value: selected, onChange: function (event) { select(event.target.value) } },
+            ids.map(function (id) { return h('option', { key: id, value: id }, id) }))) : null,
+          h(SelectedWorld, { key: selected, worldId: selected }))
+      }
+
+      var exports = { inject: ['slots'] }
+      Object.defineProperty(exports, Symbol.toStringTag, { value: 'Module' })
+      exports.apply = function (ctx) {
+        ctx.slots.inject('settings.section', function () {
+          return ctx.slots.register({ name: 'settings.section', id: 'world-console', order: 28, label: '世界控制台' }, function () { return h(WorldSettings) })
+        })
+      }
+      Object.defineProperty(exports, '__test', { value: function (worldId) { return worldConsole(react, worldId).test } })
+      return exports
     }
-    Object.defineProperty(exports, '__test', { value: { Memory: Memory, MemorySearch: MemorySearch, latest: latest, searchMemory: searchMemory, memoryQuery: memoryQuery, dayStartIso: dayStartIso, WorkspacePermission: WorkspacePermission, CompactAfterReview: CompactAfterReview, Schedule: Schedule, Modules: Modules, HomeApply: HomeApply, PhotoAlbum: PhotoAlbum, Wechat: Wechat, Activity: Activity, Diary: Diary, Qq: Qq, Panel: Panel, View: View, Overview: Overview, PersonaEditor: PersonaEditor, PromptEditor: PromptEditor, loadSnapshot: loadSnapshot, renderPersona: renderPersona }, enumerable: false })
-    return exports
-  },
-})
+  })
+})()

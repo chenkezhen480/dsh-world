@@ -8,6 +8,7 @@ import { consoleSources } from '../src/console/snapshot.ts';
 import { tmpdir } from 'node:os';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
+import { setImmediate } from 'node:timers/promises';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { SessionId, SessionSeq, type SessionEvent, type SessionHeader } from '@deepseek-ai/dsh-session';
 
@@ -75,6 +76,33 @@ test('catch-up forgets the resume point of a session the host no longer has, and
   await archive.flush();
   assert.deepEqual(forgotten, ['a']);
   assert.deepEqual(opened, ['b']);
+});
+
+test('cancelling catch-up drains the current write without opening another session', async t => {
+  const event = { type: 'turn/start', seq: SessionSeq(0), time: 0, data: { turn: 1 } } as SessionEvent;
+  const { archive, store, opened } = fixture(async id => ({ ...emptyLog, header: { id },
+    read: async (offset: number) => ({ events: offset === 0 ? [event] : [] }),
+  }));
+  let entered!: () => void, release!: () => void;
+  const writing = new Promise<void>(resolve => { entered = resolve; });
+  const blocked = new Promise<void>(resolve => { release = resolve; });
+  const committed: string[] = [];
+  const commit: ArchiveStore['commitRecords'] = async (_records, progress) => {
+    assert.ok(progress);
+    entered(); await blocked;
+    committed.push(progress.sessionId);
+  };
+  t.mock.method(store, 'commitRecords', commit);
+  const controller = new AbortController();
+  const catchUp = archive.catchUp(false, controller.signal);
+  await writing;
+  controller.abort();
+  const drained = Promise.all([catchUp, archive.flush()]);
+  try {
+    assert.equal(await Promise.race([drained.then(() => 'drained'), setImmediate('writing')]), 'writing');
+  } finally { release(); await drained; }
+  assert.deepEqual(committed, ['a']);
+  assert.deepEqual(opened, ['a']);
 });
 
 test('corrupt-source gaps reach world and console health without QQ while healthy sources continue', async t => {

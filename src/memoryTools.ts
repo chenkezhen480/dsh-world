@@ -3,7 +3,7 @@ import { defineTool, type ToolDefinition } from '@deepseek-ai/dsh-tools';
 import { errorText, type Faults } from './faults.ts';
 import type { MemoryPage, MemoryService } from './memory.ts';
 import type { MemoryOrigin } from './memoryStore.ts';
-import { OutsideWorldError, scopedTool } from './worldScope.ts';
+import { OutsideWorldError, registerScopedTool } from './worldScope.ts';
 
 const output = { schema: { type: 'string' as const }, render: (_args: unknown, value: string) => [{ type: 'text' as const, text: value }] };
 
@@ -56,10 +56,9 @@ export function memoryTools(service: MemoryService, inside: () => boolean): Tool
     }),
   ];
 }
-export const MEMORY_TOOL_NAMES = ['memory_find', 'memory_read'] as const;
 
 /**
- * Gives world sessions their tools (long-term memory), whatever the life line does: a session has them
+ * Gives world sessions their tools (long-term memory, her mood), whatever the life line does: a session has them
  * while it is in her world, and loses them when it leaves. A registration that fails is a fault, never a broken agent.
  */
 export function createWorldToolRegistry(deps: { tools(inside: () => boolean): ToolDefinition[]; inWorld(agent: Agent): boolean; faults: Faults; logger: { error(...args: unknown[]): void } }) {
@@ -77,7 +76,7 @@ export function createWorldToolRegistry(deps: { tools(inside: () => boolean): To
       if (registered.get(agent)?.length) return false;
       const done: (() => void)[] = [];
       try {
-        for (const tool of deps.tools(() => deps.inWorld(agent))) done.push(agent.ctx.tools.register(scopedTool(tool, () => deps.inWorld(agent))));
+        for (const tool of deps.tools(() => deps.inWorld(agent))) done.push(registerScopedTool(agent, tool, () => deps.inWorld(agent)));
         registered.set(agent, done); deps.faults.clear(key(agent));
         return true;
       } catch (error) {

@@ -4,16 +4,19 @@
 // 事件直接灌进来，跑的是真的 home.ask 和真的 agent，所以「有没有花掉一轮」是真数出来的。
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { once } from 'node:events';
+import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SessionId } from '@deepseek-ai/dsh-session';
-import { createUserMessage } from '@deepseek-ai/dsh-llm';
+import { createUserMessage, type GenerateOptions } from '@deepseek-ai/dsh-llm';
+import { AttachmentId, type SaveImageAttachment } from '@deepseek-ai/dsh-attachment';
 import { hostFixture, textResponse } from './hostFixture.ts';
 import { createQqNativeModule, type QqNativeConfig, type QqTransport, type QqTransportOptions } from '../src/ecosystem/qq-native/index.ts';
 import { createQqHome } from '../src/ecosystem/qq-native/home.ts';
 import { createNativeBridge } from '../src/ecosystem/qq-native/native-bridge.ts';
-import { WebSocket } from 'ws';
+import { WebSocket, WebSocketServer } from 'ws';
 import { speakerIdentity } from '../src/ecosystem/shared/identity.ts';
 
 const quiet = { info: () => {}, warn: () => {}, error: () => {} };
@@ -70,6 +73,88 @@ const configOf = (over: Partial<QqNativeConfig> = {}): QqNativeConfig => ({
 });
 
 async function settle(ms = 400) { await new Promise(resolve => setTimeout(resolve, ms)); }
+
+test('SnowLuma 图片和随后发来的文字合批，图片附件进入模型请求', { timeout: 5_000 }, async t => {
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a15kAAAAASUVORK5CYII=', 'base64');
+  const digest = createHash('sha256').update(png).digest('hex');
+  const requests: GenerateOptions[] = [];
+  const { ctx, cleanup } = await hostFixture(t, request => { requests.push(request); return textResponse('看到了'); });
+  const saved: SaveImageAttachment[] = [];
+  ctx.provide('attachments', {
+    imageLimits: { maxImageBytes: 1024, maxImagesPerMessage: 4, maxMessageImageBytes: 4096, mediaTypes: ['image/png'] },
+    saveImages: async (inputs: readonly SaveImageAttachment[]) => {
+      saved.push(...inputs);
+      return [{ attachmentId: AttachmentId(digest), mediaType: 'image/png', bytes: png.length, width: 1, height: 1 }];
+    },
+  } as never);
+  const cdnUrl = 'https://multimedia.nt.qq.com.cn/download?fileid=';
+  const fetchMock = t.mock.method(globalThis, 'fetch', async (url: URL, options: RequestInit) => {
+    assert.ok(url.href === cdnUrl + 'a1.png' || url.href === cdnUrl + 'c3.png');
+    assert.equal(options.redirect, 'error');
+    const data = url.href.endsWith('a1.png') ? png : new Uint8Array(1025);
+    return new Response(data, { headers: { 'content-type': 'image/png' } });
+  });
+  const agent = (await ctx.agents.create({ sessionId: SessionId('qq-image'), agentOptions: { provider: 'test', model: 'test' } })).agent;
+  const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+  cleanup.push(() => server.close());
+  await once(server, 'listening');
+  const connected = once(server, 'connection');
+  const { port } = server.address() as { port: number };
+  const channel = createQqNativeModule({ ctx, home: async () => agent, config: () => configOf({ wsUrl: `ws://127.0.0.1:${port}`, batchQuietMs: 40 }), logger: quiet });
+  channel.start(); cleanup.push(channel.stop);
+  const [peer] = await connected as [WebSocket];
+  cleanup.push(() => peer.close());
+  const imageRequests: string[] = [];
+  const replied = new Promise<void>(resolve => peer.on('message', raw => {
+    const { action, params, echo } = JSON.parse(String(raw));
+    if (action === 'get_image') imageRequests.push(params.file);
+    const data = action === 'get_image'
+      ? { url: params.file === 'b2.png' ? 'https://127.0.0.1/private' : cdnUrl + params.file }
+      : { message_id: 9001 };
+    peer.send(JSON.stringify({ status: 'ok', retcode: 0, data, echo }));
+    if (action === 'send_private_msg') resolve();
+  }));
+  const send = (id: number, message: unknown) => peer.send(JSON.stringify({
+    post_type: 'message', message_type: 'private', sub_type: 'friend', self_id: 2039693365, user_id: 3475994805, message_id: id, message,
+  }));
+  send(8801, ['a1.png', 'b2.png', 'c3.png', '../private.png'].map(file => ({ type: 'image', data: { file, url: 'https://127.0.0.1/from-event' } })));
+  send(8802, [{ type: 'text', data: { text: '这张图里有什么？' } }]);
+  await replied;
+
+  assert.equal(requests.length, 1);
+  assert.deepEqual(imageRequests.sort(), ['a1.png', 'b2.png', 'c3.png']);
+  assert.equal(fetchMock.mock.callCount(), 2);
+  assert.equal(saved.length, 1);
+  assert.deepEqual(saved[0]!.data, png);
+  const recall = requests[0]!.messages.find(message => message.source?.kind === 'dsh-world-channel-context');
+  assert.ok(recall);
+  assert.ok(recall.content.some(block => block.type === 'image' && block.attachment.attachmentId === digest));
+  assert.ok(recall.content.some(block => block.type === 'text' && block.text.includes('未能读取')));
+  assert.ok(requests[0]!.messages.some(message => message.content.some(block => block.type === 'text' && block.text.includes('这张图里有什么？'))));
+});
+
+test('QQ waits for a home turn that started while its image was downloading', async t => {
+  let beginDownload!: () => void, finishDownload!: () => void;
+  let beginTurn!: () => void, finishTurn!: () => void;
+  const downloading = new Promise<void>(resolve => { beginDownload = resolve; });
+  const downloaded = new Promise<void>(resolve => { finishDownload = resolve; });
+  const speaking = new Promise<void>(resolve => { beginTurn = resolve; });
+  const spoken = new Promise<void>(resolve => { finishTurn = resolve; });
+  const { ctx, cleanup } = await hostFixture(t, async function* () { beginTurn(); await spoken; yield* textResponse('在的'); });
+  const agent = (await ctx.agents.create({ sessionId: SessionId('home'), agentOptions: { provider: 'test', model: 'test' } })).agent;
+  const home = createQqHome({ ctx, home: async () => agent });
+  cleanup.push(home.stop);
+  const identity = speakerIdentity({ channel: 'qq', accountId: '1', conversationType: 'private', conversationId: '42', speakerId: 'qq:42' });
+  const answer = home.ask('看图', identity, [], async () => { beginDownload(); await downloaded; return [{ type: 'text', text: '图已下载' }]; });
+  await downloading;
+  agent.followup(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: '家里在说话' }] }));
+  await speaking;
+  finishDownload();
+  try {
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(agent.inbox.nextStep.length + agent.inbox.nextTurn.length, 0, 'the other turn receives no QQ context or words');
+  } finally { finishTurn(); await answer; }
+});
 
 test('QQ 模块拒绝工作区外的 home，不注入上下文或消息', async t => {
   let turns = 0;
@@ -260,7 +345,7 @@ test('群里说话也走同一条线，回包发回群里', async t => {
     kind: 'group', groupId: '681528723', userId: '3997750133', messageId: '9001', text: '@2039693365 大家好',
     segments: [{ type: 'at', data: { qq: '2039693365' } }, { type: 'text', data: { text: ' 大家好' } }],
   }));
-  await settle(600);
+  for (let attempt = 0; attempt < 120 && wire.sent.length === 0; attempt++) await settle(25);
 
   assert.equal(turns, 1);
   assert.deepEqual(wire.sent, [{ kind: 'group', to: '681528723', text: '群里回一句' }]);

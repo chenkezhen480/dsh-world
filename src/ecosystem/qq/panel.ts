@@ -84,7 +84,6 @@ export function createPanelSecrets(worldDir: string) {
     },
   };
 }
-export type PanelSecrets = ReturnType<typeof createPanelSecrets>;
 
 /** Trades the panel password for a session token and hands back a URL that opens already logged in. */
 export async function loginSnowluma(base: string, username: string, password: string, fetchImpl: typeof fetch = fetch): Promise<PanelResult> {

@@ -5,6 +5,7 @@ import type { ArchiveCursor, ConversationRecord, DeliveryState, PageQuery, Recor
 import { formatLocalTime } from './timeContext.ts';
 import type { SpeakerIdentity } from './ecosystem/shared/identity.ts';
 import { createMemoryStore } from './memoryStore.ts';
+import { validWorldId } from './worldRoutes.ts';
 
 export interface ExportProgress { sessionId: string; nextSeq: number; turn: number }
 interface StoredRow { sequence: number; day: string; body: string }
@@ -12,7 +13,7 @@ const pageSize = 128;
 
 export function createArchiveStore(config: WorldConfig & { root: string }) {
   // The world id becomes a directory name.
-  if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(config.worldId)) throw new TypeError('dsh-world: invalid worldId');
+  if (!validWorldId(config.worldId)) throw new TypeError('dsh-world: invalid worldId');
   const worldRoot = join(config.root, 'worlds', config.worldId);
   const directory = join(worldRoot, 'conversations');
   mkdirSync(directory, { recursive: true, mode: 0o700 });

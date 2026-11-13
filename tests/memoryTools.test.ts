@@ -53,7 +53,7 @@ test('both tools reach every world session with no life line at all, not other p
 });
 
 test('invalid arguments and unreadable refs come back as tool errors, not as empty results', async t => {
-  const s = await setup(t, (request, index) => index === 0 ? call('memory_find', { limit: 1000 }) : index === 1 ? call('memory_read', { ref: 'nonsense' }) : textResponse('好'));
+  const s = await setup(t, (_request, index) => index === 0 ? call('memory_find', { limit: 1000 }) : index === 1 ? call('memory_read', { ref: 'nonsense' }) : textResponse('好'));
   const agent = await create(s.ctx, 'chat');
   agent.followup(user('想想')); await agent.whenIdle();
   assert.match(lastToolResult(s.requests[1]!), /limit 必须是 1 到 100 的整数/);

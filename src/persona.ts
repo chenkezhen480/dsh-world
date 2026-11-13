@@ -11,6 +11,13 @@ export type Persona = Record<PersonaLayer, string>;
 export function readPersona(file: string): Persona {
   let sections = new Map<string, string>();
   try { if (existsSync(file)) sections = parseSections(readFileSync(file, 'utf8'), PERSONA_LAYERS); } catch { /* treated as not written */ }
+  // The name also goes into channel metadata, so a custom heading cannot be part of it.
+  const name = sections.get('名字') ?? '';
+  const customHeading = name.search(/^## .+/m);
+  if (customHeading >= 0) {
+    sections.set('名字', name.slice(0, customHeading).trimEnd());
+    sections.set('补充', [name.slice(customHeading), sections.get('补充')].filter(Boolean).join('\n\n'));
+  }
   return Object.fromEntries(PERSONA_LAYERS.map(layer => [layer, sections.get(layer) ?? ''])) as Persona;
 }
 /** Only layers with text are kept; a persona with none removes the file. */

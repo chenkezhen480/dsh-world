@@ -31,7 +31,9 @@ class SenderTest(unittest.TestCase):
 
     def test_each_supported_build_encodes_its_own_native_addresses(self):
         profiles = json.loads(PROFILES.read_text(encoding='utf-8-sig'))
-        self.assertEqual([profile['version'] for profile in profiles], ['4.1.15.13', '4.1.15.56', '4.2.0.11', '4.2.0.12', '4.2.0.13'])
+        self.assertEqual([profile['version'] for profile in profiles], ['4.1.15.13', '4.1.15.56', '4.2.0.11', '4.2.0.12', '4.2.0.13', '4.2.0.52'])
+        self.assertEqual((profiles[5]['size'], profiles[5]['sha256']),
+                         (204168240, 'd733489eea0b62af77e1aa61ba645cd941583d2a64fb2d7572da818d285f8d84'))
         # The 4.2 profiles leave the native GIF slots unmapped.
         for profile, timestamp, imageSize, addresses in (
             (profiles[2], 0x6ae0a8d1, 0xc4dc000, (
@@ -46,6 +48,10 @@ class SenderTest(unittest.TestCase):
                 0x45d10, 0x47310, 0x3141a0, 0x47220, 0x384e40, 0x71eb70, 0x5723550,
                 0x3ecfcb0, 0, 0x9b5e0, 0, 0, 0,
                 0x17db2d0, 0x76a750c, 0x76a7550, 0xbd0fdf0, 0x90d7fe8, 0)),
+            (profiles[5], 0x6af1b119, 0xc32e000, (
+                0x1fc90, 0x21290, 0x2e3340, 0x211a0, 0x355620, 0x702d70, 0x56fab30,
+                0x3e0a690, 0, 0x94090, 0, 0, 0,
+                0x1762670, 0x776c55c, 0x776c5a0, 0xbb6f788, 0x90d0cc8, 0)),
             (profiles[0], 0x6ab0a378, 0xc0ae000, (
                 0x45d10, 0x47310, 0x2fb010, 0x47220, 0x36c740, 0x6f4d90, 0x54b02f0,
                 0x3d9d990, 0x1bfb1c0, 0x9b5d0, 0xe7a8e0, 0x5309c0, 0x4e6360,
@@ -62,7 +68,7 @@ class SenderTest(unittest.TestCase):
 
     def test_a_build_without_the_sticker_path_refuses_native_stickers_but_sends_text_and_images(self):
         profiles = json.loads(PROFILES.read_text(encoding='utf-8-sig'))
-        self.assertEqual([sendsStickers(profile) for profile in profiles], [True, True, False, False, False])
+        self.assertEqual([sendsStickers(profile) for profile in profiles], [True, True, False, False, False, False])
         encodeRequest(profiles[2], 123, 'wxid_bot', 'family@chatroom', 1, '你好')
         encodeRequest(profiles[2], 123, 'wxid_bot', 'family@chatroom', 2, 'C:/a.png')
         with self.assertRaisesRegex(ValueError, '4.2.0.11 未适配原生表情包'):

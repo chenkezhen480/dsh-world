@@ -55,16 +55,18 @@ export function createChannelQueue(name: string, options: { limit: number; timeo
  * she had said before it answered `words` alone and is the answer; nothing after it is, since it may be meant for
  * whoever cut in, and having said nothing yet is a failure. An interrupted, truncated or unfinished turn is a failure,
  * so the caller never sends half a message. The session's log is flushed before the answer is returned.
+ * A door that sees her answer arrive another way (`answered`, such as a message she sent there herself) stops
+ * waiting at it: whatever she goes on to do in that turn is her own, and waiting for it only ran the door out of time.
  */
-export async function askTurn(ctx: Context, agent: Agent, words: UserMessage, options: { name: string; inWorld?: InWorld | undefined; context?: UserMessage | undefined; cancelled?: Promise<never> | undefined }): Promise<string> {
+export async function askTurn(ctx: Context, agent: Agent, words: UserMessage, options: { name: string; inWorld?: InWorld | undefined; context?: UserMessage | undefined; cancelled?: Promise<never> | undefined; answered?: ((source: UserMessage['source']) => boolean) | undefined }): Promise<string> {
   const cancelled = options.cancelled ?? new Promise<never>(() => {});
-  let admitted = false, failed = false, cut = false, reply = '';
+  let admitted = false, failed = false, cut = false, answered = false, reply = '';
   // Enough to tell, when it fails, which way it went.
   let seen = 0, last = 'none';
   let finish!: () => void;
   const finished = new Promise<void>(resolve => { finish = resolve; });
   const dispose = ctx.on('session/event', (session, event) => {
-    if (session.id !== agent.id || cut) return;
+    if (session.id !== agent.id || cut || answered) return;
     seen += 1;
     if (event.type === 'turn/end') last = `end/${event.data.reason.kind}`;
     if (event.type === 'user/message') {
@@ -72,6 +74,7 @@ export async function askTurn(ctx: Context, agent: Agent, words: UserMessage, op
       else {
         last = `inject/${event.data.source.kind}`;
         if (admitted && event.data.source.kind === 'user') { cut = true; finish(); return; }
+        if (admitted && options.answered?.(event.data.source)) { answered = true; finish(); return; }
       }
     }
     if (!admitted) return;

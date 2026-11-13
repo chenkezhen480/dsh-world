@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Context } from '@deepseek-ai/cordis';
@@ -35,10 +35,10 @@ test('workspace scope uses the workspace owning home, includes groups and ignore
     { path: 'room', sessionIds: ['home', 'family', 'another-preset'] },
     { path: 'other', sessionIds: ['unrelated'] },
   ] });
-  const includes = createArchiveSelection(ctx, 'workspace', id => id === 'home', 'room');
+  const includes = createArchiveSelection('workspace', id => id === 'home', createWorkspaceMembership(ctx, 'room'));
   for (const id of ['home', 'family', 'another-preset']) assert.equal(includes(id), true);
   assert.equal(includes('unrelated'), false);
-  const onlyHome = createArchiveSelection(ctx, 'home', id => id === 'home', 'room');
+  const onlyHome = createArchiveSelection('home', id => id === 'home', createWorkspaceMembership(ctx, 'room'));
   assert.equal(onlyHome('home'), true); assert.equal(onlyHome('family'), false);
 });
 
@@ -49,7 +49,7 @@ test('a home also left in an older workspace does not pull that workspace into h
     { path: 'default-workspace', sessionIds: ['home', 'coding'] },
     { path: 'room', sessionIds: ['home', 'family'] },
   ] });
-  const archived = createArchiveSelection(ctx, 'workspace', id => id === 'home', 'room');
+  const archived = createArchiveSelection('workspace', id => id === 'home', createWorkspaceMembership(ctx, 'room'));
   for (const id of ['home', 'family']) assert.equal(archived(id), true, id);
   assert.equal(archived('coding'), false);
 });
@@ -64,6 +64,28 @@ test('workspace membership follows the room path only and is empty until the hos
   ] });
   assert.equal(inWorkspace('family'), true);
   assert.equal(inWorkspace('home'), false, 'a home recorded in another workspace does not pull it in');
+});
+
+test('home-only archive catches up when the workspace registry appears late', async t => {
+  const { ctx, root, cleanup } = await hostFixture(t, () => textResponse('reply'));
+  const config = { worldId: 'fish', agentPreset: 'companion', timeZone: 'UTC', archiveScope: 'home' as const };
+  const room = join(root, 'worlds', 'fish', 'room');
+  mkdirSync(room, { recursive: true });
+  const { agent } = await ctx.agents.create({ sessionId: SessionId('home'), meta: { agentPreset: config.agentPreset, cwd: room }, agentOptions: { provider: 'test', model: 'test' } });
+  agent.followup(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'history before restart' }] }));
+  await agent.whenIdle();
+  await ctx.sessions.flush(agent.session);
+  const store = createArchiveStore({ ...config, root });
+  cleanup.push(() => store.close());
+  const inWorkspace = createWorkspaceMembership(ctx, room), isHome = (id: string) => id === agent.id;
+  const archiveSession = createArchiveSelection('home', isHome, inWorkspace);
+  const runtime = createWorldRuntime(ctx, config, store, { prompt: { names: { companion: '鱼', partner: '我' } }, inWorkspace, isHome, archiveSession });
+  cleanup.push(() => runtime.stop());
+  await runtime.start();
+  assert.equal((await store.readPage({ limit: 20 })).records.length, 0);
+  ctx.provide('workspaceRegistry', { list: () => [{ path: room, sessionIds: [agent.id] }] });
+  await runtime.retryCatchUp();
+  assert.ok((await store.readPage({ limit: 20 })).records.some(row => row.content === 'history before restart'));
 });
 
 test('narrowing memory filters old broader archive records without deleting them', async t => {
@@ -86,7 +108,7 @@ test('workspace injection excludes other workspaces and subagents while home-onl
   const store = createArchiveStore({ ...config, root }); cleanup.push(() => store.close());
   await store.commitRecords([record('seed', { sourceSessionId: 'home', content: 'WORKSPACE_PRIVATE_MEMORY' })]);
   ctx.provide('workspaceRegistry', { list: () => [{ path: 'room', sessionIds: ['home', 'chat', 'child'] }, { path: 'other', sessionIds: ['outside'] }] });
-  const runtime = createWorldRuntime(ctx, config, store, { prompt: { names: { companion: '鱼', partner: '我' } }, isHome: id => id === 'home', inWorkspace: createArchiveSelection(ctx, 'workspace', id => id === 'home', 'room') });
+  const runtime = createWorldRuntime(ctx, config, store, { prompt: { names: { companion: '鱼', partner: '我' } }, isHome: id => id === 'home', inWorkspace: createArchiveSelection('workspace', id => id === 'home', createWorkspaceMembership(ctx, 'room')) });
   cleanup.push(() => runtime.stop()); await runtime.start();
   for (const id of ['outside', 'chat', 'child']) {
     const { agent } = await ctx.agents.create({ sessionId: SessionId(id), meta: { agentPreset: 'companion', ...(id === 'child' ? { origin: 'subagent' as const } : {}) }, agentOptions: { provider: 'test', model: 'test' } });

@@ -174,4 +174,5 @@ test('her own alarm messages stay in the summarized input and the instruction sa
   assert.ok(input.some(message => message.source?.kind === 'dsh-world-life' && JSON.stringify(message.content).includes('ALARM_NOTE')));
   const instruction = JSON.stringify(input.find(message => message.source?.kind === 'dsh-world-summary-input')!.content);
   assert.ok(instruction.includes('以【我的时间】（较早的是【你的时间】）开头的消息是你自己定的闹钟和留给自己的话，不是用户说的话；把它们当作你自己的安排来记，不要算作用户发言。'));
+  assert.ok(instruction.includes('以【我的心情值】开头的心情快照'), 'her mood snapshot comes back after compaction, so it is not summarized');
 });

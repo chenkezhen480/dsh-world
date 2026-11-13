@@ -1,9 +1,10 @@
 import { randomBytes } from 'node:crypto';
 import { copyFileSync, existsSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 
 export type CompactionSwap =
-  | { status: 'swapped'; backup: string; preset?: string }
+  | { status: 'swapped'; backup: string }
   | { status: 'already' }
   | { status: 'unchanged'; reason: string };
 
@@ -44,49 +45,98 @@ export function swapStockCompaction(profileDir: string): CompactionSwap {
 }
 
 interface Row { name?: unknown; group?: unknown; config?: unknown }
-/** The compaction rows in a preset's plugin list, including those nested in groups (where DSH's Web host isolates it). */
-function compactionRows(rows: unknown, found: Row[] = []): Row[] {
+/** The rows of a preset's plugin list that match, including those nested in groups (where DSH's Web host isolates compaction). */
+function rowsWhere(rows: unknown, match: (row: Row) => boolean, found: Row[] = []): Row[] {
   if (!Array.isArray(rows)) return found;
   for (const row of rows as Row[]) {
-    if (row?.name === STOCK || row?.name === OURS) found.push(row);
-    if (row?.group) compactionRows(row.config, found);
+    if (row && match(row)) found.push(row);
+    if (row?.group) rowsWhere(row.config, match, found);
   }
   return found;
 }
-/** The preset's config with its one stock compaction row renamed to ours; the input is not changed. */
-export function swapPresetConfig(config: unknown): { status: 'swapped'; config: unknown } | Exclude<CompactionSwap, { status: 'swapped' }> {
-  const next = structuredClone(config) as { plugins?: unknown };
-  const rows = compactionRows(next?.plugins);
-  if (rows.some(row => row.name === OURS)) return { status: 'already' };
-  if (rows.length !== 1) return { status: 'unchanged', reason: rows.length ? `预设里有 ${rows.length} 条原版压缩配置，无法确定改哪一条` : '预设里没有原版压缩那一行' };
-  rows[0].name = OURS;
-  return { status: 'swapped', config: next };
+/** Removes the matching rows in place, groups included, and says how many went. */
+function removeRows(rows: unknown, match: (row: Row) => boolean): number {
+  if (!Array.isArray(rows)) return 0;
+  let removed = 0;
+  for (let index = rows.length - 1; index >= 0; index--) {
+    const row = rows[index] as Row | undefined;
+    if (row && match(row)) { rows.splice(index, 1); removed++; } else if (row?.group) removed += removeRows(row.config, match);
+  }
+  return removed;
 }
-
 /** DSH's own editor for profile rows: the one its settings pages save through, which also reloads the row. */
 export interface ConfigEditor {
   entries(): ConfigEntry[];
   edit(entry: ConfigEntry, change: (raw: unknown, inherited: unknown) => unknown): Promise<void>;
+  configuration?(): { entry: ConfigEntry; inherited: unknown; override?: unknown }[];
 }
 interface ConfigEntry { options: { id?: string; name?: string; config?: unknown } }
-/**
- * DSH's Web host composes the stock compaction inside each preset, so the profile has no row to rename. The host's
- * preset editor writes the whole preset into the profile when a partner edits it; this does the same for her preset
- * with only the compaction row changed. That copy no longer follows later DSH updates to the preset.
- */
-export async function swapPresetCompaction(editor: ConfigEditor, presetId: string, profileDir: string): Promise<CompactionSwap> {
-  const entry = editor.entries().find(row => row.options.name === '@deepseek-ai/dsh-agent-preset' && (row.options.config as { id?: unknown } | undefined)?.id === presetId);
-  if (!entry) return { status: 'unchanged', reason: `没有找到预设 ${presetId}` };
-  const first = swapPresetConfig(entry.options.config);
-  if (first.status !== 'swapped') return first;
+const PRESET = '@deepseek-ai/dsh-agent-preset';
+const isPreset = (entry: ConfigEntry) => entry.options.name === PRESET;
+const plugins = (config: unknown) => (config as { plugins?: unknown } | undefined)?.plugins;
+const usesWorldCompaction = (config: unknown) => rowsWhere(plugins(config), row => row.name === OURS).length > 0;
+export const hasAgentPresets = (editor: ConfigEditor | undefined) => editor?.entries().some(isPreset) ?? false;
+
+function overriddenCompactionPreset(editor: ConfigEditor, id: string) {
+  if (!editor.entries().some(entry => isPreset(entry) && presetId(entry) === id && usesWorldCompaction(entry.options.config))) return;
+  return editor.configuration?.().find(({ entry, override }) => isPreset(entry) && presetId(entry) === id && usesWorldCompaction(override));
+}
+
+export function compactionPresetOverride(editor: ConfigEditor, id: string, profileDir: string | undefined) {
+  const row = overriddenCompactionPreset(editor, id);
+  return row ? { preset: id, canRestore: Boolean(profileDir && Array.isArray(plugins(row.inherited))) } : null;
+}
+
+/** Return the inherited value through DSH's editor so it removes the profile override. */
+export async function restoreCompactionPreset(editor: ConfigEditor, id: string, profileDir: string): Promise<void> {
+  const row = overriddenCompactionPreset(editor, id);
+  if (!row || !Array.isArray(plugins(row.inherited))) throw new Error(`预设 ${id} 没有可还原的压缩覆盖`);
   const file = join(profileDir, 'cordis.patch.yml');
-  const backup = existsSync(file) ? backupBeside(file) : undefined;
-  await editor.edit(entry, raw => {
-    const result = swapPresetConfig(raw);
-    if (result.status !== 'swapped') throw new Error(`预设 ${presetId} 在写入前变了：${result.status === 'unchanged' ? result.reason : '已经换过'}`);
-    return result.config;
+  await editor.edit(row.entry, (raw, inherited) => {
+    if (!isDeepStrictEqual(raw, row.override) || !Array.isArray(plugins(inherited))) throw new Error(`预设 ${id} 已变化，请刷新后再试`);
+    backupBeside(file);
+    return inherited;
   });
-  return { status: 'swapped', backup: backup ?? '（原来没有 cordis.patch.yml）', preset: presetId };
+}
+
+// DSH 0.2.2 folded `list_agents` into the subagent-control package. A preset copied on 0.2.1 still names this row, and
+// DSH then refuses to mount that whole preset, so no session using it can be resumed.
+const RETIRED = '@deepseek-ai/dsh-tool-subagent-control/list-agents';
+const isRetired = (row: Row) => row.name === RETIRED;
+/** The copied preset without the rows DSH itself no longer ships, or undefined when there is nothing to drop; the input is not changed. */
+export function dropRetiredRows(config: unknown, inherited: unknown): unknown {
+  if (rowsWhere((inherited as { plugins?: unknown } | undefined)?.plugins, isRetired).length) return undefined;
+  const next = structuredClone(config) as { plugins?: unknown };
+  return removeRows(next?.plugins, isRetired) ? next : undefined;
+}
+const presetId = (entry: ConfigEntry) => String((entry.options.config as { id?: unknown } | undefined)?.id ?? entry.options.id);
+/**
+ * On every start, drops the retired rows from each preset copied into the profile, with a backup of the profile patch
+ * first. Only a row DSH no longer ships beneath the copy goes, so the same copy on DSH 0.2.1 is left alone. The editor
+ * reloads the row; sessions that already failed to resume come back after a DSH restart.
+ */
+export async function repairCopiedPresets(deps: { editor: ConfigEditor; profileDir: string; report(message: string): void }): Promise<void> {
+  const repaired: string[] = [];
+  let backup = '（原来没有 cordis.patch.yml）';
+  try {
+    const broken = (deps.editor.configuration?.() ?? []).filter(({ entry, inherited }) => entry.options.name === PRESET && dropRetiredRows(entry.options.config, inherited) !== undefined);
+    if (!broken.length) return;
+    const file = join(deps.profileDir, 'cordis.patch.yml');
+    if (existsSync(file)) backup = backupBeside(file);
+    for (const { entry } of broken) {
+      await deps.editor.edit(entry, (raw, inherited) => {
+        const next = dropRetiredRows(raw, inherited);
+        if (next === undefined) throw new Error(`预设 ${presetId(entry)} 在写入前变了`);
+        return next;
+      });
+      repaired.push(presetId(entry));
+    }
+  } catch (error) {
+    const done = repaired.length ? `已修好预设 ${repaired.join('、')}；` : '';
+    deps.report(`${done}没能删掉 profile 预设里 DSH 已不再提供的 list-agents 那一行：${error instanceof Error ? error.message : String(error)}。用这个预设的会话会打不开，可以退出 DSH 后在 cordis.patch.yml 里手动删掉 ${RETIRED} 那一行（原文件备份在 ${backup}）。`);
+    return;
+  }
+  deps.report(`已从 profile 里的预设 ${repaired.join('、')} 删掉 DSH 已不再提供的 list-agents 那一行（原文件备份在 ${backup}）。重启 DSH 后，用这个预设的会话就能正常打开。`);
 }
 
 /**
@@ -94,14 +144,13 @@ export async function swapPresetCompaction(editor: ConfigEditor, presetId: strin
  * remembered only when it succeeded or was already done, so a partner who later puts the stock one back is left alone,
  * while a profile this could not read is looked at again next start.
  */
-export async function swapCompactionOnce(deps: { enabled: boolean; profileDir: string | undefined; done(): boolean; markDone(): void; report(message: string): void; swap?: (profileDir: string) => CompactionSwap | Promise<CompactionSwap> }): Promise<void> {
+export function swapCompactionOnce(deps: { enabled: boolean; profileDir: string | undefined; done(): boolean; markDone(): void; report(message: string): void }): void {
   if (!deps.enabled || deps.done() || !deps.profileDir) return;
   let result: CompactionSwap;
-  try { result = await (deps.swap ?? swapStockCompaction)(deps.profileDir); }
+  try { result = swapStockCompaction(deps.profileDir); }
   catch (error) { deps.report(`没能把压缩换成 dsh-world 的“只留对话”压缩：${error instanceof Error ? error.message : String(error)}`); return; }
   if (result.status === 'unchanged') { deps.report(`没有换成 dsh-world 的“只留对话”压缩（${result.reason}）：自动压缩仍由预设自带的压缩负责，dsh-world 的 75% 触发线不生效；控制台的“应用并压缩”和回顾后压缩照常可用。`); return; }
   deps.markDone();
   if (result.status !== 'swapped') return;
-  const copied = result.preset ? `预设 ${result.preset} 已整份写进 profile，之后 DSH 升级对这个预设的改动不会自动进来；` : '';
-  deps.report(`已把 profile 的压缩换成 dsh-world 的“只留对话”压缩，重启 DSH 后生效（原文件备份在 ${result.backup}）。${copied}不想换：恢复备份，并在 dsh-world 配置里写 replaceCompaction: false。`);
+  deps.report(`已把 profile 的压缩换成 dsh-world 的“只留对话”压缩，重启 DSH 后生效（原文件备份在 ${result.backup}）。不想换：恢复备份，并在 dsh-world 配置里写 replaceCompaction: false。`);
 }

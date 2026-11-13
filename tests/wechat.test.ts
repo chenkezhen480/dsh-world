@@ -8,7 +8,7 @@ import { createUserMessage, ToolCallId, type ContextFormed, type GenerateOptions
 import { SessionId } from '@deepseek-ai/dsh-session';
 import type { Context } from '@deepseek-ai/cordis';
 import { hostFixture, textResponse } from './hostFixture.ts';
-import { createWechatHome } from '../src/ecosystem/wechat/home.ts';
+import { createWechatHome, WechatHomeBusy } from '../src/ecosystem/wechat/home.ts';
 import { createWechatModule } from '../src/ecosystem/wechat/index.ts';
 import { replyMessages } from '../src/ecosystem/wechat/messages.ts';
 import { createWechatRecorder } from '../src/ecosystem/wechat/archive.ts';
@@ -77,7 +77,7 @@ test('inbox insertions reconcile WeChat tools with workspace membership and reta
   assert.equal(agent.ctx.tools.get('wechat_send', agent), hostTool);
 });
 
-test('a plugin context without systemPrompt in its inject list can admit a session that enters the workspace at assembly', async t => {
+test('a plugin context without systemPrompt in its inject list admits a session that enters before tool selection', async t => {
   const requests: GenerateOptions[] = [];
   const { ctx, root, cleanup, errors } = await hostFixture(t, request => { requests.push(request); return textResponse('已收到'); });
   let inside = false;
@@ -89,8 +89,8 @@ test('a plugin context without systemPrompt in its inject list can admit a sessi
     channel.start();
   } }).await();
   cleanup.push(() => channel.stop());
-  // Membership arrives only by the time the prompt is assembled, after the inbox insertion.
-  cleanup.push(ctx.on('system-prompt/assemble', (_assembly, _context, next) => { inside = true; return next(); }, { prepend: true }));
+  // DSH 0.2.2 selects tools before assembling the prompt; membership arrives after the inbox insertion.
+  cleanup.push(ctx.on('session/event', (session, event) => { if (session === agent.session && event.type === 'turn/start') inside = true; }, { prepend: true }));
   agent.followup(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: '刚进工作区' }] }));
   await agent.whenIdle();
   assert.deepEqual(errors.map(error => String((error as { error?: unknown }).error ?? error)), []);
@@ -392,6 +392,61 @@ test('her own alarm ringing during a WeChat reply does not make the request fail
   assert.equal((await reply).text, '回完了');
 });
 
+test('once she has sent this chat her answer, the request returns while the rest of her turn goes on (#busy)', async t => {
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const sendTo = (chatId: string) => JSON.stringify({ chatId });
+  let step = 0;
+  const { ctx, cleanup } = await hostFixture(t, () => (async function* (): AsyncIterable<StreamChunk> {
+    const now = step++;
+    if (now < 2) {
+      // First to another chat, which is not this request's answer; then to this chat.
+      const call = { type: 'tool-call' as const, id: ToolCallId(`send${now}`), name: 'fake_send', arguments: sendTo(now ? identity.conversationId : 'other@chatroom') };
+      yield { type: 'block-start', index: 0, blockType: 'tool-call' };
+      yield { type: 'tool-call-delta', index: 0, id: call.id, name: call.name, argumentsDelta: call.arguments };
+      yield { type: 'block-end', index: 0, block: call };
+      yield { type: 'finish', reason: { kind: 'tool-calls' } };
+      return;
+    }
+    await gate; yield* textResponse('日记读完了');
+  })());
+  const home = (await ctx.agents.create({ sessionId: SessionId('home'), agentOptions: { provider: 'test', model: 'test' } })).agent;
+  cleanup.push(home.ctx.tools.register(defineTool({
+    name: 'fake_send', description: 'test', parameters: { chatId: { type: 'string', required: true } }, output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
+    execute: async ({ chatId }, context) => {
+      context.deferContext(createUserMessage({ source: { kind: 'dsh-world-wechat-outgoing', form: 'recall', identity: { ...identity, conversationId: chatId, speakerId: 'wechat:wxid_bot' }, messages: [{ type: 'text', text: '回你了' }] }, content: [{ type: 'text', text: '（已排队）' }] }));
+      return 'queued';
+    },
+  })));
+  const channel = createWechatHome({ ctx, home: async () => home }); cleanup.push(channel.stop);
+  const reply = await channel.ask('微信问题', identity);
+  assert.equal(step, 3, 'answered after the send to this chat, not after the one to another chat');
+  assert.ok(home.session.snapshotEvents().some(event => event.type === 'user/message' && event.data.id === reply.id), 'her words are in the home log');
+  assert.equal(home.status, 'running', 'the rest of her turn is still going');
+  release(); await home.whenIdle();
+});
+
+test('running out of time while she is still busy is a busy refusal and hands nothing over (#busy)', async t => {
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const running = new Promise<void>(resolve => { entered = resolve; });
+  const { ctx, cleanup } = await hostFixture(t, () => (async function* () { entered(); await gate; yield* textResponse('桌面那边的事'); })());
+  const home = (await ctx.agents.create({ sessionId: SessionId('home'), agentOptions: { provider: 'test', model: 'test' } })).agent;
+  let expire = () => {};
+  const timers = { set: (fn: () => void) => { expire = fn; return 1; }, clear: () => {} };
+  const channel = createWechatHome({ ctx, home: async () => home, timers }); cleanup.push(channel.stop);
+  home.followup(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: '桌面问题' }] }));
+  await running;
+  const reply = channel.ask('她在忙时来的微信', identity);
+  const refused = assert.rejects(reply, WechatHomeBusy);
+  await new Promise(resolve => setImmediate(resolve));
+  expire();
+  await refused;
+  release(); await home.whenIdle();
+  const texts = home.session.snapshotEvents().flatMap(event => event.type === 'user/message' ? event.data.content.flatMap(block => block.type === 'text' ? [block.text] : []) : []);
+  assert.equal(texts.some(text => text.includes('她在忙时来的微信')), false, 'the refused words never reached her');
+});
+
 test('the independent WeChat endpoint authenticates and validates before entering home; stop removes only its own discovery file', async t => {
   let calls = 0;
   const receipts: unknown[] = [];
@@ -404,7 +459,7 @@ test('the independent WeChat endpoint authenticates and validates before enterin
   const other = (await ctx.agents.create({ sessionId: SessionId('other'), agentOptions: { provider: 'test', model: 'test' } })).agent;
   assert.equal(other.ctx.tools.get('wechat_history', other), undefined);
   const { token, path } = JSON.parse(await readFile(file, 'utf8'));
-  assert.equal(path, '/dsh-world/wechat/ask');
+  assert.equal(path, '/dsh-world/worlds/default/wechat/ask');
   const server = createServer((req, res) => { void channel.route.handler(req, res); });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   cleanup.push(() => new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())));
