@@ -691,9 +691,9 @@
         msg ? h('div', { className: msg.indexOf('失败') >= 0 ? 'dw-bad' : 'dw-muted', role: 'status' }, msg) : null)
     }
     // Read-only: what she wrote in mood.md and reads before each turn's time block. Only she changes it.
-    function MoodCard(props) {
+    function Mood(props) {
       var mood = props.mood
-      var body = !mood || mood.kind === 'none' ? h('div', { className: 'dw-muted' }, '她还没有写 mood.md')
+      return !mood || mood.kind === 'none' ? h('div', { className: 'dw-muted' }, '她还没有写 mood.md')
         : mood.kind === 'failed' ? h('div', { className: 'dw-bad' }, 'mood.md 读不出来：' + mood.message)
         : [
           h('div', { key: 'v', className: 'dw-trail' }, list(mood.values).map(function (v) { return h('span', { key: v.name, className: v.value ? null : 'dw-muted' }, v.name + ' ' + v.value) })),
@@ -702,11 +702,17 @@
           mood.unread ? h('div', { key: 'u', className: 'dw-muted' }, '有 ' + mood.unread + ' 行没读懂，她在快照里能看到') : null,
           h('div', { key: 'at', className: 'dw-muted', style: { marginTop: 8 } }, mood.updatedAt ? '她最后改于 ' + local(mood.updatedAt, props.zone) : ''),
         ]
-      return h(Card, { title: '心情', delay: 90 }, body)
+    }
+    // Her mood sits with the plugin's faults: one place to see how things are with her.
+    function Health(props) {
+      var faults = list(props.faults)
+      return h(Card, { title: '健康', delay: 120 },
+        faults.length ? faults.map(function (f, i) { return h('div', { key: i, className: 'dw-bad' }, '● ' + f) }) : h('div', { className: 'dw-ok' }, '● 一切正常'),
+        props.mood ? h('div', { style: { marginTop: 12 } }, KV([['心情', h(Mood, { mood: props.mood, zone: props.zone })]])) : null)
     }
     function Overview(props) {
       var snap = props.snap, zone = snap.timeZone, life = snap.life, alarm = life && life.alarm, mem = snap.memory
-      var health = list(snap.health), wakes = life ? list(life.recentWakes) : []
+      var wakes = life ? list(life.recentWakes) : []
       var welcome = !snap.running && !life
       return h('div', { className: 'dw-pane' },
         welcome ? h(Card, null, h('div', { className: 'dw-welcome' },
@@ -725,10 +731,9 @@
             ['会话', String(life.homeSessionId || '还没有家').replace(/^session-/, '').slice(0, 8)],
             ['下次回顾', life.review ? local(life.review.at, zone) : '—'],
             ['最近', wakes.length ? h('div', { className: 'dw-trail' }, wakes.map(function (w, i) { return h('span', { key: i }, local(w.deliveredAt, zone) + ' ' + (sourceLabel[w.source] || w.source) + (w.lateMs >= 120000 ? ' · 晚 ' + Math.round(w.lateMs / 60000) + ' 分' : '')) })) : '—'],
-          ])),
-          h(MoodCard, { mood: snap.mood, zone: zone })) : null,
+          ]))) : null,
         h('div', { className: 'dw-grid' },
-          h(Card, { title: '健康', delay: 120 }, health.length ? health.map(function (f, i) { return h('div', { key: i, className: 'dw-bad' }, '● ' + f) }) : h('div', { className: 'dw-ok' }, '● 一切正常')),
+          h(Health, { faults: snap.health, mood: snap.mood, zone: zone }),
           h(CompactionPreset, { info: snap.compactionPreset, refresh: props.refresh }),
           h(Memory, { mem: mem, onSaved: props.refresh }),
           h(Budget, { budget: snap.budget, onSaved: props.refresh }),
@@ -928,7 +933,7 @@
       return h(View, { snap: snap, error: error, tick: tick, refresh: function () { if (loadRef.current) loadRef.current() } })
     }
 
-    return { Console: Console, test: { MoodCard: MoodCard, Memory: Memory, MemorySearch: MemorySearch, latest: latest, searchMemory: searchMemory, memoryQuery: memoryQuery, dayStartIso: dayStartIso, WorkspacePermission: WorkspacePermission, CompactAfterReview: CompactAfterReview, Schedule: Schedule, Modules: Modules, HomeApply: HomeApply, PhotoAlbum: PhotoAlbum, Wechat: Wechat, Activity: Activity, Diary: Diary, Qq: Qq, Panel: Panel, View: View, Overview: Overview, PersonaEditor: PersonaEditor, PromptEditor: PromptEditor, loadSnapshot: loadSnapshot, renderPersona: renderPersona } }
+    return { Console: Console, test: { Health: Health, Memory: Memory, MemorySearch: MemorySearch, latest: latest, searchMemory: searchMemory, memoryQuery: memoryQuery, dayStartIso: dayStartIso, WorkspacePermission: WorkspacePermission, CompactAfterReview: CompactAfterReview, Schedule: Schedule, Modules: Modules, HomeApply: HomeApply, PhotoAlbum: PhotoAlbum, Wechat: Wechat, Activity: Activity, Diary: Diary, Qq: Qq, Panel: Panel, View: View, Overview: Overview, PersonaEditor: PersonaEditor, PromptEditor: PromptEditor, loadSnapshot: loadSnapshot, renderPersona: renderPersona } }
   }
 
   async function loadWorldIds() {
