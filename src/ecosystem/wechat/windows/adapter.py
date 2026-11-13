@@ -18,7 +18,7 @@ from snapshot import NotSent, SnapshotBusy
 from groups import DEFAULT_CONTEXT_MESSAGES, mentionedIds, recentContext
 from incoming import ImageUnavailable, admitReference
 from binding import WechatOffline
-from sender import BuildStale
+from sender import BuildStale, UnsupportedWechatBuild
 from messages import messageKey, messageOrder, normalizeMessage, messageNormalizer, messageEntry, displayMessage
 from quotes import MessageContentError, isAppMessage
 from reading import readHistory
@@ -36,6 +36,8 @@ REPLY_TIMEOUT_SECONDS = 190
 EXIT_NEEDS_HUMAN = 2
 # Exit code for "the native bridge must be built again"; the plugin builds it and starts the adapter again.
 EXIT_NEEDS_BUILD = 3
+# Exit code for a Weixin.dll fingerprint the adapter cannot match to a supported build.
+EXIT_UNSUPPORTED_BUILD = 4
 # A reply whose send never started (no stable snapshot of the chat) is handed out again this many times in all.
 SEND_ATTEMPTS = 3
 
@@ -706,6 +708,9 @@ if __name__ == '__main__':
     except BuildStale as error:
         print(f'微信适配器停止：{error}', file=sys.stderr)
         sys.exit(EXIT_NEEDS_BUILD)
+    except UnsupportedWechatBuild as error:
+        print(f'微信适配器停止：{error}', file=sys.stderr)
+        sys.exit(EXIT_UNSUPPORTED_BUILD)
     except Exception as error:
         print(f'微信适配器停止：{error}', file=sys.stderr)
         sys.exit(1)

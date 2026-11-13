@@ -55,6 +55,10 @@ def verifyFile(path, size, digest):
         raise ValueError('文件指纹不匹配，禁止加载原生桥')
 
 
+class UnsupportedWechatBuild(ValueError):
+    """The Weixin.dll fingerprint cannot select exactly one native address profile."""
+
+
 def selectProfile(path, profiles):
     size = Path(path).stat().st_size
     candidates = [profile for profile in profiles if profile['size'] == size]
@@ -64,9 +68,9 @@ def selectProfile(path, profiles):
         if len(matches) == 1:
             return matches[0]
         if len(matches) > 1:
-            raise ValueError('微信构建匹配多个适配配置，禁止加载原生桥')
+            raise UnsupportedWechatBuild('微信构建匹配多个适配配置，禁止加载原生桥')
     versions = ' / '.join(profile['version'] for profile in profiles)
-    raise ValueError(f'不支持当前微信构建，已适配版本：{versions}；文件大小与 SHA256 必须同时匹配，禁止加载原生桥')
+    raise UnsupportedWechatBuild(f'不支持当前微信构建，已适配版本：{versions}；文件大小与 SHA256 必须同时匹配，禁止加载原生桥')
 
 
 class BuildStale(RuntimeError):

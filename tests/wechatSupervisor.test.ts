@@ -79,6 +79,21 @@ test('an exit that asks for a person is not retried until the console restarts i
   await supervisor.stop();
 });
 
+test('an unsupported WeChat build stops automatic restarts and shows the adapter diagnostic', async t => {
+  const { supervisor, launches, children, dir } = setup(t);
+  supervisor.start();
+  appendFileSync(join(dir, 'adapter.log'), '微信适配器停止：不支持当前微信构建，已适配版本：4.2.0.13\n');
+  children[0]!.emit('exit', 4, null);
+  await wait(60);
+  assert.equal(launches.length, 1);
+  assert.match(supervisor.status().error ?? '', /不支持当前微信构建/);
+  assert.equal(supervisor.status().needsHuman, false, 'acknowledge cannot make an unsupported build work');
+  await supervisor.restart();
+  assert.equal(launches.length, 2);
+  assert.equal(supervisor.status().error, null);
+  await supervisor.stop();
+});
+
 test('restarting a running adapter replaces it once, without a second automatic restart', async t => {
   const { supervisor, launches, killed, children } = setup(t);
   supervisor.start();

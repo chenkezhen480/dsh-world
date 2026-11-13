@@ -17,3 +17,9 @@ x64 Weixin.dll. The comparison used the 4.2.0.12 DLL extracted from Tencent's
 installer and verified against the existing profile. Function disassembly,
 references to the account root, and the context vtable were compared between
 the two builds.
+
+The 4.2.0.52 mapping was independently compared with the fingerprint-verified
+4.2.0.12 DLL. The new DLL was extracted offline from the Tencent installer
+and its Authenticode signature was verified. The comparison covered x64
+instructions with relocation operands masked, call targets and scheduler
+literals, both account-root references, and context and manager RTTI records.
