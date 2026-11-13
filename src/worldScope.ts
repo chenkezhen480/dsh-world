@@ -30,16 +30,17 @@ export function registerScopedTool(agent: Agent, tool: ToolDefinition, inside: (
   } }, { when: inside });
 }
 
-/**
- * DSH 0.2.2 selects tools before prompt assembly, so synchronize at turn start and between steps as well.
- * The assembly check still catches membership changes while a request is being prepared.
- */
-export function reassembleOnChange(ctx: Context, sync: (agent: Agent) => boolean): () => void {
-  const beforeStep = ctx.on('session/event', (session, event) => {
+export function syncBetweenSteps(ctx: Context, sync: (agent: Agent) => void): () => void {
+  return ctx.on('session/event', (session, event) => {
     if (event.type !== 'turn/start' && event.type !== 'step/end') return;
     const agent = ctx.get('agents')?.get(session.id);
     if (agent) sync(agent);
   });
+}
+
+/** DSH 0.2.2 selects tools before prompt assembly. Check again during assembly for late changes. */
+export function reassembleOnChange(ctx: Context, sync: (agent: Agent) => boolean): () => void {
+  const beforeStep = syncBetweenSteps(ctx, sync);
   const assemble = ctx.on('system-prompt/assemble', (_assembly, context, next) => context.agent && sync(context.agent) ? context.agent.ctx.systemPrompt.assemble(context) : next());
   return () => { beforeStep(); assemble(); };
 }

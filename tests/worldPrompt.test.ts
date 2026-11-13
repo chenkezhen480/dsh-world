@@ -17,6 +17,7 @@ import ToolFreeCompaction from '../src/compaction.ts';
 import { readPersona, renderPersona, writePersona } from '../src/persona.ts';
 import { record } from './fixtures.ts';
 import { defineTool } from '@deepseek-ai/dsh-tools';
+import { bindScopeParent, createScope } from '@deepseek-ai/dsh-scope';
 import { createHomeApply } from '../src/console/homeApply.ts';
 
 const config = { worldId: 'fish', agentPreset: 'companion', timeZone: 'Asia/Seoul' };
@@ -278,7 +279,7 @@ test('an in-history route replaces changed world prompts even when the proxy ref
   const { agent } = await ctx.agents.create({ sessionId: SessionId('proxy-home'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'proxy', model: 'test' } });
   agent.followup(user('original conversation ' + 'words '.repeat(120))); await agent.whenIdle();
   assert.match(systemOf(requests[0]!), /OLD_TEMPLATE[\s\S]*OLD_SELF/);
-  assert.match(systemOf(requests[0]!), /DeepSeek Harness/);
+  assert.doesNotMatch(systemOf(requests[0]!), /DeepSeek Harness/);
 
   writePersona(persona, { 性格: 'NEW_PERSONA' });
   await writeFile(file, 'NEW_TEMPLATE {{self}}');
@@ -305,7 +306,7 @@ test('an in-history route replaces changed world prompts even when the proxy ref
 
   writePersona(persona, {}); await rm(selfFile); await rm(file);
   agent.followup(user('after deleting the files')); await agent.whenIdle();
-  assert.match(systemOf(requests.at(-1)!), /DeepSeek Harness[\s\S]*我的世界/);
+  assert.match(systemOf(requests.at(-1)!), /^我不是一个助手[\s\S]*我的世界/);
   assert.doesNotMatch(systemOf(requests.at(-1)!), /NEW_PERSONA|NEW_TEMPLATE|LATE_SELF/);
   assert.deepEqual(errors, []);
 });
@@ -357,64 +358,50 @@ test('a custom persona heading after the name stays in the supplement', async t 
   writePersona(file, persona);
   assert.deepEqual(readPersona(file), persona);
 });
-test('her persona takes the place of the stock DeepSeek Harness identity, and is added after any system persona someone already set, never replacing it', async t => {
+for (const complete of [false, true]) test(`world replaces the entire ${complete ? 'minimal' : 'standard'} system prompt and restores it on exit`, async t => {
   const requests: GenerateOptions[] = [];
-  const { ctx, root, cleanup } = await hostFixture(t, async function* (request) { requests.push(request); yield* textResponse('reply'); }, { personaPrefix: 'SYSTEM PERSONA' });
+  const { ctx, root, cleanup, errors } = await hostFixture(t, () => textResponse('reply'), { personaPrefix: 'DEPLOYMENT PERSONA' });
+  class InHistoryAdapter extends LlmAdapter {
+    override async resolveModel(provider: string, model: string) { return { provider, id: model, name: model, context: { contextWindow: 1048576 }, defaultMaxTokens: 4096, systemPromptUpdate: 'in-history' as const }; }
+    override stream(request: GenerateOptions) { requests.push(request); return textResponse('reply'); }
+  }
+  ctx.llm.registerAdapter(['history'], new InHistoryAdapter());
+  ctx.systemPrompt.section({ name: 'host:work-rules', order: 100, text: 'HOST PLAN AND CODING INSTRUCTIONS' });
+  const presetKey = {};
+  const preset = createScope(ctx, presetKey);
+  cleanup.push(preset.dispose);
+  await preset.ctx.inject(['systemPrompt'], scoped => {
+    scoped.systemPrompt.section({ name: 'deployment:persona-prefix', order: 0, complete, text: 'PRESET CODING AGENT' });
+  }).await();
   const personaFile = join(root, 'persona.md');
-  writePersona(personaFile, { 名字: '小鱼', 性格: '嘴硬心软', 愿景: 'VISION_IN_SYSTEM', 补充: 'SUPPLEMENT_IN_SYSTEM' });
+  writePersona(personaFile, { 名字: '小鱼', 性格: '嘴硬心软', 愿景: 'VISION_IN_SYSTEM', 补充: '{{literal}}' });
+  const file = join(root, 'world-prompt.md'); await writeFile(file, '世界正文');
   const store = createArchiveStore({ ...config, root });
-  const world = createWorldRuntime(ctx, config, store, { prompt: { file: join(root, 'none.md'), persona: personaFile, names, life }, isHome: () => false });
-  await world.start(); cleanup.push(() => world.stop().finally(() => store.close()));
-  const own = await ctx.agents.create({ sessionId: SessionId('own'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } });
-  own.agent.followup(user('hi')); await own.agent.whenIdle();
-  const system = systemOf(requests[0]!);
-  assert.ok(!system.includes('You are an AI agent powered by DeepSeek Harness.'), 'the stock identity line is gone: ' + system);
-  assert.ok(system.startsWith('SYSTEM PERSONA'), 'nothing is left in front of it, not even a blank line: ' + JSON.stringify(system.slice(0, 40)));
-  assert.ok(system.indexOf('SYSTEM PERSONA') >= 0 && system.indexOf('SYSTEM PERSONA') < system.indexOf('我是小鱼。'), 'the persona someone set stays, hers follows it: ' + system);
-  assert.ok(system.indexOf('我是小鱼。') >= 0 && system.indexOf('我是小鱼。') < system.indexOf('# 我的世界'), system);
-  assert.match(system, /# 愿景\nVISION_IN_SYSTEM\n\nSUPPLEMENT_IN_SYSTEM/);
-  assert.ok(system.indexOf('SUPPLEMENT_IN_SYSTEM') < system.indexOf('# 我的世界'));
-  const otherMessages = textOf(requests[0]!.messages.filter(message => message.role !== 'system'));
-  assert.ok(!otherMessages.includes('VISION_IN_SYSTEM') && !otherMessages.includes('SUPPLEMENT_IN_SYSTEM'), 'persona layers belong to the system prompt, not user context');
-  assert.deepEqual(world.faults(), []);
-
-  // A preset that registers its own persona for her agent first.
-  ctx.on('agent/created', ({ agent }) => { if (agent.id === 'preset') agent.ctx.systemPrompt.section({ name: 'deployment:persona-prefix', order: agent.ctx.systemPrompt.getSectionOrder('DEPLOYMENT_PERSONA_PREFIX'), text: 'PRESET PERSONA' }); return undefined; }, { prepend: true });
-  const preset = await ctx.agents.create({ sessionId: SessionId('preset'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } });
-  preset.agent.followup(user('hi')); await preset.agent.whenIdle();
-  const both = systemOf(requests.at(-1)!);
-  assert.ok(both.indexOf('PRESET PERSONA') >= 0 && both.indexOf('PRESET PERSONA') < both.indexOf('我是小鱼。'), both);
-  assert.ok(both.indexOf('SYSTEM PERSONA') < 0 || both.indexOf('PRESET PERSONA') >= 0, 'the preset persona on her own agent is kept as well');
-  assert.ok(both.indexOf('我是小鱼。') >= 0, 'and hers is still added');
-  assert.ok(!both.includes('You are an AI agent powered by DeepSeek Harness.'));
-  assert.deepEqual(world.faults(), [], 'adding is the normal case, so there is nothing to report');
-});
-test('whoever wrote their own words at the very top keeps them: no stock identity to replace, or a preset that already overrode it', async t => {
-  const setup = async (options: { personaPrefix?: string; includeHarnessIdentity?: boolean }, presetIdentity?: string) => {
-    const requests: GenerateOptions[] = [];
-    const { ctx, root, cleanup, errors } = await hostFixture(t, async function* (request) { requests.push(request); yield* textResponse('reply'); }, options);
-    const personaFile = join(root, 'persona.md'); writePersona(personaFile, { 名字: '小鱼', 性格: '嘴硬心软' });
-    const store = createArchiveStore({ ...config, root });
-    const world = createWorldRuntime(ctx, config, store, { prompt: { file: join(root, 'none.md'), persona: personaFile, names, life }, isHome: () => false });
-    await world.start(); cleanup.push(() => world.stop().finally(() => store.close()));
-    if (presetIdentity) ctx.on('agent/created', ({ agent }) => { agent.ctx.systemPrompt.section({ name: 'harness:identity', order: agent.ctx.systemPrompt.getSectionOrder('HARNESS_IDENTITY'), text: presetIdentity }); return undefined; }, { prepend: true });
-    const handle = await ctx.agents.create({ sessionId: SessionId('top'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } });
-    handle.agent.followup(user('hi')); await handle.agent.whenIdle();
-    return { system: systemOf(requests[0]!), world, errors };
+  let membership = false;
+  const world = createWorldRuntime(ctx, config, store, { prompt: { file, persona: personaFile, names }, isHome: () => false, inWorkspace: () => membership });
+  cleanup.push(() => world.stop().finally(() => store.close())); await world.start();
+  const { agent } = await ctx.agents.create({
+    sessionId: SessionId('world-prompt'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'history', model: 'test' },
+  });
+  bindScopeParent(agent, presetKey);
+  const say = async (text: string) => {
+    agent.followup(user(text)); await agent.whenIdle();
+    return requests.at(-1)!;
   };
-  // Someone who turned the stock identity off and wrote their own text first.
-  const off = await setup({ includeHarnessIdentity: false, personaPrefix: 'MY WORDS AT THE TOP' });
-  assert.ok(off.system.startsWith('MY WORDS AT THE TOP'), JSON.stringify(off.system.slice(0, 60)));
-  assert.ok(off.system.indexOf('我是小鱼。') > off.system.indexOf('MY WORDS AT THE TOP'), 'hers follows theirs');
-  assert.deepEqual(off.errors, []);
-  // A preset that replaced the stock identity with its own text: it is left exactly as written.
-  const preset = await setup({}, 'PRESET IDENTITY AT THE TOP');
-  assert.ok(preset.system.startsWith('PRESET IDENTITY AT THE TOP'), JSON.stringify(preset.system.slice(0, 60)));
-  assert.ok(preset.system.includes('我是小鱼。'), 'hers is still added');
-  assert.ok(!preset.system.includes('You are an AI agent powered by DeepSeek Harness.'));
-  assert.deepEqual(preset.errors, [], 'no duplicate-section error');
+  const outside = systemOf(await say('ordinary chat before joining'));
+  assert.match(outside, /PRESET CODING AGENT/);
+  assert.equal(outside.includes('HOST PLAN AND CODING INSTRUCTIONS'), !complete);
+  membership = true;
+  const inside = await say('inside now');
+  assert.equal(systemOf(inside), '我是小鱼。\n\n# 性格\n嘴硬心软\n\n# 愿景\nVISION_IN_SYSTEM\n\n{{literal}}\n\n世界正文');
+  assert.match(textOf(inside.messages), /ordinary chat before joining/);
+  assert.doesNotMatch(textOf(inside.messages.filter(message => message.role !== 'system')), /VISION_IN_SYSTEM/);
+  membership = false;
+  assert.equal(systemOf(await say('outside again')), outside);
+  assert.equal(requests.length, 3);
+  assert.deepEqual(errors, []);
 });
-test('with no persona written in the console, DeepSeek Harness keeps its own identity and nothing of hers is added', async t => {
+test('with no persona written in the console, the world template is still the full system prompt', async t => {
   const requests: GenerateOptions[] = [];
   const { ctx, root, cleanup } = await hostFixture(t, async function* (request) { requests.push(request); yield* textResponse('reply'); });
   const store = createArchiveStore({ ...config, root });
@@ -422,7 +409,8 @@ test('with no persona written in the console, DeepSeek Harness keeps its own ide
   await world.start(); cleanup.push(() => world.stop().finally(() => store.close()));
   const handle = await ctx.agents.create({ sessionId: SessionId('plain-persona'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } });
   handle.agent.followup(user('hi')); await handle.agent.whenIdle();
-  assert.match(systemOf(requests[0]!), /^You are an AI agent powered by DeepSeek Harness./);
+  assert.match(systemOf(requests[0]!), /^我不是一个助手/);
+  assert.doesNotMatch(systemOf(requests[0]!), /DeepSeek Harness/);
 });
 test('without her own template the shipped one is used, and a session that is not the home is told where its world line lives', async t => {
   const requests: GenerateOptions[] = [];

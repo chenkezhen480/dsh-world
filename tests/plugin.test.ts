@@ -8,7 +8,7 @@ import { Readable } from 'node:stream';
 import { setImmediate as nextImmediate } from 'node:timers/promises';
 import type { Context } from '@deepseek-ai/cordis';
 import { join } from 'node:path';
-import { createUserMessage, isAgentLoopRequest, LlmError, ToolCallId, type GenerateOptions } from '@deepseek-ai/dsh-llm';
+import { createUserMessage, isAgentLoopRequest, LlmAdapter, LlmError, ToolCallId, type GenerateOptions } from '@deepseek-ai/dsh-llm';
 import { SessionId } from '@deepseek-ai/dsh-session';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { hostFixture, mountCompaction, textResponse } from './hostFixture.ts';
@@ -694,6 +694,109 @@ test('two worlds in one profile keep their own routes and memory (#40)', async t
   assert.match(textOf(requests.findLast(request => request.sessionId === secondTata.agent.id)!), /TATA_PRIVATE_MEMORY/);
   await plugins[0].dispose();
   assert.deepEqual((await consoleGet(routes, '/dsh-world/worlds')).worldIds, ['tata']);
+});
+test('joining a world after prompt assembly blocks the old host prompt until the next turn', { timeout: 5000 }, async t => {
+  const requests: GenerateOptions[] = [];
+  const { ctx, root, cleanup } = await hostFixture(t, request => { requests.push(request); return textResponse('reply'); });
+  isolateHome(t, root);
+  const room = join(root, 'worlds/fish/room');
+  await mkdir(room, { recursive: true });
+  const sessionIds: string[] = [];
+  ctx.provide('workspaceRegistry', { list: () => [{ path: room, sessionIds }] });
+  const { routes } = provideLifeHost(ctx);
+  const plugin = ctx.plugin(worldPlugin, { ...config, life: false });
+  cleanup.push(() => plugin.dispose()); await plugin.await();
+  await consolePost(routes, '/dsh-world/worlds/fish/console/start');
+  const { agent } = await ctx.agents.create({ sessionId: SessionId('join-late'), meta: { agentPreset: config.agentPreset, cwd: room }, agentOptions: { provider: 'test', model: 'test' } });
+  const remove = ctx.on('agent/pre-step', (_payload, next) => { sessionIds.push(agent.id); return next(); }, { prepend: true });
+  agent.followup(user('join during the turn')); await agent.whenIdle(); remove();
+  assert.equal(requests.length, 0);
+  assert.ok(agent.session.snapshotEvents().some(event => event.type === 'turn/end' && event.data.reason.kind === 'error' && event.data.reason.error.code === 'DSH_WORLD_SCOPE_CHANGED'));
+  agent.followup(user('next turn')); await agent.whenIdle();
+  assert.equal(requests.length, 1);
+  assert.match(textOf(requests[0]!), /我的世界/);
+  assert.doesNotMatch(textOf(requests[0]!), /DeepSeek Harness/);
+});
+test('a persisted in-history session restores its host prompt after leaving the world while closed', async t => {
+  const requests: GenerateOptions[] = [];
+  const stream = (request: GenerateOptions) => {
+    requests.push(request);
+    return textResponse(request.purpose === 'compaction' ? 'summary' : 'reply ' + 'conversation '.repeat(160));
+  };
+  const { ctx, root, cleanup } = await hostFixture(t, stream);
+  isolateHome(t, root);
+  await mountCompaction(ctx);
+  class InHistoryAdapter extends LlmAdapter {
+    override async resolveModel(provider: string, model: string) { return { provider, id: model, name: model, context: { contextWindow: 1048576 }, defaultMaxTokens: 4096, systemPromptUpdate: 'in-history' as const, toolUpdate: 'in-history' as const }; }
+    override stream = stream;
+  }
+  ctx.llm.registerAdapter(['history'], new InHistoryAdapter());
+  const room = join(root, 'worlds/fish/room');
+  await mkdir(room, { recursive: true });
+  const id = SessionId('persisted-world-prompt');
+  const sessionIds: string[] = [id];
+  ctx.provide('workspaceRegistry', { list: () => [{ path: room, sessionIds }] });
+  const { routes } = provideLifeHost(ctx);
+  const plugin = ctx.plugin(worldPlugin, { ...config, life: false });
+  cleanup.push(() => plugin.dispose()); await plugin.await();
+  const consolePath = '/dsh-world/worlds/fish/console/';
+  await consolePost(routes, consolePath + 'persona', { 性格: 'PERSISTED_PERSONA' });
+  await consolePost(routes, consolePath + 'start');
+  const agentOptions = { provider: 'history', model: 'test' };
+  const handle = await ctx.agents.create({ sessionId: id, meta: { agentPreset: config.agentPreset, cwd: room }, agentOptions });
+  handle.agent.followup(user('conversation before closing')); await handle.agent.whenIdle();
+  assert.match(textOf(requests.at(-1)!), /PERSISTED_PERSONA/);
+  await ctx.sessions.flush(handle.agent.session); await handle.dispose();
+  await consolePost(routes, consolePath + 'stop');
+  sessionIds.length = 0;
+  const { agent } = await ctx.agents.resume({ resumeSessionId: id, agentOptions });
+  assert.notEqual(agent.session, handle.agent.session);
+  await assert.rejects(ctx.compaction.compactNow(agent, new AbortController().signal), error => error instanceof Error && error.cause instanceof LlmError && error.cause.code === 'DSH_WORLD_SCOPE_CHANGED');
+  assert.equal(requests.length, 1);
+  agent.followup(user('conversation after leaving')); await agent.whenIdle();
+  assert.equal(requests.length, 2);
+  assert.match(textOf(requests[1]!), /DeepSeek Harness/);
+  assert.match(textOf(requests[1]!), /conversation before closing/);
+  assert.doesNotMatch(textOf(requests[1]!), /PERSISTED_PERSONA|我的世界/);
+});
+test('upgrading an unmarked world session restores the host prompt before its first outside request', async t => {
+  const requests: GenerateOptions[] = [];
+  const { ctx, root, cleanup } = await hostFixture(t, () => textResponse('unused'), { personaPrefix: 'CURRENT_HOST_PERSONA' });
+  isolateHome(t, root);
+  await mountCompaction(ctx);
+  class InHistoryAdapter extends LlmAdapter {
+    override async resolveModel(provider: string, model: string) { return { provider, id: model, name: model, context: { contextWindow: 1048576 }, defaultMaxTokens: 4096, systemPromptUpdate: 'in-history' as const, toolUpdate: 'in-history' as const }; }
+    override stream(request: GenerateOptions) {
+      requests.push(request);
+      return textResponse(request.purpose === 'compaction' ? 'summary' : 'reply ' + 'conversation '.repeat(160));
+    }
+  }
+  ctx.llm.registerAdapter(['history'], new InHistoryAdapter());
+  const room = join(root, 'worlds/fish/room');
+  await mkdir(room, { recursive: true });
+  const id = SessionId('legacy-world-prompt');
+  const agentOptions = { provider: 'history', model: 'test' };
+  const handle = await ctx.agents.create({ sessionId: id, meta: { agentPreset: config.agentPreset, cwd: room }, agentOptions });
+  handle.agent.ctx.systemPrompt.section({ name: 'dsh-world:fish', order: 50, text: 'OLD_WORLD_TEXT_FROM_A_DELETED_TEMPLATE' });
+  handle.agent.followup(user('original conversation')); await handle.agent.whenIdle();
+  assert.match(textOf(requests[0]!), /CURRENT_HOST_PERSONA[\s\S]*OLD_WORLD_TEXT_FROM_A_DELETED_TEMPLATE/);
+  await ctx.sessions.flush(handle.agent.session); await handle.dispose();
+
+  provideLifeHost(ctx);
+  const plugin = ctx.plugin(worldPlugin, { ...config, life: false });
+  cleanup.push(() => plugin.dispose()); await plugin.await();
+  const restored = await ctx.agents.resume({ resumeSessionId: id, agentOptions });
+  const compact = () => ctx.compaction.compactNow(restored.agent, new AbortController().signal);
+  await assert.rejects(compact(), error => error instanceof Error && error.cause instanceof LlmError && error.cause.code === 'DSH_WORLD_SCOPE_CHANGED');
+  assert.equal(requests.length, 1);
+  restored.agent.followup(user('first message after upgrade')); await restored.agent.whenIdle();
+  assert.equal(requests.length, 2);
+  assert.match(textOf(requests[1]!), /CURRENT_HOST_PERSONA/);
+  assert.match(textOf(requests[1]!), /original conversation/);
+  assert.doesNotMatch(textOf(requests[1]!), /OLD_WORLD_TEXT_FROM_A_DELETED_TEMPLATE/);
+  assert.ok(await compact());
+  assert.equal(requests[2]!.purpose, 'compaction');
+  assert.doesNotMatch(textOf(requests[2]!), /OLD_WORLD_TEXT_FROM_A_DELETED_TEMPLATE/);
 });
 for (const action of ['stop', 'unload', 'unload with another world'] as const) test(`${action} retires existing recall before the next model request`, async t => {
   const requests: GenerateOptions[] = [];

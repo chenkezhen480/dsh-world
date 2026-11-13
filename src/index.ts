@@ -126,6 +126,10 @@ function profileWorlds(root: Context): ProfileWorlds {
       const token = room.authorize(session);
       if (token !== undefined) return token;
     }
+  }, session => {
+    if (!session.header.cwd) return false;
+    const cwd = canonicalPath(session.header.cwd);
+    return [...worlds.rooms.values()].some(room => canonicalPath(room.path) === cwd);
   });
   return worlds;
 }

@@ -1,7 +1,8 @@
+import { createHash } from 'node:crypto';
 import type { Context } from '@deepseek-ai/cordis';
 import type { Agent } from '@deepseek-ai/dsh-agent';
-import { createSystemMessage, createUserMessage, isAgentLoopRequest, LlmError, type StreamChunk, type UserMessage } from '@deepseek-ai/dsh-llm';
-import type { Session, SessionSeq } from '@deepseek-ai/dsh-session';
+import { createSystemMessage, createUserMessage, isAgentLoopRequest, LlmError, type MessageId, type StreamChunk, type UserMessage } from '@deepseek-ai/dsh-llm';
+import { appendPluginRecord, pluginRecordOf, SessionLogOffset, type Session, type SessionSeq } from '@deepseek-ai/dsh-session';
 import type {} from '@deepseek-ai/dsh-compaction';
 import './hostContract.ts';
 import { isOrdinarySession } from './archive.ts';
@@ -11,7 +12,7 @@ import { Faults } from './faults.ts';
 import { createHistory, excludePresentMessages, renderHistory } from './history.ts';
 import { MOOD_CLEARED, moodText, readMood } from './mood.ts';
 import { createWorldToolRegistry, memoryTools } from './memoryTools.ts';
-import { createPromptSections, WORLD_PROMPT_PREFIX, type WorldPromptSource } from './promptSection.ts';
+import { assembledWorlds, createPromptSections, type WorldPromptSource } from './promptSection.ts';
 import { belongsToWorld, createSourceArchive, inWorld, sessionPreset } from './sourceArchive.ts';
 import type { ArchiveStore } from './store.ts';
 import type { WorldConfig } from './types.ts';
@@ -24,7 +25,17 @@ const memorySource = 'dsh-world-history';
 const moodSource = 'dsh-world-mood';
 const isRecall = (source: UserMessage['source'] | undefined, worldId?: string) => source?.kind === memorySource && (worldId === undefined || source.worldId === undefined || source.worldId === worldId);
 type RequestPosition = { turn: number; step: number };
-type WorldAssembly = { worldId: string; token?: symbol };
+const promptRecord = 'plugin:dsh-world/system-prompt';
+const legacyPromptReset = 'plugin:dsh-world/legacy-prompt-reset';
+interface WorldPromptIdentity { worldId: string; digest: string }
+interface PromptRecord extends WorldPromptIdentity, RequestPosition {}
+declare module '@deepseek-ai/dsh-session' {
+  interface PluginRecordMap {
+    [promptRecord]: PromptRecord;
+    [legacyPromptReset]: Record<string, never>;
+  }
+}
+const digestPrompt = (text: string) => createHash('sha256').update(text).digest('hex');
 
 function recallNodes(session: Session, match: (source: UserMessage['source']) => boolean): SessionSeq[] {
   return session.surface.nodes.filter(seq => {
@@ -33,8 +44,8 @@ function recallNodes(session: Session, match: (source: UserMessage['source']) =>
   });
 }
 
-/** Empty system nodes retire recall from the model's context and leave the original events intact. */
-function retireRecall(session: Session, retiring: readonly SessionSeq[], position: RequestPosition): void {
+/** Empty system nodes retire old context from the model's view and preserve the original events. */
+function retireContext(session: Session, retiring: readonly SessionSeq[], position: RequestPosition): void {
   for (const seq of retiring) {
     if (!session.surface.nodes.includes(seq)) continue;
     session.append('system/message', { ...position, message: createSystemMessage('') }, { surfaceOp: { op: 'replace', startSeq: seq, endSeq: seq }, sourceEventSeqs: [seq] });
@@ -42,9 +53,57 @@ function retireRecall(session: Session, retiring: readonly SessionSeq[], positio
 }
 
 /** A session can outlive its world. Authorization returns false for a stopped world and undefined outside it. */
-export function guardWorldContext(ctx: Context, authorize: (session: Session, worldId?: string) => symbol | false | undefined): void {
-  const assemblies = new WeakMap<AbortSignal, WorldAssembly>();
-  const previousPrompts = new WeakMap<Session, WorldAssembly>();
+export function guardWorldContext(
+  ctx: Context,
+  authorize: (session: Session, worldId?: string) => symbol | false | undefined,
+  hasWorldRoom: (session: Session) => boolean,
+): void {
+  const assemblies = new WeakMap<AbortSignal, WorldPromptIdentity & { token: symbol }>();
+  const promptLogs = new WeakMap<Session, { nextSeq: number; pending?: PromptRecord; owners: Map<MessageId, WorldPromptIdentity>; reset: boolean; sawWorldContext: boolean }>();
+  function promptLog(session: Session) {
+    const log = promptLogs.get(session) ?? { nextSeq: 0, owners: new Map<MessageId, WorldPromptIdentity>(), reset: false, sawWorldContext: false };
+    const end = session.seq;
+    for (let from = log.nextSeq; from < end; from += 128) {
+      for (const event of session.snapshotEvents(SessionLogOffset(from), SessionLogOffset(Math.min(from + 128, end)))) {
+        if (event.type === 'step/start') delete log.pending;
+        if (event.type === 'system/message' && log.pending && event.data.turn === log.pending.turn && event.data.step === log.pending.step) {
+          const block = event.data.message.content[0];
+          if (block?.type === 'text' && digestPrompt(block.text) === log.pending.digest) {
+            log.owners.set(event.data.message.id, { worldId: log.pending.worldId, digest: log.pending.digest });
+          }
+        }
+        if (!log.reset && event.type === 'user/message') {
+          const kind = event.data.source.kind;
+          log.sawWorldContext ||= kind === memorySource || kind === moodSource || kind === 'dsh-world-channel-context';
+        }
+        if (event.type === legacyPromptReset as string && pluginRecordOf(event)) log.reset = true;
+        if (event.type !== promptRecord as string) continue;
+        const data = pluginRecordOf(event)?.data as Partial<PromptRecord> | null | undefined;
+        if (typeof data?.worldId === 'string' && typeof data.digest === 'string' && typeof data.turn === 'number' && typeof data.step === 'number') {
+          log.pending = { worldId: data.worldId, digest: data.digest, turn: data.turn, step: data.step };
+          log.reset = true;
+        }
+      }
+    }
+    log.nextSeq = end;
+    promptLogs.set(session, log);
+    return log;
+  }
+  // Old DSH logs contain a single rendered string with no section boundaries or saved world ownership.
+  const needsLegacyReset = (session: Session, log: ReturnType<typeof promptLog>) =>
+    !log.reset && (log.sawWorldContext || hasWorldRoom(session));
+  function retiredPrompts(session: Session, log: ReturnType<typeof promptLog>, current: WorldPromptIdentity | undefined, reset: boolean): SessionSeq[] {
+    if (!reset && !current && !log.owners.size) return [];
+    return session.surface.nodes.filter(seq => {
+      const event = session.eventAt(seq);
+      if (event?.type !== 'system/message') return false;
+      const block = event.data.message.content[0];
+      if (block?.type !== 'text') return false;
+      if (reset) return true;
+      const owner = log.owners.get(event.data.message.id);
+      return current ? (owner?.digest ?? digestPrompt(block.text)) !== current.digest || (!!owner && owner.worldId !== current.worldId) : !!owner;
+    });
+  }
   const revoked = (source: UserMessage['source'] | undefined, session: Session | undefined) => {
     if (source?.kind === memorySource || source?.kind === moodSource) return !session || !authorize(session, source.worldId);
     return source?.kind === 'dsh-world-channel-context' && (!session || !authorize(session));
@@ -52,11 +111,9 @@ export function guardWorldContext(ctx: Context, authorize: (session: Session, wo
   ctx.on('system-prompt/assemble', async (_assembly, context, next) => {
     const result = await next();
     if (context.signal && context.agent) {
-      const section = result.sections.find(section => section.name.startsWith(WORLD_PROMPT_PREFIX));
-      if (section) {
-        const worldId = section.name.slice(WORLD_PROMPT_PREFIX.length).split(':', 1)[0]!;
-        assemblies.set(context.signal, { worldId, token: authorize(context.agent.session, worldId) || undefined });
-      } else assemblies.delete(context.signal);
+      const prompt = assembledWorlds.get(context);
+      if (prompt) assemblies.set(context.signal, { worldId: prompt.worldId, token: prompt.token, digest: digestPrompt(prompt.text) });
+      else assemblies.delete(context.signal);
     }
     return result;
   }, { prepend: true });
@@ -64,32 +121,44 @@ export function guardWorldContext(ctx: Context, authorize: (session: Session, wo
     const decision = await next();
     if (decision.kind !== 'enter') return decision;
     const { session } = agent;
-    const token = assemblies.get(signal)?.token;
-    const previous = previousPrompts.get(session);
-    const promptChanged = previous && (!token || previous.token !== token);
-    return promptChanged || recallNodes(session, source => revoked(source, session)).length ? { ...decision, startsRequestSeries: true as const } : decision;
+    const log = promptLog(session);
+    return retiredPrompts(session, log, assemblies.get(signal), needsLegacyReset(session, log)).length || recallNodes(session, source => revoked(source, session)).length
+      ? { ...decision, startsRequestSeries: true as const } : decision;
   });
-  ctx.on('agent/request', ({ agent: { session }, turn, step }, next) => {
-    retireRecall(session, recallNodes(session, source => revoked(source, session)), { turn, step });
+  ctx.on('agent/request', ({ agent: { session }, turn, step, signal }, next) => {
+    const prompt = assemblies.get(signal);
+    const log = promptLog(session);
+    const reset = needsLegacyReset(session, log);
+    retireContext(session, [...retiredPrompts(session, log, prompt, reset), ...recallNodes(session, source => revoked(source, session))], { turn, step });
+    // Record ownership before DSH commits the projected system message, including attempts that never reach a provider.
+    if (prompt) appendPluginRecord(session, promptRecord, { worldId: prompt.worldId, digest: prompt.digest, turn, step });
+    else if (reset) appendPluginRecord(session, legacyPromptReset, {});
     return next();
   });
   ctx.on('llm/stream', async function* (request, next) {
     const compaction = request.purpose === 'compaction';
     if (!compaction && !isAgentLoopRequest(request)) { yield* next(); return; }
     const session = request.sessionId ? ctx.get('sessions')?.get(request.sessionId) : undefined;
-    // Both compaction engines replay the saved prompt without assembling a new one.
-    const prompt = compaction ? session && previousPrompts.get(session) : request.signal && assemblies.get(request.signal);
-    if (!compaction && session && prompt) previousPrompts.set(session, prompt);
-    const scope = session && (compaction || prompt) ? authorize(session, prompt?.worldId) : undefined;
-    const stalePrompt = prompt && (!scope || (!compaction && scope !== prompt.token));
-    const failure = { code: 'DSH_WORLD_SCOPE_CHANGED', message: compaction
-      ? 'dsh-world: 世界已停止或会话已离开世界工作区，已取消压缩。'
-      : 'dsh-world: 世界权限已变化，已阻止携带旧世界上下文的请求，请重新发送。' };
-    if (scope === false || stalePrompt || request.messages.some(message => revoked(message.source, session))) {
+    const prompt = !compaction && request.signal ? assemblies.get(request.signal) : undefined;
+    const scope = session && authorize(session, prompt?.worldId);
+    const stalePrompt = !compaction && scope !== prompt?.token && (Boolean(prompt) || typeof scope === 'symbol');
+    // Compaction can replay system messages before a resumed session has taken a new turn.
+    const log = session && promptLog(session);
+    const legacyCompaction = compaction && scope === undefined && session && log
+      && needsLegacyReset(session, log) && request.messages.some(message => message.role === 'system' && message.content.length > 0);
+    const unauthorizedPrompt = !!session && !!log?.owners.size && request.messages.some(message => {
+      const owner = message.role === 'system' && log.owners.get(message.id);
+      return !!owner && !authorize(session, owner.worldId);
+    });
+    const failure = { code: 'DSH_WORLD_SCOPE_CHANGED', message: legacyCompaction
+      ? 'dsh-world: 会话仍带有旧版世界提示词。请先发送一条消息恢复 DSH 提示词，再压缩。'
+      : compaction
+        ? 'dsh-world: 世界已停止或会话已离开世界工作区，已取消压缩。'
+        : 'dsh-world: 世界权限已变化，已阻止携带旧世界上下文的请求，请重新发送。' };
+    if (stalePrompt || (compaction && scope === false) || legacyCompaction || unauthorizedPrompt || request.messages.some(message => revoked(message.source, session))) {
       yield { type: 'finish', reason: { kind: 'error', failure } } satisfies StreamChunk;
       return;
     }
-    if (!compaction && session && !prompt) previousPrompts.delete(session);
     yield* next();
     if (compaction && session && scope && authorize(session, prompt?.worldId) !== scope) throw new LlmError(failure.message, failure.code);
   });
@@ -127,7 +196,8 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
   const included = (session: Session) => inWorld(session, config, world?.inWorkspace);
   const ownMemory = (source: UserMessage['source'] | undefined) => isRecall(source, config.worldId);
   const faults = new Faults();
-  const prompts = world && createPromptSections(config, world, { logger: ctx.logger });
+  const scopeToken = Symbol();
+  const prompts = world && createPromptSections(config, world, scopeToken, { logger: ctx.logger });
   const memory = new WeakMap<Session, MemoryState>();
   const service = world?.memory;
   const tools = service ? createWorldToolRegistry({ tools: inside => memoryTools(service, inside), inWorld: agent => !stopped && included(agent.session), faults, logger: ctx.logger }) : undefined;
@@ -202,7 +272,7 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
   }
   function flushRetired(session: Session, state: MemoryState, position: RequestPosition): void {
     const retiring = state.retiring; state.retiring = [];
-    retireRecall(session, retiring, position);
+    retireContext(session, retiring, position);
   }
   async function attach(agent: Agent): Promise<void> {
     const { session } = agent;
@@ -268,6 +338,7 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
         void attach(agent);
         return undefined;
       }));
+      if (prompts) disposers.push(ctx.on('agent/disposed', ({ agent }) => prompts.forget(agent)));
       if (tools) {
         disposers.push(reassembleOnChange(ctx, syncTools));
         disposers.push(ctx.on('agent/pre-step', ({ agent }, next) => { syncTools(agent); return next(); }, { prepend: true }));
@@ -359,5 +430,5 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
       await archive.flush();
     })();
   }
-  return { scopeToken: Symbol(), start, retryCatchUp, cancelCatchUp, refreshPrompt: (session: Session) => { prompts?.refresh(session); }, flush: archive.flush, stop, faults: () => [...faults.list(), ...archive.faults()] };
+  return { scopeToken, start, retryCatchUp, cancelCatchUp, refreshPrompt: (session: Session) => { prompts?.refresh(session); }, flush: archive.flush, stop, faults: () => [...faults.list(), ...archive.faults()] };
 }
