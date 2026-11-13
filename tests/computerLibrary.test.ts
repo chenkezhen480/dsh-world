@@ -70,3 +70,14 @@ test('a file whose name differs from its tool name is skipped with a fault', t =
   assert.deepEqual(library.list(), []);
   assert.match(faults.list().join(), /她的工具 other_name\.json 没能载入.*文件名应该是 bili_unread\.json/);
 });
+
+test('kept versions come newest first, without repeats or files that no longer parse', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'computer-lib-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const library = createProcedureLibrary(dir);
+  assert.deepEqual(library.kept('bili_unread'), []);
+  for (const description of ['一', '二', '二', '三']) library.save(tool(description));
+  writeFileSync(join(dir, 'bili_unread.v9.json'), '{"name":');
+  assert.deepEqual(library.kept('bili_unread').map(({ procedure, version }) => [version, procedure.description]), [[3, '二'], [1, '一']]);
+  library.save(tool('二'));
+  assert.deepEqual(library.kept('bili_unread').map(({ version }) => version), [10, 1], 'one the same as the newest adds nothing');
+});

@@ -17,9 +17,17 @@ export interface Driver {
   brief(): Promise<string>;
 }
 export type Args = Record<string, string | number | boolean>;
-export type RunResult =
-  | { ok: true; rows: Row[]; values: Record<string, unknown> }
-  | { ok: false; step: number; action: string; error: string; outwardDone: boolean; page: string };
+export type Failure = { ok: false; step: number; action: string; error: string; outwardDone: boolean; page: string };
+export type RunResult = { ok: true; rows: Row[]; values: Record<string, unknown> } | Failure;
+/** One of the versions she replaced, kept as `<name>.v<n>.json`. */
+export interface KeptVersion { procedure: Procedure; version: number }
+/** Which version a run ended on: the newest unless it failed before anything went out and a kept one worked. */
+export interface VersionedRun { result: RunResult; ran: Procedure; fallback?: { version: number; newest: Failure } }
+
+/** How long a `check` waits for the page a step led to, so a check right after sending sees the page it opened. */
+const CHECK_MS = 3000;
+/** Kept versions tried after the newest fails, so a long repair history cannot make one call run for minutes. */
+const MAX_FALLBACK = 3;
 
 export function checkArgs(procedure: Procedure, input: Record<string, unknown>): Args {
   const out: Args = {};
@@ -44,6 +52,16 @@ const fillCondition = (condition: Condition, args: Args): Condition => ({
   ...(condition.anchor === undefined ? {} : { anchor: fill(condition.anchor, args) }),
 });
 const describeCondition = (condition: Condition) => [condition.text && `文字「${condition.text}」`, condition.url && `地址含 ${condition.url}`, condition.anchor && describeAnchor(condition.anchor)].filter(Boolean).join('、');
+const isEmpty = (value: unknown): boolean => value === null || value === undefined || value === ''
+  || (Array.isArray(value) ? value.every(isEmpty) : typeof value === 'object' ? Object.values(value).every(isEmpty) : false);
+const EMPTY_HINT = '（页面可能改了；本来就可能为空的，在这一步加 allowEmpty: true）';
+/** An extract that finds nothing, or a field blank in every row, is far likelier a changed page than an empty one. */
+function emptyRows(spec: ExtractSpec, rows: Row[]): string | undefined {
+  if (!rows.length) return `一条都没有提取到${EMPTY_HINT}`;
+  const blank = Object.keys(spec.fields).find(name => rows.every(row => isEmpty(row[name])));
+  return blank === undefined ? undefined : `提取到 ${rows.length} 条，但字段 ${blank} 每一条都是空的${EMPTY_HINT}`;
+}
+
 export function describeStep(step: Step): string {
   if ('open' in step) return `打开 ${step.open}`;
   if ('click' in step) return `点 ${describeAnchor(step.click)}`;
@@ -55,7 +73,10 @@ export function describeStep(step: Step): string {
   return '页面脚本';
 }
 
-/** Replays her steps without the model: the first one that fails stops the run and says where, never retried. */
+/**
+ * Replays her steps without the model: the first one that fails stops the run and says where, never retried. Coming up
+ * empty is failing too, unless the step allows it, so a broken tool is never read as "nothing new".
+ */
 export async function runProcedure(procedure: Procedure, args: Args, driver: Driver, signal?: AbortSignal): Promise<RunResult> {
   let rows: Row[] = [], outwardDone = false;
   const values: Record<string, unknown> = {};
@@ -68,9 +89,20 @@ export async function runProcedure(procedure: Procedure, args: Args, driver: Dri
       else if ('type' in step) await driver.type({ anchor: fill(step.type.into, args) }, substitute(step.type.text, args));
       else if ('press' in step) await driver.press(step.press);
       else if ('wait' in step) await driver.wait(fillCondition(step.wait, args), (step.wait.seconds ?? 10) * 1000, signal);
-      else if ('check' in step) { const condition = fillCondition(step.check, args); if (!await driver.has(condition)) throw new Error(`页面上没有${describeCondition(condition)}`); }
-      else if ('extract' in step) rows = await driver.extract(fillExtract(step.extract, args));
-      else { const value = await driver.evaluate(step.script, args); if (step.as) values[step.as] = value; }
+      else if ('check' in step) {
+        const condition = fillCondition(step.check, args);
+        try { await driver.wait(condition, CHECK_MS, signal); }
+        catch (error) { if (signal?.aborted) throw error; throw new Error(`等了 ${CHECK_MS / 1000} 秒，页面上还是没有${describeCondition(condition)}`); }
+      }
+      else if ('extract' in step) {
+        rows = await driver.extract(fillExtract(step.extract, args));
+        const empty = step.allowEmpty ? undefined : emptyRows(step.extract, rows);
+        if (empty) throw new Error(empty);
+      }
+      else {
+        const value = await driver.evaluate(step.script, args);
+        if (step.as) { if (!step.allowEmpty && isEmpty(value)) throw new Error(`页面脚本的结果 ${step.as} 是空的${EMPTY_HINT}`); values[step.as] = value; }
+      }
       if (outward) outwardDone = true;
     } catch (error) {
       if (signal?.aborted) throw error;
@@ -82,7 +114,29 @@ export async function runProcedure(procedure: Procedure, args: Args, driver: Dri
   return { ok: true, rows, values };
 }
 
-export function failureText(name: string, result: Extract<RunResult, { ok: false }>): string {
+/**
+ * Runs her newest version; when it fails before anything went out, her kept versions newest first, since a site may
+ * serve its old and new page side by side and a repair for one must not lose the other. The newest's failure is the
+ * one reported when none works. A kept version whose parameters no longer fit the call is skipped.
+ */
+export async function runVersions(newest: Procedure, kept: KeptVersion[], input: Record<string, unknown>, driver: Driver, signal?: AbortSignal): Promise<VersionedRun> {
+  const result = await runProcedure(newest, checkArgs(newest, input), driver, signal);
+  if (result.ok || result.outwardDone) return { result, ran: newest };
+  for (const { procedure, version } of kept.slice(0, MAX_FALLBACK)) {
+    let args: Args;
+    try { args = checkArgs(procedure, input); } catch { continue; }
+    const older = await runProcedure(procedure, args, driver, signal);
+    if (older.ok) return { result: older, ran: procedure, fallback: { version, newest: result } };
+    if (older.outwardDone) break; // something may have gone out: no other version gets a turn
+  }
+  return { result, ran: newest };
+}
+
+/** Told after a result that came from a kept version, so she knows her newest one is broken. */
+export const fallbackText = ({ version, newest }: NonNullable<VersionedRun['fallback']>) =>
+  `最新版第 ${newest.step} 步（${newest.action}）没跑通：${cut(newest.error, 80)}；这次退回第 ${version} 版跑通了。`;
+
+export function failureText(name: string, result: Failure): string {
   return `my_${name} 没跑通：第 ${result.step} 步（${result.action}）${result.error}。`
     + (result.outwardDone ? '这一步或之前有向外的动作，可能已经发出，先看页面确认，不要直接重跑。' : '还没有任何向外的动作，修好可以再跑。')
     + `\n当前页面：\n${result.page}`;
@@ -107,7 +161,9 @@ export function summaryLine(procedure: Procedure, result: RunResult): string {
 }
 
 /** The one place a run, or the error that cut it off, becomes the note `procedure_list` shows. */
-export function noteRun(library: Pick<ProcedureLibrary, 'note'>, name: string, outcome: RunResult | { thrown: unknown }): void {
-  if ('thrown' in outcome) library.note(name, false, cut(errorText(outcome.thrown), 200));
-  else library.note(name, outcome.ok, outcome.ok ? undefined : cut(`第 ${outcome.step} 步：${outcome.error}`, 200));
+export function noteRun(library: Pick<ProcedureLibrary, 'note'>, name: string, outcome: VersionedRun | { thrown: unknown }): void {
+  if ('thrown' in outcome) return library.note(name, false, cut(errorText(outcome.thrown), 200));
+  const { result, fallback } = outcome;
+  if (result.ok) library.note(name, true, fallback && cut(fallbackText(fallback), 200));
+  else library.note(name, false, cut(`第 ${result.step} 步：${result.error}`, 200));
 }

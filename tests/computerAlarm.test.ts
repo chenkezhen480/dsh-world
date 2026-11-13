@@ -76,3 +76,14 @@ test('the per-tool signal is handed to the browser so a queued run that times ou
   await createAlarmFacts({ library, browser: browser as never, perToolMs: 20 })();
   assert.equal(given?.aborted, true);
 });
+
+test('an alarm tool whose newest version broke runs a kept one and says so', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'computer-alarm-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const library = createProcedureLibrary(dir);
+  library.save(tool('bili_unread', { onAlarm: true, summary: '私信 2', steps: [{ open: 'https://example.com/old' }] }));
+  library.save(tool('bili_unread', { onAlarm: true, summary: '私信 2' }));
+  const page = { open: async (url: string) => { if (!url.endsWith('old')) throw new Error('打不开'); }, brief: async () => '页' } as unknown as Page;
+  const facts = createAlarmFacts({ library, browser: { scratch: async work => work(page, new AbortController().signal) } });
+  assert.equal(await facts(), 'my_bili_unread：私信 2（最新版没跑通，用的第 1 版）');
+  assert.equal(library.lastRun('bili_unread')?.ok, true);
+});

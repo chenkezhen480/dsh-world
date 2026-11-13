@@ -8,12 +8,12 @@ import { PAGE_KEYS, type Page, type Row } from './browser/page.ts';
 import type { Browser } from './browser/browser.ts';
 import type { ComputerRecorder } from './procedures/archive.ts';
 import type { ProcedureLibrary } from './procedures/library.ts';
-import { checkArgs, cut, failureText, noteRun, resultText, runProcedure, type Args } from './procedures/run.ts';
+import { checkArgs, cut, failureText, fallbackText, noteRun, resultText, runVersions, type Args } from './procedures/run.ts';
 import { isWebAddress, WEB_ONLY, type MessageMap, type Procedure } from './procedures/format.ts';
 
 const output = { schema: { type: 'string' as const }, render: (_args: unknown, value: string) => [{ type: 'text' as const, text: value }] };
 
-const FORMAT_NOTE = '格式不对时保存会被拒绝并说明哪里不对。文件是 JSON：name（小写字母开头，只用小写字母、数字、下划线）、description、params（{名字:{type,required?}}）、steps。步骤各取一种：open｜click｜type {into,text}｜press｜wait {text|anchor|url,seconds?}｜check｜extract {list,fields,limit?}｜script（可 return，as 存成值）。锚点 {role?,name?,text?,css?,nth?（从 0 数）}，role、name 用 page_read 里看到的；extract 的字段可以只写 attr，读列表项自己。文字里的 {{参数}} 会代入。会向外发出的步骤标 outward:true。onAlarm:true 表示闹钟前自动跑（不能有必填参数和 outward 步骤）；summary 可用 {{as 名}} 和 {{count}}。messages 把 extract 的字段写进归档：channel、conversationType 写死，其余是 {{字段}} 模板，outgoing 算出 true 表示是我自己说的。';
+const FORMAT_NOTE = '格式不对时保存会被拒绝并说明哪里不对。文件是 JSON：name（小写字母开头，只用小写字母、数字、下划线）、description、params（{名字:{type,required?}}）、steps。步骤各取一种：open｜click｜type {into,text}｜press｜wait {text|anchor|url,seconds?}｜check｜extract {list,fields,limit?}｜script（可 return，as 存成值）。锚点 {role?,name?,text?,css?,nth?（从 0 数）}，role、name 用 page_read 里看到的；extract 的字段可以只写 attr，读列表项自己。文字里的 {{参数}} 会代入。会向外发出的步骤标 outward:true。extract 一条都没有、某个字段每条都空、带 as 的 script 结果为空，都算没跑通；本来就可能为空的（比如没有未读）在那一步加 allowEmpty:true。check 最多等 3 秒。没跑通而且还没有向外的动作时，会依次试最近 3 个旧版本。onAlarm:true 表示闹钟前自动跑（不能有必填参数和 outward 步骤）；summary 可用 {{as 名}} 和 {{count}}。messages 把 extract 的字段写进归档：channel、conversationType 写死，其余是 {{字段}} 模板，outgoing 算出 true 表示是我自己说的。';
 
 /** Her page tools, her save and list, and one `my_<name>` tool per saved file; home only (see `toolRegistry`). */
 export function computerTools(deps: { agent: Agent; browser: Pick<Browser, 'run'>; library: ProcedureLibrary; recorder: Pick<ComputerRecorder, 'record'>; attachments(): AttachmentStore | undefined }): ToolDefinition[] {
@@ -80,7 +80,7 @@ export function computerTools(deps: { agent: Agent; browser: Pick<Browser, 'run'
         if (!list.length) return `还没有自己的工具。文件会放在 ${deps.library.dir}。`;
         return list.map(({ procedure }) => {
           const last = deps.library.lastRun(procedure.name);
-          return `my_${procedure.name} — ${procedure.description}${procedure.onAlarm ? '（闹钟前自动跑）' : ''}（最近：${!last ? '还没跑过' : last.ok ? `成功 ${last.at}` : `失败 ${last.at}：${last.detail ?? ''}`}）`;
+          return `my_${procedure.name} — ${procedure.description}${procedure.onAlarm ? '（闹钟前自动跑）' : ''}（最近：${!last ? '还没跑过' : last.ok ? `成功 ${last.at}${last.detail ? `（${last.detail}）` : ''}` : `失败 ${last.at}：${last.detail ?? ''}`}）`;
         }).join('\n');
       } }),
   ];
@@ -98,13 +98,17 @@ export function computerTools(deps: { agent: Agent; browser: Pick<Browser, 'run'
     const parameters = Object.fromEntries(Object.entries(procedure.params).map(([name, param]) => [name, { type: param.type, ...(param.required ? { required: true } : {}), ...(param.description ? { description: param.description } : {}) }]));
     return defineTool({ name: `my_${procedure.name}`, description: `${procedure.description}（我自己的工具；坏了就用 page_* 走通后 procedure_save 覆盖）`, parameters, output,
       execute: async (input: Record<string, unknown>, context: ToolRunContext) => {
-        const args = checkArgs(procedure, input);
-        let result;
-        try { result = await run((p, signal) => runProcedure(procedure, args, p, AbortSignal.any([signal, context.signal]))); }
+        checkArgs(procedure, input);
+        const kept = deps.library.kept(procedure.name);
+        let outcome;
+        try { outcome = await run((p, signal) => runVersions(procedure, kept, input, p, AbortSignal.any([signal, context.signal]))); }
         catch (error) { noteRun(deps.library, procedure.name, { thrown: error }); throw error; }
-        noteRun(deps.library, procedure.name, result);
+        noteRun(deps.library, procedure.name, outcome);
+        const { result, ran, fallback } = outcome;
         if (!result.ok) return failureText(procedure.name, result);
-        return resultText(result) + (procedure.messages && result.rows.length ? await archiveNote(procedure.messages, result.rows, args) : '');
+        // The version that ran declares what it read, and its own arguments are what fill the records.
+        const archived = ran.messages && result.rows.length ? await archiveNote(ran.messages, result.rows, checkArgs(ran, input)) : '';
+        return resultText(result) + archived + (fallback ? `\n（${fallbackText(fallback)}页面可能改了，或新旧页面并存；要修就用 page_* 看看现在的页面再 procedure_save。）` : '');
       } } as never);
   }
 }

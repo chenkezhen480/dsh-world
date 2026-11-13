@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { parseProcedure } from '../src/ecosystem/computer/procedures/format.ts';
-import { checkArgs, failureText, resultText, runProcedure, summaryLine, type Driver } from '../src/ecosystem/computer/procedures/run.ts';
+import { checkArgs, failureText, fallbackText, resultText, runProcedure, runVersions, summaryLine, type Driver } from '../src/ecosystem/computer/procedures/run.ts';
 
 function fakeDriver(overrides: Partial<Driver> = {}) {
   const calls: string[] = [];
@@ -11,7 +11,8 @@ function fakeDriver(overrides: Partial<Driver> = {}) {
     click: async target => { calls.push(`click ${JSON.stringify(target)}`); },
     type: async (target, text) => { calls.push(`type ${JSON.stringify(target)} ${text}`); },
     press: async key => { calls.push(`press ${key}`); },
-    wait: async () => { calls.push('wait'); },
+    // Like her page: waiting is asking `has` until it holds (here once, without the clock).
+    wait: async (condition, ms) => { calls.push(`wait ${ms}`); if (!await driver.has(condition)) throw new Error('等了几秒没等到'); },
     has: async () => true,
     extract: async () => [{ who: '阿明', text: '你好' }],
     evaluate: async (_script, args) => { calls.push(`eval ${JSON.stringify(args)}`); return 3; },
@@ -35,7 +36,7 @@ test('steps run in order with arguments filled in', async () => {
   const { driver, calls } = fakeDriver();
   const result = await runProcedure(send, { uid: '42', text: '在吗' }, driver);
   assert.equal(result.ok, true);
-  assert.deepEqual(calls, ['open https://message.bilibili.com/#/whisper/mid42', 'wait', 'type {"anchor":{"role":"textbox"}} 在吗', 'click {"anchor":{"role":"button","name":"发送"}}']);
+  assert.deepEqual(calls, ['open https://message.bilibili.com/#/whisper/mid42', 'wait 10000', 'type {"anchor":{"role":"textbox"}} 在吗', 'click {"anchor":{"role":"button","name":"发送"}}', 'wait 3000']);
 });
 
 test('a failure stops at its step, says whether anything outward already happened, and shows the page', async () => {
@@ -44,10 +45,11 @@ test('a failure stops at its step, says whether anything outward already happene
   if (before.ok) return;
   assert.equal(before.step, 3); assert.equal(before.outwardDone, false);
   assert.match(failureText('bili_dm_send', before), /第 3 步.*找不到 textbox[\s\S]*还没有任何向外的动作[\s\S]*\[1\] button 发送/);
-  const after = await runProcedure(send, { uid: '42', text: '在吗' }, fakeDriver({ has: async () => false }).driver);
+  const after = await runProcedure(send, { uid: '42', text: '在吗' }, fakeDriver({ has: async condition => !condition.text }).driver);
   assert.equal(after.ok, false);
   if (after.ok) return;
   assert.equal(after.step, 5); assert.equal(after.outwardDone, true);
+  assert.match(after.error, /等了 3 秒，页面上还是没有文字「在吗」/);
   assert.match(failureText('bili_dm_send', after), /可能已经发出.*不要直接重跑/);
 });
 
@@ -110,4 +112,61 @@ test('a wait step hands the run signal to the driver', async () => {
   const controller = new AbortController();
   await runProcedure(wait, {}, fakeDriver({ wait: async (_c, _t, signal) => { seen.push(signal); } }).driver, controller.signal);
   assert.deepEqual(seen, [controller.signal]);
+});
+
+const read = (extra: object = {}, fields: object = { who: { css: '.who' }, text: { css: '.text' } }) =>
+  parseProcedure({ name: 'bili_read', description: '读', params: {}, steps: [{ open: 'https://example.com/' }, { extract: { list: { css: '.item' }, fields }, ...extra }] });
+
+test('coming up empty is a failure at that step, unless the step allows it', async () => {
+  const none = await runProcedure(read(), {}, fakeDriver({ extract: async () => [] }).driver);
+  assert.equal(none.ok, false);
+  assert.match((none as { error: string }).error, /一条都没有提取到.*allowEmpty: true/);
+  assert.equal((none as { step: number }).step, 2);
+  const blank = await runProcedure(read(), {}, fakeDriver({ extract: async () => [{ who: '阿明', text: '' }, { who: '小红', text: '' }] }).driver);
+  assert.match((blank as { error: string }).error, /提取到 2 条，但字段 text 每一条都是空的/);
+  const allowed = await runProcedure(read({ allowEmpty: true }), {}, fakeDriver({ extract: async () => [] }).driver);
+  assert.deepEqual(allowed, { ok: true, rows: [], values: {} });
+});
+
+test('a kept script value that is empty is a failure; one without as is not checked', async () => {
+  const script = (value: unknown, extra: object = { as: 'counts' }) => runProcedure(parseProcedure({ name: 'count', description: 'c', params: {}, steps: [{ script: 'return x', ...extra }] }), {}, fakeDriver({ evaluate: async () => value }).driver);
+  for (const empty of [null, '', [], {}, { a: '', b: [] }]) assert.match(((await script(empty)) as { error: string }).error, /页面脚本的结果 counts 是空的/, JSON.stringify(empty));
+  for (const kept of [0, false, 'x', { a: 1 }]) assert.equal((await script(kept)).ok, true, JSON.stringify(kept));
+  assert.equal((await script(null, {})).ok, true);
+  assert.equal((await script(null, { as: 'counts', allowEmpty: true })).ok, true);
+  assert.throws(() => parseProcedure({ name: 'count', description: 'c', params: {}, steps: [{ script: 'return 1', allowEmpty: true }] }), /allowEmpty：只用在带 as 的脚本上/);
+  assert.throws(() => parseProcedure({ name: 'count', description: 'c', params: {}, steps: [{ open: 'https://example.com/', allowEmpty: true }] }), /open 这一步不认识 allowEmpty/);
+});
+
+test('when the newest version fails before anything went out, her kept versions run newest first', async () => {
+  const v1 = parseProcedure({ name: 'bili_read', description: '读', params: {}, steps: [{ open: 'https://example.com/v1' }] });
+  const v2 = read({}, { who: { css: '.who' } });
+  const { driver, calls } = fakeDriver({ extract: async () => [] });
+  const outcome = await runVersions(read(), [{ procedure: v2, version: 2 }, { procedure: v1, version: 1 }], {}, driver);
+  assert.equal(outcome.result.ok, true);
+  assert.equal(outcome.ran, v1);
+  assert.equal(outcome.fallback?.version, 1);
+  assert.equal(outcome.fallback?.newest.step, 2);
+  assert.deepEqual(calls, ['open https://example.com/', 'open https://example.com/', 'open https://example.com/v1']);
+  assert.match(fallbackText(outcome.fallback!), /^最新版第 2 步（提取 选择器 \.item）没跑通：一条都没有提取到.*这次退回第 1 版跑通了。$/);
+});
+
+test('no kept version runs once something may have gone out, or when none fits the call', async () => {
+  const older = { procedure: parseProcedure({ name: 'bili_dm_send', description: '旧', params: {}, steps: [{ open: 'https://example.com/old' }] }), version: 1 };
+  const sent = await runVersions(send, [older], { uid: '42', text: '在吗' }, fakeDriver({ has: async condition => !condition.text }).driver);
+  assert.equal(sent.result.ok, false);
+  assert.equal(sent.fallback, undefined);
+  const { driver, calls } = fakeDriver({ type: async () => { throw new Error('页面上找不到 textbox'); } });
+  const unfit = await runVersions(send, [older], { uid: '42', text: '在吗' }, driver);
+  assert.equal(unfit.ran, send);
+  assert.equal((unfit.result as { step: number }).step, 3);
+  assert.ok(!calls.includes('open https://example.com/old'));
+});
+
+test('when every version fails, the newest one is what she is told', async () => {
+  const v1 = { procedure: read({}, { who: { css: '.old' } }), version: 1 };
+  const outcome = await runVersions(read(), [v1], {}, fakeDriver({ extract: async () => [] }).driver);
+  assert.equal(outcome.result.ok, false);
+  assert.equal(outcome.fallback, undefined);
+  assert.match(failureText('bili_read', outcome.result as never), /第 2 步（提取 选择器 \.item）一条都没有提取到/);
 });

@@ -13,8 +13,8 @@ export type Step =
   | { press: string; outward?: boolean }
   | { wait: Condition & { seconds?: number } }
   | { check: Condition }
-  | { extract: ExtractSpec }
-  | { script: string; as?: string; outward?: boolean };
+  | { extract: ExtractSpec; allowEmpty?: boolean }
+  | { script: string; as?: string; outward?: boolean; allowEmpty?: boolean };
 export interface Param { type: 'string' | 'number' | 'boolean'; required?: boolean; description?: string }
 /** How the rows of the last `extract` become archive records; every value is a template over the row and the arguments. */
 export interface MessageMap {
@@ -32,7 +32,7 @@ export const PROCEDURE_NAME = /^[a-z][a-z0-9_]{1,40}$/;
 const FIELD_NAME = /^[a-zA-Z_][a-zA-Z0-9_]{0,30}$/;
 const TEMPLATE = /\{\{([a-zA-Z_][a-zA-Z0-9_]*)\}\}/g;
 const ACTIONS = ['open', 'click', 'type', 'press', 'wait', 'check', 'extract', 'script'] as const;
-const EXTRAS: Record<(typeof ACTIONS)[number], string[]> = { open: [], click: ['outward'], type: ['outward'], press: ['outward'], wait: [], check: [], extract: [], script: ['as', 'outward'] };
+const EXTRAS: Record<(typeof ACTIONS)[number], string[]> = { open: [], click: ['outward'], type: ['outward'], press: ['outward'], wait: [], check: [], extract: ['allowEmpty'], script: ['as', 'outward', 'allowEmpty'] };
 const RESERVED = new Set(['__proto__', 'constructor', 'prototype']);
 const ANCHOR_KEYS = ['role', 'name', 'text', 'css', 'nth'];
 const MAX_STEPS = 40, MAX_SCRIPT = 4000, MAX_TEXT = 500;
@@ -104,8 +104,8 @@ function step(value: unknown, path: string, known: ReadonlySet<string>, taken: S
   if (actions.length !== 1) return fail(path, `每一步只能有一个动作（${ACTIONS.join('、')}）`);
   const action = actions[0]!;
   for (const key of Object.keys(input)) if (key !== action && !EXTRAS[action].includes(key)) fail(path, `${action} 这一步不认识 ${key}`);
-  const outward = flag(input.outward, `${path}.outward`);
-  const extra = outward === undefined ? {} : { outward };
+  const outward = flag(input.outward, `${path}.outward`), allowEmpty = flag(input.allowEmpty, `${path}.allowEmpty`);
+  const extra = outward === undefined ? {} : { outward }, empty = allowEmpty === undefined ? {} : { allowEmpty };
   switch (action) {
     case 'open': {
       const address = text(input.open, `${path}.open`, 2000, known);
@@ -126,11 +126,13 @@ function step(value: unknown, path: string, known: ReadonlySet<string>, taken: S
       return { wait: { ...condition(input.wait, `${path}.wait`, known, ['seconds']), ...(seconds === undefined ? {} : { seconds: seconds as number }) } };
     }
     case 'check': return { check: condition(input.check, `${path}.check`, known) };
-    case 'extract': return { extract: extract(input.extract, `${path}.extract`, known) };
+    case 'extract': return { extract: extract(input.extract, `${path}.extract`, known), ...empty };
     case 'script': {
       const as = input.as === undefined ? undefined : identifier(String(input.as), `${path}.as`, '结果名');
       if (as !== undefined) { if (taken.has(as)) fail(`${path}.as`, `${as} 已经被参数、count 或前面的步骤用了`); taken.add(as); }
-      return { script: text(input.script, `${path}.script`, MAX_SCRIPT), ...(as === undefined ? {} : { as }), ...extra };
+      // Only a kept value is checked for emptiness, so the flag means nothing without `as`.
+      if (allowEmpty !== undefined && as === undefined) fail(`${path}.allowEmpty`, '只用在带 as 的脚本上');
+      return { script: text(input.script, `${path}.script`, MAX_SCRIPT), ...(as === undefined ? {} : { as }), ...extra, ...empty };
     }
   }
 }

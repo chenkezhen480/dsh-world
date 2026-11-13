@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { errorText, type Faults } from '../../../faults.ts';
 import { durableWrite } from '../../../life/lifeStore.ts';
 import { parseProcedure, ProcedureError, type Procedure } from './format.ts';
+import type { KeptVersion } from './run.ts';
 
 export interface StoredProcedure { procedure: Procedure; file: string }
 export interface RunNote { at: string; ok: boolean; detail?: string }
@@ -20,6 +21,11 @@ export function createProcedureLibrary(dir: string, deps: { faults?: Faults } = 
   const faulted = new Set<string>();
   let cache: { revision: string; list: StoredProcedure[] } | undefined;
   const files = () => existsSync(dir) ? readdirSync(dir).filter(file => TOOL_FILE.test(file)).sort() : [];
+  /** The `<name>.v<n>.json` numbers on disk, highest first. */
+  const keptNumbers = (name: string) => {
+    const pattern = new RegExp(`^${name}\\.v(\\d+)\\.json$`);
+    return existsSync(dir) ? readdirSync(dir).map(file => Number(pattern.exec(file)?.[1] ?? 0)).filter(Boolean).sort((a, b) => b - a) : [];
+  };
   const revision = () => files().flatMap(file => {
     try { const { mtimeMs, size } = statSync(join(dir, file)); return [`${file}:${mtimeMs}:${size}`]; } catch { return []; } // deleted between listing and stat
   }).join('|');
@@ -46,6 +52,23 @@ export function createProcedureLibrary(dir: string, deps: { faults?: Faults } = 
     list,
     revision,
     get: (name: string) => list().find(entry => entry.procedure.name === name)?.procedure,
+    /**
+     * The versions her tool replaced, newest first, for when the newest fails. One that no longer parses or repeats a
+     * newer one is left out: they are fallbacks, and the files stay hers either way.
+     */
+    kept(name: string): KeptVersion[] {
+      const current = list().find(entry => entry.procedure.name === name)?.procedure;
+      const seen = new Set(current ? [JSON.stringify(current)] : []);
+      return keptNumbers(name).flatMap(version => {
+        try {
+          const procedure = parseProcedure(JSON.parse(readFileSync(join(dir, `${name}.v${version}.json`), 'utf8')));
+          const key = JSON.stringify(procedure);
+          if (seen.has(key)) return [];
+          seen.add(key);
+          return [{ procedure, version }];
+        } catch { return []; }
+      });
+    },
     /** Checks and writes one tool; what it replaces stays as the next `.v<n>.json`. Returns the new version number. */
     save(json: string): { procedure: Procedure; version: number } {
       let value: unknown;
@@ -54,8 +77,7 @@ export function createProcedureLibrary(dir: string, deps: { faults?: Faults } = 
       mkdirSync(dir, { recursive: true });
       const file = join(dir, `${procedure.name}.json`);
       // Numbering continues after the highest kept version, so a gap or a deleted file never makes a save overwrite one.
-      const kept = new RegExp(`^${procedure.name}\\.v(\\d+)\\.json$`);
-      const highest = Math.max(0, ...readdirSync(dir).map(name => Number(kept.exec(name)?.[1] ?? 0)));
+      const highest = keptNumbers(procedure.name)[0] ?? 0;
       const replaced = existsSync(file);
       if (replaced) durableWrite(join(dir, `${procedure.name}.v${highest + 1}.json`), readFileSync(file, 'utf8'));
       durableWrite(file, JSON.stringify(procedure, null, 2) + '\n');

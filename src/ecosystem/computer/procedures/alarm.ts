@@ -2,7 +2,7 @@
 import { errorText } from '../../../faults.ts';
 import type { Browser } from '../browser/browser.ts';
 import type { ProcedureLibrary } from './library.ts';
-import { cut, noteRun, runProcedure, summaryLine } from './run.ts';
+import { cut, noteRun, runVersions, summaryLine } from './run.ts';
 
 /**
  * Before her alarm rings, every tool she marked `onAlarm` runs once in a tab of its own, and each leaves one line to
@@ -22,9 +22,10 @@ export function createAlarmFacts(deps: { library: ProcedureLibrary; browser: Pic
       let timer: ReturnType<typeof setTimeout> | undefined;
       const late = new Promise<never>((_resolve, reject) => { timer = setTimeout(() => { controller.abort(); reject(new Error(`超过 ${Math.max(1, Math.ceil(left / 1000))} 秒`)); }, left); });
       try {
-        const result = await Promise.race([deps.browser.scratch((page, signal) => runProcedure(procedure, {}, page, AbortSignal.any([signal, controller.signal])), controller.signal), late]);
-        noteRun(deps.library, procedure.name, result);
-        lines.push(summaryLine(procedure, result));
+        const kept = deps.library.kept(procedure.name);
+        const outcome = await Promise.race([deps.browser.scratch((page, signal) => runVersions(procedure, kept, {}, page, AbortSignal.any([signal, controller.signal])), controller.signal), late]);
+        noteRun(deps.library, procedure.name, outcome);
+        lines.push(summaryLine(outcome.ran, outcome.result) + (outcome.fallback ? `（最新版没跑通，用的第 ${outcome.fallback.version} 版）` : ''));
       } catch (error) {
         noteRun(deps.library, procedure.name, { thrown: error });
         lines.push(`my_${procedure.name} 没跑通（${cut(errorText(error), 80)}）`);

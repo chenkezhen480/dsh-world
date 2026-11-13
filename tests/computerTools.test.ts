@@ -10,13 +10,14 @@ import { computerTools } from '../src/ecosystem/computer/tools.ts';
 import { createProcedureLibrary } from '../src/ecosystem/computer/procedures/library.ts';
 import type { Page } from '../src/ecosystem/computer/browser/page.ts';
 
-function setup(t: test.TestContext, record?: () => Promise<never>, failRun?: Error) {
+function setup(t: test.TestContext, record?: () => Promise<never>, failRun?: Error, pageOverrides: object = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'computer-tools-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
   const calls: string[] = [];
   const page = {
     open: async (url: string) => { calls.push(`open ${url}`); }, read: async () => '页 · u\n[1] button 发送', brief: async () => '页 · u',
     click: async (target: unknown) => { calls.push(`click ${JSON.stringify(target)}`); }, type: async () => {}, press: async () => {}, scroll: async () => {},
     wait: async () => {}, has: async () => true, extract: async () => [{ uid: '42', id: 'm1', text: '你好' }], evaluate: async () => 2, shot: async () => Buffer.from('png'), bringToFront: async () => {},
+    ...pageOverrides,
   } as unknown as Page;
   let runs = 0;
   const browser = { run: <T>(work: (p: Page, signal: AbortSignal) => Promise<T>) => { runs++; return failRun ? Promise.reject(failRun) : work(page, new AbortController().signal); } };
@@ -111,4 +112,14 @@ test('page_open refuses anything but web addresses before the browser is touched
 
 test('page_type says the box content is replaced', t => {
   assert.match(setup(t).tools().find(tool => tool.name === 'page_type')!.description, /替换/);
+});
+
+test('a broken newest version falls back to a kept one, and she is told her newest failed', async t => {
+  const s = setup(t, undefined, undefined, { extract: async (spec: { list: { css: string } }) => spec.list.css === '.new' ? [] : [{ uid: '42', id: 'm1', text: '你好' }] });
+  const version = (css: string) => JSON.stringify({ name: 'read_dm', description: '读私信', params: {}, steps: [{ open: 'https://example.com/' }, { extract: { list: { css }, fields: { id: { css, attr: 'data-id' } } } }] });
+  s.library.save(version('.msg'));
+  s.library.save(version('.new'));
+  const out = await s.run(s.tools(), 'my_read_dm');
+  assert.match(out, /^\{"rows":\[\{"uid":"42","id":"m1","text":"你好"\}\]\}\n（最新版第 2 步（提取 选择器 \.new）没跑通：一条都没有提取到.*这次退回第 1 版跑通了。.*procedure_save。）$/);
+  assert.match(await s.run(s.tools(), 'procedure_list'), /最近：成功 .*（最新版第 2 步.*退回第 1 版跑通了。）/);
 });
