@@ -158,8 +158,8 @@ function escapeOutgoingText(value: Loose) {
  * @returns {string}
  */
 export function segmentsToText(message: Loose) {
-  // 有些 OneBot 实现直接把纯文本消息放在 message 字段里（string）
-  if (typeof message === 'string') return message.trim();
+  // CQ 字符串里的图片链接也不交给模型，取图只使用解析出的 file 标识。
+  if (typeof message === 'string') return message.replace(/\[CQ:image(?:,[^\]]*)?\]/g, '[图片]').trim();
   const list = Array.isArray(message)
     ? message
     : (message && typeof message === 'object' ? [message] : []);
@@ -178,8 +178,7 @@ export function segmentsToText(message: Loose) {
       case 'face': out.push(`[表情${d.id ?? ''}]`); break;
       // 市场表情（mface）在部分网关实现里出现：有 summary 就用它，别让模型只看到 "[mface]"。
       case 'mface': out.push(`[表情${d.summary ? `:${d.summary}` : ''}]`); break;
-      // 带上 file 名：光写「[图片]」等于把图丢了，有 file 才能再向 OneBot 换直链。
-      case 'image': out.push(d.file ? `[图片 file=${d.file}]` : '[图片]'); break;
+      case 'image': out.push('[图片]'); break;
       case 'record': out.push(d.file ? `[语音 file=${d.file}]` : '[语音]'); break;
       case 'video': out.push('[视频]'); break;
       case 'file': out.push(`[文件${d.name ?? ''}]`); break;
@@ -368,7 +367,7 @@ export function createBridge(options: Loose) {
   /** @type {BridgeState} */
   let state = 'closed';
   /** @type {SnowLumaWebSocketClient|null} */
-  let client: Loose = null;
+  let client: SnowLumaWebSocketClient | null = null;
   let stopped = true;   // start() 未调用、或已 stop()
 
   // 上层回调的异常只记日志，不允许打断收发主链路（SDK 会把 handler 抛错吞进 error 事件，
@@ -577,6 +576,14 @@ export function createBridge(options: Loose) {
       const id = Number(userId);
       if (!Number.isFinite(id)) throw new Error(`sendPrivate: 无效的 QQ 号 ${JSON.stringify(userId ?? null)}`);
       return enqueueSend('private', id, parts);
+    },
+
+    async getImage(file: string): Promise<string> {
+      if (!client) throw new Error('QQ 桥未启动或已停止，无法取图');
+      const { url, file_url: fileUrl } = (await client.getImage({ file }, { timeoutMs: SEND_TIMEOUT_MS })) ?? {};
+      if (typeof url === 'string' && url) return url;
+      if (typeof fileUrl === 'string' && fileUrl) return fileUrl;
+      throw new Error('SnowLuma 未返回图片直链');
     },
 
     /**

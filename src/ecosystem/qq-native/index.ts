@@ -7,6 +7,7 @@ import { speakerIdentity, conversationKey, type SpeakerIdentity } from '../share
 import type { ChannelContextMessage } from '../shared/context.ts';
 import { createBridge } from './snowluma.ts';
 import { createQqHome } from './home.ts';
+import { admitQqImages, MAX_BATCH_IMAGES } from './images.ts';
 import { createBatcher } from './batch.ts';
 import { createOutbox } from './outbox.ts';
 import { planReply, stripHostNoise, type QqPart } from './replies.ts';
@@ -58,7 +59,7 @@ interface QqIncoming {
   selfId: string;
   text: string;
   sender?: { nickname?: string; card?: string | null } | undefined;
-  /** 原始段数组（OneBot 的 message）。群里那句是不是在叫她，看的就是它。 */
+  /** 原始段数组（OneBot 的 message），用于识别群里有没有叫她，以及接收图片。 */
   segments?: Array<{ type?: string; data?: Record<string, unknown> }> | undefined;
 }
 
@@ -137,6 +138,7 @@ export interface QqTransport {
   getState(): string;
   sendGroup(groupId: string, parts: string | QqPart[]): Promise<{ messageId: string }>;
   sendPrivate(userId: string, parts: string | QqPart[]): Promise<{ messageId: string }>;
+  getImage?(file: string): Promise<string>;
   /** 发账号收藏表情（不是消息段，单发一条）；测试替身可以不实现。 */
   sendCustomFace?(emojiId: string, target: { groupId?: string; userId?: string }): Promise<{ messageId: string }>;
   /** 发一条 QQ 空间说说；测试替身可以不实现。 */
@@ -156,7 +158,7 @@ export interface QqTransportOptions {
 /** One message to send, kept as it was so a retry sends exactly the same. */
 interface Outgoing { kind: 'group' | 'private'; target: string; parts: string | QqPart[] }
 /** What one conversation said while its words were gathering. */
-interface Gathered { text: string; identity: SpeakerIdentity; who: string }
+interface Gathered { text: string; identity: SpeakerIdentity; who: string; imageFiles: unknown[] }
 
 /**
  * QQ as another way into the same home, without a bridge process in between.
@@ -327,7 +329,9 @@ export function createQqNativeModule(deps: {
       pushContext(key, { id: messageId || String(Date.now()), occurredAt: new Date().toISOString(), text, identity }, config.contextMessages);
       return;
     }
-    batches.add(key, { text, identity, who: speakerName });
+    const imageFiles = (message.segments ?? []).filter(segment => segment?.type === 'image')
+      .slice(0, MAX_BATCH_IMAGES + 1).map(segment => segment.data?.file);
+    batches.add(key, { text, identity, who: speakerName, imageFiles });
   }
 
   async function answer(key: string, gathered: Gathered[]): Promise<void> {
@@ -340,7 +344,10 @@ export function createQqNativeModule(deps: {
     const text = gathered.length === 1 ? gathered[0]!.text : gathered.map(item => isGroup && item.who ? `${item.who}: ${item.text}` : item.text).join('\n');
     answering.add(key);
     try {
-      const reply = await home.ask(text, identity, contexts.get(key) ?? []);
+      const images = gathered.flatMap(item => item.imageFiles.map(file => ({ file, identity: item.identity })));
+      const reply = await home.ask(text, identity, contexts.get(key) ?? [], images.length
+        ? () => admitQqImages(deps.ctx, images, client?.getImage?.bind(client))
+        : undefined);
       const words = stripHostNoise(reply.text);
       // 提醒过一次还是没有能发的话：不发，但要留下痕迹，分得清「她没说出话」和「路丢了」（#34）；
       // 只剩复述的聊天记录、工具标签这些（#35）也一样。
