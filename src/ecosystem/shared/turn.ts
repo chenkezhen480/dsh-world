@@ -80,7 +80,10 @@ export async function askTurn(ctx: Context, agent: Agent, words: UserMessage, op
     if (!admitted) return;
     if (event.type === 'assistant/message') {
       last = 'reply';
-      reply = event.data.message.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n');
+      // 一轮里可能有多条 assistant/message（中间调了工具），按顺序累加；
+      // 原来这里是覆盖写，于是前面说过的段落会被最后一条替换掉。
+      const said = event.data.message.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n').trim();
+      if (said) reply = reply ? `${reply}\n\n${said}` : said;
       if (event.data.interrupted || lastAssistantStreamChunk(event.data.stream, 'finish')?.reason.kind === 'max-tokens') failed = true;
     }
     if (event.type === 'turn/end') {
