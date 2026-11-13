@@ -347,6 +347,16 @@ test('Markdown headings inside vision and supplement remain part of those person
   assert.match(renderPersona(persona), /## 一起完成的事\n完整保留这段愿景/);
   assert.match(renderPersona(persona), /## 其他约定\n完整保留这段补充/);
 });
+test('a custom persona heading after the name stays in the supplement', async t => {
+  const file = join(await tempDir(t), 'persona.md');
+  await writeFile(file, '## 名字\n小鱼\n\n## 我是谁\n一条蓝色的大肥鱼。\n\n## 性格\n嘴硬心软\n\n## 补充\n另有约定');
+  const persona = readPersona(file);
+  assert.equal(persona.名字, '小鱼');
+  assert.equal(persona.性格, '嘴硬心软');
+  assert.equal(persona.补充, '## 我是谁\n一条蓝色的大肥鱼。\n\n另有约定');
+  writePersona(file, persona);
+  assert.deepEqual(readPersona(file), persona);
+});
 test('her persona takes the place of the stock DeepSeek Harness identity, and is added after any system persona someone already set, never replacing it', async t => {
   const requests: GenerateOptions[] = [];
   const { ctx, root, cleanup } = await hostFixture(t, async function* (request) { requests.push(request); yield* textResponse('reply'); }, { personaPrefix: 'SYSTEM PERSONA' });
