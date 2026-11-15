@@ -32,7 +32,7 @@ function setup(t: test.TestContext, record?: () => Promise<never>, failRun?: Err
 test('page tools act on her page and answer briefly', async t => {
   const s = setup(t);
   const tools = s.tools();
-  assert.deepEqual(tools.map(tool => tool.name).sort(), ['page_click', 'page_eval', 'page_open', 'page_press', 'page_read', 'page_scroll', 'page_shot', 'page_type', 'page_wait', 'procedure_list', 'procedure_save']);
+  assert.deepEqual(tools.map(tool => tool.name).sort(), ['computer_use', 'page_click', 'page_eval', 'page_open', 'page_press', 'page_read', 'page_scroll', 'page_shot', 'page_type', 'page_wait', 'procedure_note', 'procedure_run', 'procedure_save']);
   assert.match(await s.run(tools, 'page_open', { url: 'https://www.bilibili.com/' }), /\[1\] button 发送/);
   assert.match(await s.run(tools, 'page_click', { ref: 1 }), /已点击 \[1\]/);
   assert.deepEqual(s.calls, ['open https://www.bilibili.com/', 'click {"ref":1}']);
@@ -40,50 +40,9 @@ test('page tools act on her page and answer briefly', async t => {
   await assert.rejects(s.run(tools, 'page_shot'), /宿主图片存储不可用/);
 });
 
-test('a saved tool becomes my_<name>, runs without the model, and archives what it declared', async t => {
-  const s = setup(t);
-  const saved = await s.run(s.tools(), 'procedure_save', { json: JSON.stringify({
-    name: 'bili_dm_read', description: '读阿明的私信', params: { uid: { type: 'string', required: true } },
-    steps: [{ open: 'https://message.bilibili.com/#/whisper/mid{{uid}}' }, { extract: { list: { css: '.msg' }, fields: { id: { css: '.msg', attr: 'data-id' }, text: { css: '.text' } } } }],
-    messages: { channel: 'bilibili', accountId: 'me', conversationType: 'private', conversationId: '{{uid}}', messageId: '{{id}}', speakerId: '{{uid}}', content: '{{text}}' },
-  }) });
-  assert.match(saved, /已保存 my_bili_dm_read（第 1 版）/);
-  const tools = s.tools();
-  const mine = tools.find(tool => tool.name === 'my_bili_dm_read')!;
-  assert.match(mine.description, /读阿明的私信/);
-  assert.deepEqual((mine.parameters as { required?: string[] }).required, ['uid']);
-  const out = await s.run(tools, 'my_bili_dm_read', { uid: '42' });
-  assert.match(out, /"rows":\[\{"uid":"42","id":"m1","text":"你好"\}\]/);
-  assert.match(out, /新记进归档 1 条/);
-  assert.equal(s.recorded.length, 1);
-  assert.match(await s.run(tools, 'procedure_list'), /my_bili_dm_read — 读阿明的私信（最近：成功/);
-  await assert.rejects(s.run(tools, 'my_bili_dm_read', {}), /missing required property "uid"/);
-});
-
 test('a refused save explains itself', async t => {
   const s = setup(t);
-  await assert.rejects(s.run(s.tools(), 'procedure_save', { json: '{"name":"x"}' }), /没有保存：name：/);
-});
-
-test('a failing archive write is told after the result, never in its place', async t => {
-  const s = setup(t, async () => { throw new Error('找不到这一轮的开始，没有记进归档'); });
-  await s.run(s.tools(), 'procedure_save', { json: JSON.stringify({
-    name: 'read_dm', description: '读私信', params: {}, steps: [{ open: 'https://example.com/' }, { extract: { list: { css: '.msg' }, fields: { id: { css: '.msg', attr: 'data-id' } } } }],
-    messages: { channel: 'bilibili', accountId: 'me', conversationType: 'private', conversationId: 'c', messageId: '{{id}}', speakerId: 'c', content: '{{id}}' },
-  }) });
-  const out = await s.run(s.tools(), 'my_read_dm');
-  assert.match(out, /"rows":\[/);
-  assert.match(out, /（没能记进归档：找不到这一轮的开始，没有记进归档）/);
-});
-
-const ping = JSON.stringify({ name: 'ping', description: '看看', params: {}, steps: [{ open: 'https://example.com/' }] });
-
-test('a run that is cut off is noted as failed before the error goes on', async t => {
-  const s = setup(t, undefined, new Error('操作等得太久'));
-  s.library.save(ping);
-  await assert.rejects(s.run(s.tools(), 'my_ping'), /操作等得太久/);
-  assert.equal(s.library.lastRun('ping')?.ok, false);
-  assert.match(s.library.lastRun('ping')?.detail ?? '', /操作等得太久/);
+  await assert.rejects(s.run(s.tools(), 'procedure_save', { json: '{"name":"a/b"}' }), /没有保存：name：/);
 });
 
 test('a bad number is refused before the browser is touched', async t => {
@@ -94,13 +53,6 @@ test('a bad number is refused before the browser is touched', async t => {
   await assert.rejects(s.run(tools, 'page_read', { ref: -1 }), /编号/);
   await assert.rejects(s.run(tools, 'page_wait', { text: '' }), /text/);
   assert.equal(s.runs(), 0);
-});
-
-test('her tool descriptions do not carry a path on the disk', async t => {
-  const s = setup(t);
-  s.library.save(ping);
-  const mine = s.tools().find(tool => tool.name === 'my_ping')!;
-  assert.equal(mine.description, '看看（我自己的工具；坏了就用 page_* 走通后 procedure_save 覆盖）');
 });
 
 test('page_open refuses anything but web addresses before the browser is touched', async t => {
@@ -114,12 +66,47 @@ test('page_type says the box content is replaced', t => {
   assert.match(setup(t).tools().find(tool => tool.name === 'page_type')!.description, /替换/);
 });
 
+const dm = (extra: object = {}) => JSON.stringify({
+  name: '读私信', category: 'bilibili', description: '读阿明的私信', params: { uid: { type: 'string', required: true } },
+  steps: [{ open: 'https://message.bilibili.com/#/whisper/mid{{uid}}' }, { extract: { list: { css: '.msg' }, fields: { id: { css: '.msg', attr: 'data-id' }, text: { css: '.text' } } } }],
+  messages: { channel: 'bilibili', accountId: 'me', conversationType: 'private', conversationId: '{{uid}}', messageId: '{{id}}', speakerId: '{{uid}}', content: '{{text}}' }, ...extra,
+});
+
+test('a saved operation is found with computer_use and run with procedure_run, without the model', async t => {
+  const s = setup(t);
+  assert.match(await s.run(s.tools(), 'procedure_save', { json: dm() }), /^已保存 bilibili\/读私信（第 1 版）/);
+  assert.match(await s.run(s.tools(), 'procedure_note', { category: 'bilibili', text: '网站：bilibili.com（B站）' }), /^已写好 bilibili 的说明（第 1 版）/);
+  assert.equal(s.tools().length, 13, 'saving never adds a tool');
+  assert.match(await s.run(s.tools(), 'computer_use', { target: 'B站' }), /^bilibili\n网站：bilibili\.com（B站）\n操作：\n- 读私信（uid）— 读阿明的私信（还没跑过）/);
+  const out = await s.run(s.tools(), 'procedure_run', { path: 'bilibili/读私信', args: { uid: '42' } });
+  assert.match(out, /"rows":\[\{"uid":"42","id":"m1","text":"你好"\}\]/);
+  assert.match(out, /新记进归档 1 条/);
+  assert.match(await s.run(s.tools(), 'computer_use', { target: 'B站' }), /最近：成功/);
+  await assert.rejects(s.run(s.tools(), 'procedure_run', { path: 'bilibili/读私信', args: {} }), /缺少参数 uid/);
+  await assert.rejects(s.run(s.tools(), 'procedure_run', { path: 'bilibili/没有' }), /没有 bilibili\/没有 这个操作/);
+});
+
+test('a failing archive write is told after the result, never in its place', async t => {
+  const s = setup(t, async () => { throw new Error('找不到这一轮的开始，没有记进归档'); });
+  s.library.save(dm());
+  const out = await s.run(s.tools(), 'procedure_run', { path: 'bilibili/读私信', args: { uid: '42' } });
+  assert.match(out, /"rows":\[/);
+  assert.match(out, /（没能记进归档：找不到这一轮的开始，没有记进归档）/);
+});
+
+test('a run that is cut off is noted as failed before the error goes on', async t => {
+  const s = setup(t, undefined, new Error('操作等得太久'));
+  s.library.save(dm());
+  await assert.rejects(s.run(s.tools(), 'procedure_run', { path: 'bilibili/读私信', args: { uid: '1' } }), /操作等得太久/);
+  assert.match(s.library.lastRun('bilibili/读私信')?.detail ?? '', /操作等得太久/);
+});
+
 test('a broken newest version falls back to a kept one, and she is told her newest failed', async t => {
   const s = setup(t, undefined, undefined, { extract: async (spec: { list: { css: string } }) => spec.list.css === '.new' ? [] : [{ uid: '42', id: 'm1', text: '你好' }] });
-  const version = (css: string) => JSON.stringify({ name: 'read_dm', description: '读私信', params: {}, steps: [{ open: 'https://example.com/' }, { extract: { list: { css }, fields: { id: { css, attr: 'data-id' } } } }] });
+  const version = (css: string) => JSON.stringify({ name: '读私信', category: 'bilibili', description: '读私信', params: {}, steps: [{ open: 'https://example.com/' }, { extract: { list: { css }, fields: { id: { css, attr: 'data-id' } } } }] });
   s.library.save(version('.msg'));
   s.library.save(version('.new'));
-  const out = await s.run(s.tools(), 'my_read_dm');
-  assert.match(out, /^\{"rows":\[\{"uid":"42","id":"m1","text":"你好"\}\]\}\n（最新版第 2 步（提取 选择器 \.new）没跑通：一条都没有提取到.*这次退回第 1 版跑通了。.*procedure_save。）$/);
-  assert.match(await s.run(s.tools(), 'procedure_list'), /最近：成功 .*（最新版第 2 步.*退回第 1 版跑通了。）/);
+  const out = await s.run(s.tools(), 'procedure_run', { path: 'bilibili/读私信' });
+  assert.match(out, /^\{"rows":\[\{"uid":"42","id":"m1","text":"你好"\}\]\}\n（最新版第 2 步（提取 选择器 \.new）没跑通：一条都没有提取到.*这次退回第 1 版跑通了。/);
 });
+
