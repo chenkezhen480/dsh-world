@@ -1,83 +1,93 @@
 // tests/computerLibrary.test.ts
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Faults } from '../src/faults.ts';
 import { createProcedureLibrary } from '../src/ecosystem/computer/procedures/library.ts';
 
-const tool = (description: string) => JSON.stringify({ name: 'bili_unread', description, params: {}, steps: [{ open: 'https://message.bilibili.com/' }] });
+const tool = (description: string, extra: object = {}) => JSON.stringify({ name: '发送消息', category: 'wechat', description, params: {}, steps: [{ open: 'https://example.com/' }], ...extra });
+const scratch = (t: test.TestContext) => { const dir = join(mkdtempSync(join(tmpdir(), 'computer-lib-')), 'procedures'); t.after(() => rmSync(dir, { recursive: true, force: true })); return dir; };
 
-test('saving checks the tool, keeps the old version, and moves the revision', t => {
-  const dir = join(mkdtempSync(join(tmpdir(), 'computer-lib-')), 'procedures'); t.after(() => rmSync(dir, { recursive: true, force: true }));
+test('saving puts an operation in its category folder and keeps what it replaces', t => {
+  const dir = scratch(t);
   const library = createProcedureLibrary(dir, { faults: new Faults() });
-  const empty = library.revision();
   assert.deepEqual(library.list(), []);
-  assert.equal(library.save(tool('第一版')).version, 1);
-  const first = library.revision();
-  assert.notEqual(first, empty);
+  assert.deepEqual(library.save(tool('第一版')), { procedure: library.get('wechat/发送消息'), path: 'wechat/发送消息', version: 1 });
   assert.equal(library.save(tool('第二版')).version, 2);
-  assert.equal(JSON.parse(readFileSync(join(dir, 'bili_unread.v1.json'), 'utf8')).description, '第一版');
-  assert.equal(library.get('bili_unread')?.description, '第二版');
-  assert.equal(library.list().length, 1, 'old versions are not tools');
+  assert.equal(JSON.parse(readFileSync(join(dir, 'wechat', '发送消息.v1.json'), 'utf8')).description, '第一版');
+  assert.equal(library.get('wechat/发送消息')?.description, '第二版');
+  assert.deepEqual(library.list().map(entry => entry.path), ['wechat/发送消息'], 'old versions are not operations');
   assert.throws(() => library.save('{"name":"x"'), /JSON 格式不对/);
-  assert.throws(() => library.save('{"name":"bili_unread","description":"d","steps":[]}'), /steps：/);
-  assert.equal(library.get('bili_unread')?.description, '第二版', 'a refused save changes nothing');
+  assert.equal(library.get('wechat/发送消息')?.description, '第二版', 'a refused save changes nothing');
 });
 
-test('a broken file is skipped as a fault, an edit by hand is picked up, a deleted file clears its fault', t => {
-  const dir = mkdtempSync(join(tmpdir(), 'computer-lib-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
+test('files the development build left flat are read in place as 未分类 and never moved', t => {
+  const dir = scratch(t);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'bili_unread.json'), JSON.stringify({ name: 'bili_unread', description: '旧的', params: {}, steps: [{ open: 'https://e.com/' }] }));
+  writeFileSync(join(dir, 'bili_unread.v1.json'), JSON.stringify({ name: 'bili_unread', description: '更旧', params: {}, steps: [{ open: 'https://e.com/v1' }] }));
+  const library = createProcedureLibrary(dir);
+  assert.deepEqual(library.list().map(entry => entry.path), ['未分类/bili_unread']);
+  assert.deepEqual(library.kept('未分类/bili_unread').map(({ version, procedure }) => [version, procedure.description]), [[1, '更旧']]);
+  assert.ok(existsSync(join(dir, 'bili_unread.json')));
+  library.save(JSON.stringify({ name: 'bili_unread', category: '未分类', description: '新的', params: {}, steps: [{ open: 'https://e.com/' }] }));
+  assert.equal(library.get('未分类/bili_unread')?.description, '新的', 'a saved one in the folder wins over the flat file');
+  assert.ok(existsSync(join(dir, 'bili_unread.json')), 'the flat file stays where it was');
+});
+
+test('a broken file is a fault, a file in the wrong folder or under the wrong name too; an edit by hand is picked up', t => {
+  const dir = scratch(t);
   const faults = new Faults();
   const library = createProcedureLibrary(dir, { faults });
-  writeFileSync(join(dir, 'broken.json'), '{');
-  writeFileSync(join(dir, 'bili_unread.json'), tool('手写'));
-  assert.deepEqual(library.list().map(entry => entry.procedure.name), ['bili_unread']);
-  assert.match(faults.list().join(), /她的工具 broken\.json 没能载入/);
-  const before = library.revision();
-  writeFileSync(join(dir, 'bili_unread.json'), tool('又改了')); utimesSync(join(dir, 'bili_unread.json'), new Date(), new Date(Date.now() + 5000));
-  assert.notEqual(library.revision(), before);
-  assert.equal(library.get('bili_unread')?.description, '又改了');
-  rmSync(join(dir, 'broken.json')); library.list();
+  mkdirSync(join(dir, 'wechat'), { recursive: true });
+  writeFileSync(join(dir, 'wechat', 'broken.json'), '{');
+  writeFileSync(join(dir, 'wechat', '别的名字.json'), tool('名字不对'));
+  writeFileSync(join(dir, 'wechat', '发送消息.json'), tool('分类不对', { category: 'bilibili' }));
+  assert.deepEqual(library.list(), []);
+  const listed = faults.list().join('\n');
+  assert.match(listed, /她的操作 wechat\/broken\.json 没能载入/);
+  assert.match(listed, /wechat\/别的名字\.json.*文件名应该是 发送消息\.json/);
+  assert.match(listed, /wechat\/发送消息\.json.*分类应该是 wechat/);
+  writeFileSync(join(dir, 'wechat', '发送消息.json'), tool('改好了')); utimesSync(join(dir, 'wechat', '发送消息.json'), new Date(), new Date(Date.now() + 5000));
+  assert.equal(library.get('wechat/发送消息')?.description, '改好了');
+  rmSync(join(dir, 'wechat', 'broken.json')); rmSync(join(dir, 'wechat', '别的名字.json')); library.list();
   assert.deepEqual(faults.list(), []);
 });
 
-test('runs are noted for the list and the console', t => {
-  const dir = mkdtempSync(join(tmpdir(), 'computer-lib-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
+test('kept versions come newest first, without repeats or files that no longer parse; numbering never overwrites one', t => {
+  const dir = scratch(t);
   const library = createProcedureLibrary(dir);
-  library.note('bili_unread', false, '第 3 步找不到');
-  assert.equal(library.lastRun('bili_unread')?.ok, false);
-  assert.equal(library.lastRun('other'), undefined);
-  assert.equal(existsSync(join(dir, 'bili_unread.json')), false);
-});
-
-test('a save never overwrites a kept version, whatever the numbering', t => {
-  const dir = mkdtempSync(join(tmpdir(), 'computer-lib-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const library = createProcedureLibrary(dir);
-  writeFileSync(join(dir, 'bili_unread.json'), tool('现在'));
-  writeFileSync(join(dir, 'bili_unread.v3.json'), tool('三'));
-  writeFileSync(join(dir, 'bili_unread.vx.json'), 'hand-named');
-  assert.equal(library.save(tool('新')).version, 5);
-  assert.equal(JSON.parse(readFileSync(join(dir, 'bili_unread.v4.json'), 'utf8')).description, '现在');
-  assert.equal(JSON.parse(readFileSync(join(dir, 'bili_unread.v3.json'), 'utf8')).description, '三');
-});
-
-test('a file whose name differs from its tool name is skipped with a fault', t => {
-  const dir = mkdtempSync(join(tmpdir(), 'computer-lib-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const faults = new Faults();
-  const library = createProcedureLibrary(dir, { faults });
-  writeFileSync(join(dir, 'other_name.json'), tool('名字不对'));
-  assert.deepEqual(library.list(), []);
-  assert.match(faults.list().join(), /她的工具 other_name\.json 没能载入.*文件名应该是 bili_unread\.json/);
-});
-
-test('kept versions come newest first, without repeats or files that no longer parse', t => {
-  const dir = mkdtempSync(join(tmpdir(), 'computer-lib-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const library = createProcedureLibrary(dir);
-  assert.deepEqual(library.kept('bili_unread'), []);
+  assert.deepEqual(library.kept('wechat/发送消息'), []);
   for (const description of ['一', '二', '二', '三']) library.save(tool(description));
-  writeFileSync(join(dir, 'bili_unread.v9.json'), '{"name":');
-  assert.deepEqual(library.kept('bili_unread').map(({ procedure, version }) => [version, procedure.description]), [[3, '二'], [1, '一']]);
-  library.save(tool('二'));
-  assert.deepEqual(library.kept('bili_unread').map(({ version }) => version), [10, 1], 'one the same as the newest adds nothing');
+  writeFileSync(join(dir, 'wechat', '发送消息.v9.json'), '{"name":');
+  assert.deepEqual(library.kept('wechat/发送消息').map(({ procedure, version }) => [version, procedure.description]), [[3, '二'], [1, '一']]);
+  assert.equal(library.save(tool('二')).version, 11);
+  assert.deepEqual(library.kept('wechat/发送消息').map(({ version }) => version), [10, 1], 'one the same as the newest adds nothing');
+});
+
+test('her category notes are hers: written only when she saves, the old one kept', t => {
+  const dir = scratch(t);
+  const library = createProcedureLibrary(dir);
+  library.save(tool('一'));
+  assert.deepEqual(library.categories(), [{ name: 'wechat', guide: '' }]);
+  assert.equal(library.saveGuide('wechat', '微信要从任务栏点开'), 1);
+  assert.equal(library.saveGuide('wechat', '程序：Weixin.exe'), 2);
+  assert.equal(readFileSync(join(dir, 'wechat', '目录.v1.md'), 'utf8'), '微信要从任务栏点开');
+  assert.deepEqual(library.categories(), [{ name: 'wechat', guide: '程序：Weixin.exe' }]);
+  library.saveGuide('bilibili', 'B站');
+  assert.deepEqual(library.categories().map(category => category.name), ['bilibili', 'wechat'], 'a category may have a note before any operation');
+  assert.throws(() => library.saveGuide('../x', 'a'), /category：/);
+  assert.throws(() => library.saveGuide('wechat', ''), /说明/);
+  assert.throws(() => library.saveGuide('wechat', 'x'.repeat(1001)), /说明/);
+});
+
+test('runs are noted by path for the catalog and the console', t => {
+  const dir = scratch(t);
+  const library = createProcedureLibrary(dir);
+  library.note('wechat/发送消息', false, '第 3 步找不到');
+  assert.equal(library.lastRun('wechat/发送消息')?.ok, false);
+  assert.equal(library.lastRun('wechat/别的'), undefined);
+  assert.equal(existsSync(join(dir, 'wechat')), false);
 });
