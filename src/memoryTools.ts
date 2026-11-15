@@ -26,7 +26,8 @@ function compactFind(page: MemoryPage) {
     ...(page.coverage.state === 'ready' ? {} : { coverage: page.coverage }),
   };
 }
-export function memoryTools(service: MemoryService, inside: () => boolean): ToolDefinition[] {
+/** `looked`: she paged the newest lines of one chat source (no query, newest first, first page), so it is caught up. */
+export function memoryTools(service: MemoryService, inside: () => boolean, looked?: (sourceId: string) => void): ToolDefinition[] {
   const checked = async <T>(work: () => Promise<T>): Promise<T> => {
     if (!inside()) throw new OutsideWorldError();
     const result = await work();
@@ -42,7 +43,12 @@ export function memoryTools(service: MemoryService, inside: () => boolean): Tool
         linkedTo: { type: 'string' }, order: { type: 'string' }, limit: { type: 'integer' }, cursor: { type: 'string' },
       },
       output,
-      execute: async input => JSON.stringify(compactFind(await checked(() => service.find({ limit: TOOL_FIND_LIMIT, ...(input as Record<string, unknown>) })))),
+      execute: async input => {
+        const found = compactFind(await checked(() => service.find({ limit: TOOL_FIND_LIMIT, ...(input as Record<string, unknown>) })));
+        const { sourceId, query, cursor, order } = input as Record<string, unknown>;
+        if (typeof sourceId === 'string' && sourceId.startsWith('chat:') && !query && !cursor && (order ?? 'newest') === 'newest') looked?.(sourceId);
+        return JSON.stringify(found);
+      },
     }),
     defineTool({
       name: 'memory_read',
@@ -61,7 +67,7 @@ export function memoryTools(service: MemoryService, inside: () => boolean): Tool
  * Gives world sessions their tools (long-term memory, her mood), whatever the life line does: a session has them
  * while it is in her world, and loses them when it leaves. A registration that fails is a fault, never a broken agent.
  */
-export function createWorldToolRegistry(deps: { tools(inside: () => boolean): ToolDefinition[]; inWorld(agent: Agent): boolean; faults: Faults; logger: { error(...args: unknown[]): void } }) {
+export function createWorldToolRegistry(deps: { tools(inside: () => boolean, agent: Agent): ToolDefinition[]; inWorld(agent: Agent): boolean; faults: Faults; logger: { error(...args: unknown[]): void } }) {
   const registered = new Map<Agent, (() => void)[]>();
   const key = (agent: Agent) => `world-tools:${agent.id}`;
   function undo(agent: Agent): boolean {
@@ -76,7 +82,7 @@ export function createWorldToolRegistry(deps: { tools(inside: () => boolean): To
       if (registered.get(agent)?.length) return false;
       const done: (() => void)[] = [];
       try {
-        for (const tool of deps.tools(() => deps.inWorld(agent))) done.push(registerScopedTool(agent, tool, () => deps.inWorld(agent)));
+        for (const tool of deps.tools(() => deps.inWorld(agent), agent)) done.push(registerScopedTool(agent, tool, () => deps.inWorld(agent)));
         registered.set(agent, done); deps.faults.clear(key(agent));
         return true;
       } catch (error) {

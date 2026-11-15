@@ -101,7 +101,7 @@ export function createArchiveStore(config: WorldConfig & { root: string }) {
   async function readPage(query: PageQuery): Promise<RecordPage> {
     flushExports();
     const before = query.before;
-    const maxSequence = before?.maxSequence ?? Number(db.prepare('SELECT COALESCE(MAX(sequence),0) AS n FROM records').get()?.n);
+    const maxSequence = before?.maxSequence ?? lastSequence();
     const rows = (before
       ? db.prepare('SELECT * FROM records WHERE sequence<=? AND (day, occurredAt, recordId)<(?,?,?) ORDER BY day DESC, occurredAt DESC, recordId DESC LIMIT ?').all(maxSequence, before.date, before.occurredAt, before.recordId, query.limit + 1)
       : db.prepare('SELECT * FROM records WHERE sequence<=? ORDER BY day DESC, occurredAt DESC, recordId DESC LIMIT ?').all(maxSequence, query.limit + 1)) as unknown as StoredRow[];
@@ -127,6 +127,13 @@ export function createArchiveStore(config: WorldConfig & { root: string }) {
       db.prepare('UPDATE days SET exportedBytes=0 WHERE day=?').run(row.day);
     });
     flushExports();
+  }
+  function lastSequence(): number {
+    return Number(db.prepare('SELECT COALESCE(MAX(sequence),0) AS n FROM records').get()?.n);
+  }
+  /** Records in the order they were archived, after a point: what is new since then. */
+  function readSince(sequence: number, limit = pageSize): { sequence: number; record: ConversationRecord }[] {
+    return (db.prepare('SELECT * FROM records WHERE sequence>? ORDER BY sequence LIMIT ?').all(sequence, limit) as unknown as StoredRow[]).map(row => ({ sequence: Number(row.sequence), record: decode(row) }));
   }
   async function readTurn(turnId: string, afterSeq = -1, limit = pageSize): Promise<ConversationRecord[]> {
     flushExports();
@@ -157,6 +164,12 @@ export function createArchiveStore(config: WorldConfig & { root: string }) {
   function channelSession(key: string): string | undefined {
     return db.prepare('SELECT sessionId FROM channelSessions WHERE conversationKey=? LIMIT 1').get(key)?.sessionId as string | undefined;
   }
+  /** Whether a session is one of her channel conversations, and which kind; undefined for home and DSH windows. */
+  function channelType(sessionId: string): 'private' | 'group' | undefined {
+    const key = db.prepare('SELECT conversationKey FROM channelSessions WHERE sessionId=? LIMIT 1').get(sessionId)?.conversationKey;
+    if (typeof key !== 'string') return undefined;
+    return (JSON.parse(key) as unknown[])[2] === 'group' ? 'group' : 'private';
+  }
   function bindChannelSession(key: string, sessionId: string): void {
     transaction(() => { db.prepare('INSERT INTO channelSessions VALUES (?,?) ON CONFLICT(conversationKey) DO UPDATE SET sessionId=excluded.sessionId').run(key, sessionId); });
   }
@@ -174,7 +187,7 @@ export function createArchiveStore(config: WorldConfig & { root: string }) {
       db.prepare('UPDATE channelDeliveries SET body=? WHERE recordId=?').run(JSON.stringify(revise(previous)), recordId);
     });
   }
-  return { commitRecords, hasRecord, updateRecord, readPage, readTurn, progress, forgetProgress, sourcePage, stats, close,
-    channelSession, bindChannelSession, delivery, registerDelivery, updateDelivery, memory, snapshotTo };
+  return { commitRecords, hasRecord, updateRecord, readPage, readSince, lastSequence, readTurn, progress, forgetProgress, sourcePage, stats, close,
+    channelSession, channelType, bindChannelSession, delivery, registerDelivery, updateDelivery, memory, snapshotTo };
 }
 export type ArchiveStore = ReturnType<typeof createArchiveStore>;

@@ -16,6 +16,7 @@ import { createWechatReading } from './reading.ts';
 import { createStickerLibrary } from './stickerLibrary.ts';
 import { createStickerTools } from './stickerTools.ts';
 import { createWechatPresence } from './presence.ts';
+import type { ElsewhereSource } from '../../elsewhere.ts';
 import { reassembleOnChange, registerScopedTool, type InWorld } from '../../worldScope.ts';
 
 import { worldPath } from '../../worldRoutes.ts';
@@ -120,7 +121,9 @@ export function createWechatModule(deps: { ctx: Context; home(identity: SpeakerI
     }
   }
   return {
-    presence: (now: Date) => !stopped && accountState === 'online' ? presence.summary(now) : undefined,
+    /** The quiet groups, for her alarm; groups with unread messages are news from elsewhere instead. */
+    presence: (now: Date) => !stopped && accountState === 'online' ? presence.quiet(now) : undefined,
+    elsewhere: { look: '微信群用 wechat_history 看', news: now => !stopped && accountState === 'online' ? presence.unread(now) : [] } satisfies ElsewhereSource,
     status() { return { ...sending.status(), lastContactAt: lastContactAt ?? null, account: accountState ?? null, ...settings() }; },
     start() {
       durableWrite(deps.file, JSON.stringify({ origin: deps.origin(), token, path, pid: process.pid, protocol: 4, references: true }, null, 2));

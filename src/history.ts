@@ -89,6 +89,12 @@ function sentState({ status, confirmed, total }: NonNullable<ConversationRecord[
  * name, so the memory reads as hers rather than a generic assistant's. `homeOnly` (archiveScope home) says the
  * memory is her time at home.
  */
+/**
+ * Said wherever a group session meets what was said elsewhere (her recent chats, news from elsewhere): those words
+ * are between her and one person, and a group is the wrong place to repeat them.
+ */
+export const GROUP_PRIVACY = '我现在在群里。家里和私聊里的话是我和对方之间的：不把原话和细节带进群里说，也不替谁转述；群里有人问起，就带过去，不乱说。';
+
 export function renderHistory(turns: readonly ConversationTurn[], timeZone: string, names: WorldNames, homeOnly = false): string {
   const selfName = names.companion;
   if (!turns.length) return '';
