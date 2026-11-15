@@ -27,7 +27,8 @@ export function createProcedureLibrary(dir: string, deps: { faults?: Faults } = 
   const runs = new Map<string, RunNote>();
   const faulted = new Set<string>();
   let cache: { revision: string; list: StoredProcedure[] } | undefined;
-  const entries = (at: string) => { try { return readdirSync(at, { withFileTypes: true }); } catch { return []; } };
+  // Sorted, so the catalog and the console list her operations the same way on every disk.
+  const entries = (at: string) => { try { return readdirSync(at, { withFileTypes: true }).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0); } catch { return []; } };
   const folders = () => entries(dir).filter(entry => entry.isDirectory() && ENTRY_OK(entry.name)).map(entry => entry.name).sort();
   /** Every operation file with its category; folders first, then the flat files, so a saved one shadows a flat one. */
   const files = () => [
