@@ -3,7 +3,7 @@ import z from '@deepseek-ai/schemastery';
 import type {} from '@deepseek-ai/dsh-agent-loop';
 import { CompactionEngine, ManualCompactionError, isCompactCheckpointSource, type CompactionAgentContext, type CompactionResult, type CompactionTrigger, type ManualCompactAgentContext } from '@deepseek-ai/dsh-compaction';
 import type { CommandId } from '@deepseek-ai/dsh-commands/brand';
-import { BlockAssembler, CONTEXT_WINDOW_EXCEEDED_CODE, LlmError, createUserMessage, type ContentBlock, type Message } from '@deepseek-ai/dsh-llm';
+import { BlockAssembler, CONTEXT_WINDOW_EXCEEDED_CODE, LlmError, createUserMessage, type ContentBlock, type LlmFailure, type Message } from '@deepseek-ai/dsh-llm';
 import { appendPluginRecord, type Session, type SessionSeq } from '@deepseek-ai/dsh-session';
 import type {} from '@deepseek-ai/dsh-token-meter';
 import { visibleText } from './archive.ts';
@@ -99,6 +99,12 @@ class TargetConfigError extends Error {
  * tool result, tool schema and reasoning block from the compacted span, then
  * replaces the whole conversation with one summary paragraph.
  */
+/**
+ * Raises a failure with its own code, ours or a provider's. DSH 0.2.2-rc.3 narrows the constructor's code to its built-in
+ * ones (only `LlmError.fromFailure`, which 0.2.1 lacks, takes any); the runtime check is unchanged.
+ */
+export const llmError = (failure: LlmFailure) => new LlmError(failure.message, failure.code as ConstructorParameters<typeof LlmError>[1], failure);
+
 /** Whether a session's compaction service is this one, which can summarize inside a running turn; DSH's stock one cannot. */
 export const compactsWhole = (engine: unknown): engine is Pick<ToolFreeCompaction, 'compactWhole'> => typeof (engine as Partial<ToolFreeCompaction> | undefined)?.compactWhole === 'function';
 
@@ -285,7 +291,7 @@ export default class ToolFreeCompaction extends CompactionEngine {
     for await (const chunk of this.ctx.llm.stream({ provider, model, maxTokens, messages: request, ...(header?.tools === undefined ? {} : { tools: [...header.tools] }), toolHistory: session.toolHistory(), sessionId: session.id, purpose: 'compaction', ...(signal === undefined ? {} : { signal }) })) assembler.push(chunk);
     signal?.throwIfAborted();
     const finish = assembler.finish;
-    if (finish.kind === 'error' || finish.kind === 'aborted') throw new LlmError(finish.failure.message, finish.failure.code, finish.failure);
+    if (finish.kind === 'error' || finish.kind === 'aborted') throw llmError(finish.failure);
     if (finish.kind !== 'stop') throw new Error(`dsh-world: compaction summary truncated or invalid (${finish.kind})`);
     const rawOutput: ContentBlock[] = assembler.blocks();
     const text = rawOutput.flatMap(block => block.type === 'text' ? [block.text.trim()] : []).join(' ').replace(/\s*\r?\n\s*/g, ' ').trim().replace(leadEcho, '').trim();

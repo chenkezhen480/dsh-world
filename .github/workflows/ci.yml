@@ -22,7 +22,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        dsh: [locked, 0.2.2-rc.1]
+        dsh: [locked, 0.2.2-rc.1, 0.2.2-rc.3]
     defaults:
       run:
         shell: bash

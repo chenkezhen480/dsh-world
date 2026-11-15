@@ -66,10 +66,25 @@ export function moodValues(mood: Extract<Mood, { kind: 'mood' }>): MoodValue[] {
 const outsideNote = (names: readonly string[]) => `（${names.join('、')} 不在固定的心情里，没有算进去；换成最接近的那个，细的写进小事）`;
 
 /** What she reads just before the time block, in her own voice; undefined when there is nothing to show. */
-export function moodText(mood: Mood): string | undefined {
+/** When she last changed the file, or undefined when it is gone since it was read. */
+export function moodUpdatedAt(path: string): number | undefined {
+  try { return statSync(path).mtimeMs; } catch { return undefined; }
+}
+
+/** How long her mood has stood, so she can tell an old one from a fresh one; the plugin never ages the values themselves. */
+export function moodAge(updatedAt: number, now: number): string {
+  const minutes = Math.floor(Math.max(0, now - updatedAt) / 60_000);
+  if (minutes < 1) return '刚改过';
+  if (minutes < 60) return `最后改于 ${minutes} 分钟前`;
+  const hours = Math.floor(minutes / 60), days = Math.floor(hours / 24);
+  if (!days) return `最后改于 ${hours} 小时前`;
+  return `最后改于 ${days} 天${hours % 24 ? ` ${hours % 24} 小时` : ''}前`;
+}
+
+export function moodText(mood: Mood, age?: string): string | undefined {
   if (mood.kind === 'none') return undefined;
   if (mood.kind === 'failed') return '【我的心情值】mood.md 读不出来，之前那条不再算数；可以用 set_mood 重新记。';
-  const lines = [`【我的心情值】${moodValues(mood).map(value => `${value.name} ${value.value}`).join(' · ')}（以最新一条为准，用 set_mood 改）`];
+  const lines = [`【我的心情值】${moodValues(mood).map(value => `${value.name} ${value.value}`).join(' · ')}（以最新一条为准，${age ? `${age}，` : ''}用 set_mood 改）`];
   if (mood.trivia.length) lines.push(`旁边：${mood.trivia.join('；')}${mood.cut ? '……后面还有' : ''}`);
   if (mood.outside.length) lines.push(outsideNote(mood.outside));
   if (mood.unread) lines.push(`（mood.md 里有 ${mood.unread} 行没读懂）`);
@@ -84,7 +99,6 @@ export type MoodView =
 export function moodView(path: string): MoodView {
   const mood = readMood(path);
   if (mood.kind !== 'mood') return mood;
-  let updatedAt: string | null = null;
-  try { updatedAt = statSync(path).mtime.toISOString(); } catch { /* removed since it was read; the values still stand */ }
-  return { kind: 'mood', values: moodValues(mood), trivia: mood.trivia, cut: mood.cut, unread: mood.unread, outside: mood.outside, updatedAt };
+  const changed = moodUpdatedAt(path);
+  return { kind: 'mood', values: moodValues(mood), trivia: mood.trivia, cut: mood.cut, unread: mood.unread, outside: mood.outside, updatedAt: changed === undefined ? null : new Date(changed).toISOString() };
 }

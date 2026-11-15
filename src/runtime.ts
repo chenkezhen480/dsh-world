@@ -1,16 +1,16 @@
 import { createHash } from 'node:crypto';
 import type { Context } from '@deepseek-ai/cordis';
 import type { Agent } from '@deepseek-ai/dsh-agent';
-import { createSystemMessage, createUserMessage, isAgentLoopRequest, LlmError, type MessageId, type StreamChunk, type UserMessage } from '@deepseek-ai/dsh-llm';
+import { createSystemMessage, createUserMessage, isAgentLoopRequest, type MessageId, type StreamChunk, type UserMessage } from '@deepseek-ai/dsh-llm';
 import { appendPluginRecord, pluginRecordOf, SessionLogOffset, type Session, type SessionSeq } from '@deepseek-ai/dsh-session';
 import type {} from '@deepseek-ai/dsh-compaction';
 import './hostContract.ts';
 import { isOrdinarySession } from './archive.ts';
-import { compactsWhole } from './compaction.ts';
+import { compactsWhole, llmError } from './compaction.ts';
 import { compactionFor } from './console/homeApply.ts';
 import { Faults } from './faults.ts';
 import { createHistory, excludePresentMessages, renderHistory } from './history.ts';
-import { MOOD_CLEARED, moodText, readMood } from './mood.ts';
+import { MOOD_CLEARED, moodAge, moodText, moodUpdatedAt, readMood } from './mood.ts';
 import { createWorldToolRegistry, memoryTools } from './memoryTools.ts';
 import { moodTools } from './moodTools.ts';
 import { assembledWorlds, createPromptSections, type WorldPromptSource } from './promptSection.ts';
@@ -161,7 +161,7 @@ export function guardWorldContext(
       return;
     }
     yield* next();
-    if (compaction && session && scope && authorize(session, prompt?.worldId) !== scope) throw new LlmError(failure.message, failure.code);
+    if (compaction && session && scope && authorize(session, prompt?.worldId) !== scope) throw llmError(failure);
   });
 }
 
@@ -261,16 +261,20 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
     return event?.type === 'user/message' ? event.data.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('') : undefined;
   }
   /**
-   * Her mood rides just before the time block, appended like it: only when it differs from the latest one on the
-   * surface, never replacing an old one, so the cached prefix stays whole and compaction clears them all.
+   * Her mood rides just before the time block on every step, appended like it and never replacing an old one, so the
+   * cached prefix stays whole and compaction clears them all. Every step, because one wake can run a hundred steps: a
+   * snapshot shown only when it changed sank far behind her work and she stopped noticing it, so it never moved.
    */
   function moodMessage(session: Session): UserMessage | undefined {
     if (!config.moodFile) return undefined;
     const mood = readMood(config.moodFile);
     if (mood.kind === 'failed') faults.set('mood', `mood.md 读不出来：${mood.message}`); else faults.clear('mood');
-    const latest = latestMood(session);
-    const text = moodText(mood) ?? (latest === undefined ? undefined : MOOD_CLEARED);
-    return text === undefined || text === latest ? undefined : createUserMessage({ content: [{ type: 'text', text }], source: { kind: moodSource, form: 'snapshot', worldId: config.worldId } });
+    const updatedAt = mood.kind === 'mood' ? moodUpdatedAt(config.moodFile) : undefined;
+    const shown = moodText(mood, updatedAt === undefined ? undefined : moodAge(updatedAt, now()));
+    const latest = shown === undefined ? latestMood(session) : undefined;
+    // A removed file is said once, so the old values stop counting.
+    const text = shown ?? (latest === undefined || latest === MOOD_CLEARED ? undefined : MOOD_CLEARED);
+    return text === undefined ? undefined : createUserMessage({ content: [{ type: 'text', text }], source: { kind: moodSource, form: 'snapshot', worldId: config.worldId } });
   }
   function flushRetired(session: Session, state: MemoryState, position: RequestPosition): void {
     const retiring = state.retiring; state.retiring = [];

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Context } from '@deepseek-ai/cordis';
@@ -8,7 +8,7 @@ import { createUserMessage, ToolCallId, type GenerateOptions } from '@deepseek-a
 import { SessionId } from '@deepseek-ai/dsh-session';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { hostFixture, textResponse } from './hostFixture.ts';
-import { MOOD_CLEARED, moodText, parseMood, readMood } from '../src/mood.ts';
+import { MOOD_CLEARED, moodAge, moodText, parseMood, readMood } from '../src/mood.ts';
 import { moodTools } from '../src/moodTools.ts';
 import { createWorldRuntime } from '../src/runtime.ts';
 import { createArchiveStore } from '../src/store.ts';
@@ -61,7 +61,7 @@ test('a missing or blank mood file is no mood at all, not every mood at 0; one t
   assert.match(moodText(failed)!, /mood\.md 读不出来/);
 });
 
-test('her mood comes just before the time block, only when it changed, appended without retiring the old one, and never outside her world', async t => {
+test('her mood comes just before the time block on every step, appended without retiring the old one, and never outside her world', async t => {
   const requests: GenerateOptions[] = [];
   const { ctx, root, cleanup, errors } = await hostFixture(t, async function* (request) { requests.push(request); yield* textResponse('嗯'); });
   hostTime(ctx);
@@ -77,24 +77,50 @@ test('her mood comes just before the time block, only when it changed, appended 
   const first = await say('在吗');
   assert.equal(moods(first).length, 1);
   assert.deepEqual(kinds(first).slice(-2), ['dsh-world-mood', 'time-context'], 'right before the time block');
-  assert.match(moods(first)[0]!, /开心 6[\s\S]*累 7[\s\S]*旁边：外面在下雨/);
-  assert.equal(moods(await say('还在')).length, 1, 'unchanged: nothing new on the next turn');
+  assert.match(moods(first)[0]!, /开心 6[\s\S]*刚改过[\s\S]*旁边：外面在下雨/);
+  const again = await say('还在');
+  assert.equal(moods(again).length, 2, 'unchanged, it still comes on the next step, so it never sinks behind her work');
+  assert.deepEqual(kinds(again).slice(-2), ['dsh-world-mood', 'time-context']);
+  assert.deepEqual(again.messages.slice(0, first.messages.length), first.messages, 'the old one stays exactly where it was, so the cached prefix is whole');
 
   await writeFile(moodFile, '开心 3\n累 9\n');
   const changed = await say('怎么了');
-  assert.equal(moods(changed).length, 2, 'the new one is appended');
-  assert.equal(moods(changed)[0], moods(first)[0], 'the old one stays exactly where it was, so the cached prefix is whole');
-  assert.deepEqual(changed.messages.slice(0, first.messages.length), first.messages);
+  assert.equal(moods(changed).length, 3);
+  assert.match(moods(changed).at(-1)!, /开心 3[\s\S]*累 9/);
+  assert.deepEqual(changed.messages.slice(0, again.messages.length), again.messages);
 
   await rm(moodFile);
   assert.equal(moods(await say('嗯')).at(-1), MOOD_CLEARED, 'a removed file is said once, so the old values stop counting');
-  assert.equal(moods(await say('好')).length, 3, 'and only once');
+  assert.equal(moods(await say('好')).length, 4, 'and only once');
 
   await writeFile(moodFile, '开心 5\n');
   const outside = await ctx.agents.create({ sessionId: SessionId('work'), meta: { agentPreset: 'coding' }, agentOptions: { provider: 'test', model: 'test' } });
   outside.agent.followup(user('写代码')); await outside.agent.whenIdle();
   assert.deepEqual(moods(requests.at(-1)!), [], 'a session outside her world never sees it');
   assert.equal(errors.length, 0, errors.map(e => String((e as { error: Error }).error)).join('\n'));
+});
+
+test('her snapshot says how long her mood has stood, and the plugin never ages the values', async t => {
+  const minute = 60_000, hour = 60 * minute, now = Date.parse('2026-11-15T10:00:00Z');
+  assert.equal(moodAge(now - 20_000, now), '刚改过');
+  assert.equal(moodAge(now - 5 * minute, now), '最后改于 5 分钟前');
+  assert.equal(moodAge(now - 3 * hour - 59 * minute, now), '最后改于 3 小时前');
+  assert.equal(moodAge(now - 51 * hour, now), '最后改于 2 天 3 小时前');
+  assert.equal(moodAge(now - 48 * hour, now), '最后改于 2 天前');
+
+  const requests: GenerateOptions[] = [];
+  const { ctx, root, cleanup } = await hostFixture(t, async function* (request) { requests.push(request); yield* textResponse('嗯'); });
+  const moodFile = join(root, 'room', 'mood.md'); await mkdir(join(root, 'room'), { recursive: true });
+  await writeFile(moodFile, '平静 6\n');
+  const then = (Date.now() - 51 * hour - 30 * minute) / 1000;
+  await utimes(moodFile, then, then);
+  const store = createArchiveStore({ ...config, root });
+  const world = createWorldRuntime(ctx, { ...config, moodFile }, store);
+  await world.start(); cleanup.push(() => world.stop().finally(() => store.close()));
+  const { agent } = await ctx.agents.create({ sessionId: SessionId('home'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } });
+  agent.followup(user('在吗')); await agent.whenIdle();
+  assert.match(moods(requests.at(-1)!).join(''), /平静 6[\s\S]*（以最新一条为准，最后改于 2 天 3 小时前，用 set_mood 改）/);
+  assert.equal(await readFile(moodFile, 'utf8'), '平静 6\n');
 });
 
 test('a change she makes in the middle of a turn shows on its next step', async t => {

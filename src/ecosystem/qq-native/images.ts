@@ -5,17 +5,18 @@ import type { SpeakerIdentity } from '../shared/identity.ts';
 
 export const MAX_BATCH_IMAGES = 4;
 const DOWNLOAD_TIMEOUT_MS = 10_000;
-const QQ_IMAGE_ORIGIN = 'https://multimedia.nt.qq.com.cn';
+// QQ's own image hosts: the CDN behind get_image (multimedia.nt.qq.com.cn) and the sticker shop (gxh.vip.qq.com) (#44).
+const QQ_IMAGE_DOMAINS = ['qq.com', 'qq.com.cn'];
 
-export interface QqImage {
-  file: unknown;
-  identity: SpeakerIdentity;
-}
+/** One image segment as QQ sent it: the id get_image takes, and the link some images (shop stickers, animated ones) carry instead. */
+export interface QqImageSegment { file: unknown; url: unknown }
+export interface QqImage extends QqImageSegment { identity: SpeakerIdentity }
+
+const onQqHost = (url: URL) => QQ_IMAGE_DOMAINS.some(domain => url.hostname === domain || url.hostname.endsWith(`.${domain}`));
 
 async function downloadImage(link: string, limits: ImageAttachmentLimits) {
-  // shortcut: only the verified SnowLuma CDN is supported, add hosts when their gateway responses are verified.
   const url = new URL(link);
-  if (url.protocol !== 'https:' || url.origin !== QQ_IMAGE_ORIGIN || url.username || url.password) throw new Error('QQ 图片链接不受支持');
+  if (url.protocol !== 'https:' || url.port || !onQqHost(url) || url.username || url.password) throw new Error('QQ 图片链接不受支持');
   const controller = new AbortController();
   try {
     const response = await fetch(url, {
@@ -37,18 +38,25 @@ async function downloadImage(link: string, limits: ImageAttachmentLimits) {
   } finally { controller.abort(); }
 }
 
+// get_image first, as verified for ordinary pictures; the segment's own link when get_image has no usable answer.
+async function fetchQqImage({ file, url }: QqImageSegment, limits: ImageAttachmentLimits, getImage?: (file: string) => Promise<string>) {
+  const viaFile = typeof file === 'string' && /^[a-z0-9_-][a-z0-9_.-]{0,255}$/i.test(file) && getImage
+    ? getImage(file).then(link => downloadImage(link, limits)) : Promise.reject(new Error('QQ 图片标识无效'));
+  return viaFile.catch(error => {
+    if (typeof url !== 'string' || !url) throw error;
+    return downloadImage(url, limits);
+  });
+}
+
 export async function admitQqImages(ctx: Context, images: readonly QqImage[], getImage?: (file: string) => Promise<string>): Promise<ContentBlock[]> {
   if (!images.length) return [];
   const unavailable: ContentBlock = { type: 'text', text: '本次有 QQ 图片未能读取，请勿假装看过。' };
   const store = ctx.get('attachments') as AttachmentStore | undefined;
-  if (!store || !getImage) return [unavailable];
+  if (!store) return [unavailable];
 
   const limits = store.imageLimits;
   const selected = images.slice(0, Math.min(MAX_BATCH_IMAGES, limits.maxImagesPerMessage));
-  const downloads = await Promise.allSettled(selected.map(async ({ file }) => {
-    if (typeof file !== 'string' || !/^[a-z0-9_-][a-z0-9_.-]{0,255}$/i.test(file)) throw new Error('QQ 图片标识无效');
-    return downloadImage(await getImage(file), limits);
-  }));
+  const downloads = await Promise.allSettled(selected.map(image => fetchQqImage(image, limits, getImage)));
   const content: ContentBlock[] = [];
   let remainingBytes = limits.maxMessageImageBytes;
   let saved = 0;
