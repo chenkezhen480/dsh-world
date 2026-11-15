@@ -2,7 +2,7 @@
 import { errorText } from '../../../faults.ts';
 import { describeAnchor, type Row } from '../browser/page.ts';
 import type { ProcedureLibrary } from './library.ts';
-import { isWebAddress, substitute, WEB_ONLY, type Anchor, type Condition, type ExtractSpec, type Procedure, type Step, type Target } from './format.ts';
+import { isWebAddress, procedurePath, substitute, WEB_ONLY, type Anchor, type Condition, type ExtractSpec, type Procedure, type Step, type Target } from './format.ts';
 
 /** What replaying needs from a page; her browser's `Page` is one. */
 export interface Driver {
@@ -136,8 +136,8 @@ export async function runVersions(newest: Procedure, kept: KeptVersion[], input:
 export const fallbackText = ({ version, newest }: NonNullable<VersionedRun['fallback']>) =>
   `最新版第 ${newest.step} 步（${newest.action}）没跑通：${cut(newest.error, 80)}；这次退回第 ${version} 版跑通了。`;
 
-export function failureText(name: string, result: Failure): string {
-  return `my_${name} 没跑通：第 ${result.step} 步（${result.action}）${result.error}。`
+export function failureText(path: string, result: Failure): string {
+  return `${path} 没跑通：第 ${result.step} 步（${result.action}）${result.error}。`
     + (result.outwardDone ? '这一步或之前有向外的动作，可能已经发出，先看页面确认，不要直接重跑。' : '还没有任何向外的动作，修好可以再跑。')
     + `\n当前页面：\n${result.page}`;
 }
@@ -154,16 +154,16 @@ export function resultText(result: Extract<RunResult, { ok: true }>): string {
 
 /** One line after her alarm: the tool's own summary, or its result; a failure is said as a failure, never as nothing. */
 export function summaryLine(procedure: Procedure, result: RunResult): string {
-  if (!result.ok) return `my_${procedure.name} 没跑通（第 ${result.step} 步：${cut(result.error, 60)}）`;
+  if (!result.ok) return `${procedurePath(procedure)} 没跑通（第 ${result.step} 步：${cut(result.error, 60)}）`;
   const values = { ...Object.fromEntries(Object.entries(result.values).map(([key, value]) => [key, typeof value === 'string' ? value : JSON.stringify(value)])), count: String(result.rows.length) };
   const body = procedure.summary ? substitute(procedure.summary, values) : resultText(result);
-  return `my_${procedure.name}：${cut(body, 200)}`;
+  return `${procedurePath(procedure)}：${cut(body, 200)}`;
 }
 
-/** The one place a run, or the error that cut it off, becomes the note `procedure_list` shows. */
-export function noteRun(library: Pick<ProcedureLibrary, 'note'>, name: string, outcome: VersionedRun | { thrown: unknown }): void {
-  if ('thrown' in outcome) return library.note(name, false, cut(errorText(outcome.thrown), 200));
+/** The one place a run, or the error that cut it off, becomes the note the catalog and the console show. */
+export function noteRun(library: Pick<ProcedureLibrary, 'note'>, path: string, outcome: VersionedRun | { thrown: unknown }): void {
+  if ('thrown' in outcome) return library.note(path, false, cut(errorText(outcome.thrown), 200));
   const { result, fallback } = outcome;
-  if (result.ok) library.note(name, true, fallback && cut(fallbackText(fallback), 200));
-  else library.note(name, false, cut(`第 ${result.step} 步：${result.error}`, 200));
+  if (result.ok) library.note(path, true, fallback && cut(fallbackText(fallback), 200));
+  else library.note(path, false, cut(`第 ${result.step} 步：${result.error}`, 200));
 }

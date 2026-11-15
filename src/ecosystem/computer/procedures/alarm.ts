@@ -15,20 +15,20 @@ export function createAlarmFacts(deps: { library: ProcedureLibrary; browser: Pic
     const due = deps.library.list().filter(({ procedure }) => procedure.onAlarm);
     if (!due.length) return undefined;
     const deadline = Date.now() + totalMs, lines: string[] = [];
-    for (const { procedure } of due) {
+    for (const { procedure, path } of due) {
       const left = Math.min(perToolMs, deadline - Date.now());
-      if (left <= 0) { lines.push(`my_${procedure.name} 没来得及跑（闹钟前的时间用完了）`); continue; }
+      if (left <= 0) { lines.push(`${path} 没来得及跑（闹钟前的时间用完了）`); continue; }
       const controller = new AbortController();
       let timer: ReturnType<typeof setTimeout> | undefined;
       const late = new Promise<never>((_resolve, reject) => { timer = setTimeout(() => { controller.abort(); reject(new Error(`超过 ${Math.max(1, Math.ceil(left / 1000))} 秒`)); }, left); });
       try {
-        const kept = deps.library.kept(procedure.name);
+        const kept = deps.library.kept(path);
         const outcome = await Promise.race([deps.browser.scratch((page, signal) => runVersions(procedure, kept, {}, page, AbortSignal.any([signal, controller.signal])), controller.signal), late]);
-        noteRun(deps.library, procedure.name, outcome);
+        noteRun(deps.library, path, outcome);
         lines.push(summaryLine(outcome.ran, outcome.result) + (outcome.fallback ? `（最新版没跑通，用的第 ${outcome.fallback.version} 版）` : ''));
       } catch (error) {
-        noteRun(deps.library, procedure.name, { thrown: error });
-        lines.push(`my_${procedure.name} 没跑通（${cut(errorText(error), 80)}）`);
+        noteRun(deps.library, path, { thrown: error });
+        lines.push(`${path} 没跑通（${cut(errorText(error), 80)}）`);
       } finally { clearTimeout(timer); }
     }
     return lines.join('\n');

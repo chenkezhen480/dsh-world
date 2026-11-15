@@ -64,11 +64,11 @@ test('results and the alarm line stay short', async () => {
   const unread = parseProcedure({ name: 'bili_unread', description: '看谁找我', params: {}, onAlarm: true, summary: '私信 {{dm}}；回复我 {{count}}',
     steps: [{ extract: { list: { css: '.item' }, fields: { who: { css: '.who' }, text: { css: '.text' } } } }, { script: 'return 3', as: 'dm' }] });
   const result = await runProcedure(unread, {}, fakeDriver().driver);
-  assert.equal(summaryLine(unread, result), 'my_bili_unread：私信 3；回复我 1');
+  assert.equal(summaryLine(unread, result), '未分类/bili_unread：私信 3；回复我 1');
   assert.ok(result.ok);
   assert.equal(resultText(result), '{"rows":[{"who":"阿明","text":"你好"}],"values":{"dm":3}}');
   const broken = await runProcedure(unread, {}, fakeDriver({ extract: async () => { throw new Error('页面上找不到 选择器 .item'); } }).driver);
-  assert.match(summaryLine(unread, broken), /^my_bili_unread 没跑通（第 1 步：页面上找不到 选择器 \.item）$/);
+  assert.match(summaryLine(unread, broken), /^未分类\/bili_unread 没跑通（第 1 步：页面上找不到 选择器 \.item）$/);
 });
 
 test('cancellation is not reported as a page failure', async () => {

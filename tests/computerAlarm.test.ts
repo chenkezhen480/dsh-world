@@ -20,10 +20,10 @@ test('her alarm tools run in a scratch tab, one line each; a failure says so', a
   const page = { open: async (url: string) => { opened.push(url); if (url.endsWith('broken')) throw new Error('打不开'); }, brief: async () => '页' } as unknown as Page;
   let scratches = 0;
   const facts = createAlarmFacts({ library, browser: { scratch: async work => { scratches++; return work(page, new AbortController().signal); } } });
-  assert.equal(await facts(), 'my_bili_unread：私信 2\nmy_broken 没跑通（第 1 步：打不开）');
+  assert.equal(await facts(), '未分类/bili_unread：私信 2\n未分类/broken 没跑通（第 1 步：打不开）');
   assert.equal(scratches, 2);
   assert.deepEqual(opened, ['https://example.com/bili_unread', 'https://example.com/broken']);
-  assert.equal(library.lastRun('broken')?.ok, false);
+  assert.equal(library.lastRun('未分类/broken')?.ok, false);
 });
 
 test('no alarm tools is nothing to add; a tool past its time is cut off and said', async t => {
@@ -32,7 +32,7 @@ test('no alarm tools is nothing to add; a tool past its time is cut off and said
   const never = { scratch: async () => new Promise<never>(() => {}) };
   assert.equal(await createAlarmFacts({ library, browser: never })(), undefined);
   library.save(tool('slow', { onAlarm: true }));
-  assert.match(await createAlarmFacts({ library, browser: never, perToolMs: 20 })() ?? '', /^my_slow 没跑通（超过 1 秒）$/);
+  assert.match(await createAlarmFacts({ library, browser: never, perToolMs: 20 })() ?? '', /^未分类\/slow 没跑通（超过 1 秒）$/);
 });
 
 test('a tool past its time is aborted and recorded; the next one still runs; an empty budget says so', async t => {
@@ -48,11 +48,11 @@ test('a tool past its time is aborted and recorded; the next one still runs; an 
     return ++calls === 1 ? new Promise<never>(() => {}) : work(page, signal);
   } };
   const lines = (await createAlarmFacts({ library, browser: browser as never, perToolMs: 20 })())!.split('\n');
-  assert.match(lines[0]!, /^my_a_hung 没跑通（超过 1 秒）$/);
-  assert.match(lines[1]!, /^my_b_fine：/);
-  assert.equal(library.lastRun('a_hung')?.ok, false);
-  assert.equal(library.lastRun('b_fine')?.ok, true);
-  assert.equal(await createAlarmFacts({ library, browser: browser as never, totalMs: 0 })(), 'my_a_hung 没来得及跑（闹钟前的时间用完了）\nmy_b_fine 没来得及跑（闹钟前的时间用完了）');
+  assert.match(lines[0]!, /^未分类\/a_hung 没跑通（超过 1 秒）$/);
+  assert.match(lines[1]!, /^未分类\/b_fine：/);
+  assert.equal(library.lastRun('未分类/a_hung')?.ok, false);
+  assert.equal(library.lastRun('未分类/b_fine')?.ok, true);
+  assert.equal(await createAlarmFacts({ library, browser: browser as never, totalMs: 0 })(), '未分类/a_hung 没来得及跑（闹钟前的时间用完了）\n未分类/b_fine 没来得及跑（闹钟前的时间用完了）');
 });
 
 test('the work of a tool past its time is told to stop, not left running', async t => {
@@ -84,6 +84,6 @@ test('an alarm tool whose newest version broke runs a kept one and says so', asy
   library.save(tool('bili_unread', { onAlarm: true, summary: '私信 2' }));
   const page = { open: async (url: string) => { if (!url.endsWith('old')) throw new Error('打不开'); }, brief: async () => '页' } as unknown as Page;
   const facts = createAlarmFacts({ library, browser: { scratch: async work => work(page, new AbortController().signal) } });
-  assert.equal(await facts(), 'my_bili_unread：私信 2（最新版没跑通，用的第 1 版）');
-  assert.equal(library.lastRun('bili_unread')?.ok, true);
+  assert.equal(await facts(), '未分类/bili_unread：私信 2（最新版没跑通，用的第 1 版）');
+  assert.equal(library.lastRun('未分类/bili_unread')?.ok, true);
 });
