@@ -1,14 +1,18 @@
+import { ago, type ElsewhereNews } from '../../elsewhere.ts';
+
 interface Group { chatId: string; name: string; count: number; lastSpeaker: string; lastAt: number; lastSelf: boolean }
 const clean = (value: string) => [...value.replace(/[\r\n\u0000-\u001f「」]/g, ' ')].slice(0, 40).join('');
 // The adapter permits a 60-second poll; leave one poll and a control-request margin before expiry.
 const PRESENCE_TTL_MS = 2 * 60_000 + 5_000;
-function ago(milliseconds: number): string {
-  const minutes = Math.max(0, Math.floor(milliseconds / 60_000));
-  return minutes < 1 ? '刚刚' : minutes < 60 ? `${minutes} 分钟前` : minutes < 1440 ? `${Math.floor(minutes / 60)} 小时前` : `${Math.floor(minutes / 1440)} 天前`;
-}
 /** Ephemeral host view of the adapter's durable, account-bound counters. */
 export function createWechatPresence() {
   let groups: Group[] = [], observedAt = 0;
+  /** What the adapter last reported, while it is recent enough to stand for now; stale data cannot assert a quiet group. */
+  const current = (now: Date) => {
+    const age = now.getTime() - observedAt;
+    return age < -60_000 || age > PRESENCE_TTL_MS ? [] : groups;
+  };
+  const speaker = (row: Group) => row.lastSelf ? '我自己' : row.lastSpeaker;
   return {
     clear() { groups = []; observedAt = 0; },
     accept(value: unknown): void {
@@ -30,16 +34,22 @@ export function createWechatPresence() {
       if (new Set(next.map(row => row.chatId)).size !== next.length) throw new Error('微信群动态重复');
       groups = next; observedAt = at;
     },
-    summary(now: Date): string | undefined {
-      const age = now.getTime() - observedAt;
-      if (!groups.length || age < -60_000 || age > PRESENCE_TTL_MS) return;
-      const entries = [...groups].sort((a, b) => Number(b.count > 0) - Number(a.count > 0) || b.lastAt - a.lastAt).slice(0, 8).map(row => {
-        const speaker = row.lastSelf ? '我自己' : row.lastSpeaker;
+    /** Groups with messages she has not read: news from elsewhere, told once per change. */
+    unread(now: Date): ElsewhereNews[] {
+      return current(now).filter(row => row.count > 0).sort((a, b) => b.lastAt - a.lastAt).map(row => ({
+        key: `wechat:${row.chatId}`, mark: `${row.count}:${row.lastAt}`,
+        text: `微信群「${row.name}」${row.count > 99 ? '99+' : row.count} 条我还没看到，最后是${speaker(row)}（${ago(now.getTime() - row.lastAt)}）`,
+      }));
+    },
+    /** How long the groups with nothing unread have been quiet, for her alarm: whether to speak up there is hers. */
+    quiet(now: Date): string | undefined {
+      const rows = current(now).filter(row => !row.count);
+      if (!rows.length) return;
+      const entries = [...rows].sort((a, b) => b.lastAt - a.lastAt).slice(0, 8).map(row => {
         const elapsed = ago(now.getTime() - row.lastAt);
-        return row.count ? `「${row.name}」${row.count > 99 ? '99+' : row.count} 条未读，最后是${speaker}（${elapsed}）`
-          : `「${row.name}」${elapsed.endsWith('前') ? elapsed.slice(0, -1) + '没人说话' : '刚刚有发言'}，最后是${speaker}`;
+        return `「${row.name}」${elapsed.endsWith('前') ? elapsed.slice(0, -1) + '没人说话' : '刚刚有发言'}，最后是${speaker(row)}`;
       });
-      if (groups.length > entries.length) entries.push(`另有 ${groups.length - entries.length} 个群`);
+      if (rows.length > entries.length) entries.push(`另有 ${rows.length - entries.length} 个群`);
       return '微信：' + entries.join('；');
     },
   };

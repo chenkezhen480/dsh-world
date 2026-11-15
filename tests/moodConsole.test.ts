@@ -44,12 +44,12 @@ test('the console snapshot carries her mood, and none without a mood file', asyn
   assert.equal((await sources().snapshot() as { mood: unknown }).mood, null);
 });
 
-test('the mood card shows her values, the small things and when she changed it, says when there is none, and shows a read failure', async () => {
+test('the health card shows her mood under the faults: her values, the small things and when she changed it, says when there is none, and shows a read failure', async () => {
   const source = await readFile('client/index.js', 'utf8');
-  let loaded: { factory: (require: (name: string) => unknown) => { __test: (worldId: string) => { MoodCard: unknown } } } | undefined;
+  let loaded: { factory: (require: (name: string) => unknown) => { __test: (worldId: string) => { Health: unknown } } } | undefined;
   const react = { createElement: (type: unknown, props: unknown, ...children: unknown[]) => ({ type, props, children }), useState: (value: unknown) => [value, () => {}], useEffect: () => {}, useRef: (current: unknown) => ({ current }) };
   runInNewContext(source, { fetch: () => Promise.reject(new Error('no fetch')), window: { __ModuleLoader__: { load: (entry: typeof loaded) => { loaded = entry; } } } });
-  const { MoodCard } = loaded!.factory(() => react).__test('fish');
+  const { Health } = loaded!.factory(() => react).__test('fish');
   type El = { type: unknown; props: Record<string, unknown> | null; children: unknown[] };
   const text = (node: unknown): string => {
     if (node == null || typeof node === 'boolean') return '';
@@ -59,11 +59,12 @@ test('the mood card shows her values, the small things and when she changed it, 
     if (typeof el.type === 'function') return text((el.type as (p: unknown) => unknown)({ ...el.props, children: el.children }));
     return text(el.children);
   };
-  const render = (mood: unknown) => text(react.createElement(MoodCard, { mood, zone: 'Asia/Shanghai' }));
+  const render = (mood: unknown, faults: string[] = []) => text(react.createElement(Health, { faults, mood, zone: 'Asia/Shanghai' }));
   const shown = render({ kind: 'mood', values: [{ name: '开心', value: 6 }, { name: '兴奋', value: 0 }], trivia: ['外面在下雨'], cut: true, unread: 1, outside: ['想家'], updatedAt: '2026-11-10T12:00:00.000Z' });
-  assert.match(shown, /心情/); assert.match(shown, /开心 6/); assert.match(shown, /想家 不在固定的心情里，没有算进去/);
+  assert.match(shown, /健康● 一切正常心情/); assert.match(shown, /开心 6/); assert.match(shown, /想家 不在固定的心情里，没有算进去/);
   assert.match(shown, /旁边：外面在下雨……后面还有/); assert.match(shown, /有 1 行没读懂/); assert.match(shown, /她最后改于 /);
   assert.match(render({ kind: 'none' }), /她还没有写 mood\.md/);
-  assert.match(render(null), /她还没有写 mood\.md/);
+  assert.match(render({ kind: 'none' }, ['家打不开']), /● 家打不开心情她还没有写 mood\.md/);
+  assert.doesNotMatch(render(null), /心情/);
   assert.match(render({ kind: 'failed', message: 'EACCES' }), /mood\.md 读不出来：EACCES/);
 });

@@ -21,6 +21,8 @@ export interface WorldPromptSource {
   inWorkspace?(sessionId: string): boolean;
   /** Long-term memory; its two tools are registered on world sessions. */
   memory?: import('./memory.ts').MemoryService;
+  /** News from where she is not, told to her world sessions. */
+  elsewhere?: import('./elsewhere.ts').Elsewhere;
 }
 interface Entry { text?: string; restart: boolean; disposeSync: () => void; disposePrompt?: () => void }
 

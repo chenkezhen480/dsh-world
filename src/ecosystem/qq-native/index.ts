@@ -7,7 +7,7 @@ import { speakerIdentity, conversationKey, type SpeakerIdentity } from '../share
 import type { ChannelContextMessage } from '../shared/context.ts';
 import { createBridge } from './snowluma.ts';
 import { createQqHome } from './home.ts';
-import { admitQqImages, MAX_BATCH_IMAGES } from './images.ts';
+import { admitQqImages, MAX_BATCH_IMAGES, type QqImageSegment } from './images.ts';
 import { createBatcher } from './batch.ts';
 import { createOutbox } from './outbox.ts';
 import { planReply, stripHostNoise, type QqPart } from './replies.ts';
@@ -158,7 +158,7 @@ export interface QqTransportOptions {
 /** One message to send, kept as it was so a retry sends exactly the same. */
 interface Outgoing { kind: 'group' | 'private'; target: string; parts: string | QqPart[] }
 /** What one conversation said while its words were gathering. */
-interface Gathered { text: string; identity: SpeakerIdentity; who: string; imageFiles: unknown[] }
+interface Gathered { text: string; identity: SpeakerIdentity; who: string; images: QqImageSegment[] }
 
 /**
  * QQ as another way into the same home, without a bridge process in between.
@@ -329,9 +329,9 @@ export function createQqNativeModule(deps: {
       pushContext(key, { id: messageId || String(Date.now()), occurredAt: new Date().toISOString(), text, identity }, config.contextMessages);
       return;
     }
-    const imageFiles = (message.segments ?? []).filter(segment => segment?.type === 'image')
-      .slice(0, MAX_BATCH_IMAGES + 1).map(segment => segment.data?.file);
-    batches.add(key, { text, identity, who: speakerName, imageFiles });
+    const images = (message.segments ?? []).filter(segment => segment?.type === 'image')
+      .slice(0, MAX_BATCH_IMAGES + 1).map(segment => ({ file: segment.data?.file, url: segment.data?.url }));
+    batches.add(key, { text, identity, who: speakerName, images });
   }
 
   async function answer(key: string, gathered: Gathered[]): Promise<void> {
@@ -344,7 +344,7 @@ export function createQqNativeModule(deps: {
     const text = gathered.length === 1 ? gathered[0]!.text : gathered.map(item => isGroup && item.who ? `${item.who}: ${item.text}` : item.text).join('\n');
     answering.add(key);
     try {
-      const images = gathered.flatMap(item => item.imageFiles.map(file => ({ file, identity: item.identity })));
+      const images = gathered.flatMap(item => item.images.map(image => ({ ...image, identity: item.identity })));
       const reply = await home.ask(text, identity, contexts.get(key) ?? [], images.length
         ? () => admitQqImages(deps.ctx, images, client?.getImage?.bind(client))
         : undefined);

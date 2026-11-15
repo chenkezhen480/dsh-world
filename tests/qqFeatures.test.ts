@@ -14,6 +14,13 @@ import { createSnowlumaSupervisor } from '../src/ecosystem/qq/supervisor.ts';
 
 const quiet = { info: () => {}, warn: () => {}, error: () => {} };
 const settle = (ms = 300) => new Promise(resolve => setTimeout(resolve, ms));
+/** Waits for what a timer-driven queue does, however busy the machine running the suite is. */
+async function until(check: () => boolean, what: string, timeoutMs = 10_000) {
+  for (const end = Date.now() + timeoutMs; !check();) {
+    if (Date.now() > end) assert.fail(`timed out waiting for ${what}`);
+    await settle(10);
+  }
+}
 const configOf = (over: Partial<QqNativeConfig> = {}): QqNativeConfig => ({
   enabled: true, wsUrl: 'ws://127.0.0.1:1', accessToken: '', allowPrivate: ['100'], ownerQQ: '', allowGroups: ['200'], autoReply: true,
   contextMessages: 3, batchQuietMs: 0, groupTrigger: 'mention', groupKeywords: [], mutedUntil: '', snowlumaHome: '', supervise: false,
@@ -106,11 +113,11 @@ test('a send that fails waits in the outbox and goes out later, or is given up o
   outbox.start();
   assert.equal(await outbox.send('later'), false);
   assert.equal(outbox.size, 1);
-  await settle(50);
+  await until(() => delivered.length > 0, 'the retry');
   assert.deepEqual(delivered, ['later']);
   failing = 99;
   await outbox.send('never');
-  await settle(80);
+  await until(() => dropped.length > 0, 'giving up');
   assert.deepEqual(dropped, ['never']);
   assert.equal(outbox.size, 0);
   outbox.stop();
@@ -119,12 +126,12 @@ test('a send that fails waits in the outbox and goes out later, or is given up o
 test('an answer goes out paragraph by paragraph, with its sticker and post, and a failed send is retried', async t => {
   const qq = await channel(t, '好的\n\n我去看看[[sticker:开心]][[qzone:出门了]]', {}, 1);
   qq.transport.private(incoming());
-  await settle(1_000);
+  await until(() => qq.transport.sent.length > 0 && qq.transport.posts.length > 0, 'the answer going out');
   assert.deepEqual(qq.transport.stickers, ['开心']);
   assert.deepEqual(qq.transport.posts, ['出门了']);
   assert.deepEqual(qq.transport.sent.map(item => item.parts), ['我去看看'], 'the first paragraph failed and is waiting');
   assert.equal(qq.module.status().outbox, 1);
-  await settle(3_500);
+  await until(() => qq.transport.sent.length > 1, 'the failed paragraph being retried');
   assert.deepEqual(qq.transport.sent.map(item => item.parts), ['我去看看', '好的']);
   assert.equal(qq.module.status().outbox, 0);
 });

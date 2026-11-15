@@ -26,6 +26,7 @@ import { readPersona, writePersona } from './persona.ts';
 import { createComputerModule, type ComputerModule } from './ecosystem/computer/index.ts';
 import type { AttachmentStore } from '@deepseek-ai/dsh-attachment';
 import { MOOD_FILE } from './mood.ts';
+import { createElsewhere } from './elsewhere.ts';
 import type { QqNativeModule } from './ecosystem/qq-native/index.ts';
 import { qqRoute } from './ecosystem/qq/route.ts';
 import { createConsoleDoors, discoverSnowlumaHome } from './ecosystem/qq/panel.ts';
@@ -169,6 +170,8 @@ export function apply(ctx: Context, config: Config): void {
   // Her self-description lives in her room whether or not the life line runs; she writes it with her file tools.
   const selfFile = config.selfFile || join(worldDir, 'room', '我是谁.md');
   const moodFile = join(roomDir, MOOD_FILE);
+  /** Every source of news from where she is not registers here; the world runtime tells her sessions. */
+  const elsewhere = createElsewhere();
   const personaFile = config.personaFile || join(worldDir, 'persona.md');
   const worldPromptFile = config.worldPromptFile || join(worldDir, 'world-prompt.md');
   const options: LifeOptions = { worldDir, roomDir, diaryDir: config.diaryDir || join(worldDir, 'diary'), selfFile, schedule: () => ({ review: power.reviewTime(), wake: power.wakeTime() }), timeZone: config.timeZone, alarmFile: config.alarmTemplateFile || join(worldDir, 'alarm.md') };
@@ -203,7 +206,7 @@ export function apply(ctx: Context, config: Config): void {
     if (memory || disposed) return;
     try {
       const prompt = { file: worldPromptFile, persona: personaFile, conversationsDir: join(worldDir, 'conversations'), names: names(), memoryTools: true, ...(config.life ? { life: options } : {}) };
-      memory = createWorldRuntime(ctx, { ...memoryConfig, selfFile, moodFile }, store, { prompt, names, isHome: id => isHome(id), archiveSession, inWorkspace, memory: memoryService }, power.memoryTurns, power.coldHours);
+      memory = createWorldRuntime(ctx, { ...memoryConfig, selfFile, moodFile }, store, { prompt, names, isHome: id => isHome(id), archiveSession, inWorkspace, memory: memoryService, elsewhere }, power.memoryTurns, power.coldHours);
       await memory.start({ fresh }); faults.clear('memory');
     } catch (error) { memory = undefined; faults.set('memory', `记忆线没能启动：${errorText(error)}`); ctx.logger.error(error); }
   }
@@ -299,6 +302,7 @@ export function apply(ctx: Context, config: Config): void {
     let adapter: AdapterSupervisor | undefined;
     let channels: ReturnType<typeof createChannelSessions> | undefined;
     let unregisterWechat: (() => void) | undefined;
+    let unregisterWechatNews: (() => void) | undefined;
     let lifeStop: Promise<void> | undefined;
     let wechatClosing: Promise<void> = Promise.resolve();
     /** Starts the WeChat module (its tools, route and, when configured, the adapter) against the running life line. */
@@ -310,12 +314,13 @@ export function apply(ctx: Context, config: Config): void {
       channels = groupSessions;
       wechat = createWechatModule({ ctx: lifeCtx, worldId: config.worldId, inWorld: inWorldSession, home: identity => identity.conversationType === 'group' ? groupSessions.open(identity) : current.home(), origin: () => host.origin(), file: join(worldDir, 'wechat.json'), incomingDir: join(worldDir, 'wechat-incoming'), allowedHosts: config.allowedHosts, settings: () => ({ contextMessages: power.wechatContext(), bufferSeconds: power.wechatBufferSeconds() }),
         ...createWechatRecorder(store, config.worldId, archiveSession) });
-      wechat.start(); unregisterWechat = webServer.register(wechat.route);
+      wechat.start(); unregisterWechat = webServer.register(wechat.route); unregisterWechatNews = elsewhere.register(wechat.elsewhere);
       if (config.wechatAdapter?.python && config.wechatAdapter.config) { adapter = createAdapterSupervisor({ python: config.wechatAdapter.python, config: config.wechatAdapter.config, logFile: join(worldDir, 'wechat-adapter.log'), log: message => lifeCtx.logger.warn(message) }); adapter.start(); }
     }
     /** Takes the WeChat tools, route and adapter down; the adapter goes first because it exits when the module's connection file disappears. */
     function stopWechat(): Promise<void> {
       unregisterWechat?.(); unregisterWechat = undefined;
+      unregisterWechatNews?.(); unregisterWechatNews = undefined;
       const closingAdapter = adapter?.stop(); adapter = undefined;
       const closing = Promise.all([closingAdapter, wechat?.stop()]).then(() => {}); wechat = undefined;
       channels?.stop(); channels = undefined;

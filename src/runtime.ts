@@ -1,18 +1,19 @@
 import { createHash } from 'node:crypto';
 import type { Context } from '@deepseek-ai/cordis';
 import type { Agent } from '@deepseek-ai/dsh-agent';
-import { createSystemMessage, createUserMessage, isAgentLoopRequest, LlmError, type MessageId, type StreamChunk, type UserMessage } from '@deepseek-ai/dsh-llm';
+import { createSystemMessage, createUserMessage, isAgentLoopRequest, type MessageId, type StreamChunk, type UserMessage } from '@deepseek-ai/dsh-llm';
 import { appendPluginRecord, pluginRecordOf, SessionLogOffset, type Session, type SessionSeq } from '@deepseek-ai/dsh-session';
 import type {} from '@deepseek-ai/dsh-compaction';
 import './hostContract.ts';
 import { isOrdinarySession } from './archive.ts';
-import { compactsWhole } from './compaction.ts';
+import { compactsWhole, llmError } from './compaction.ts';
 import { compactionFor } from './console/homeApply.ts';
 import { Faults } from './faults.ts';
-import { createHistory, excludePresentMessages, renderHistory } from './history.ts';
-import { MOOD_CLEARED, moodText, readMood } from './mood.ts';
+import { createHistory, excludePresentMessages, GROUP_PRIVACY, renderHistory } from './history.ts';
+import { MOOD_CLEARED, moodAge, moodText, moodUpdatedAt, readMood } from './mood.ts';
 import { createWorldToolRegistry, memoryTools } from './memoryTools.ts';
 import { moodTools } from './moodTools.ts';
+import { createSessionNews } from './sessionNews.ts';
 import { assembledWorlds, createPromptSections, type WorldPromptSource } from './promptSection.ts';
 import { belongsToWorld, createSourceArchive, inWorld, sessionPreset } from './sourceArchive.ts';
 import type { ArchiveStore } from './store.ts';
@@ -24,6 +25,7 @@ import { DEFAULT_COLD_HOURS, DEFAULT_MEMORY_TURNS } from './worldSwitch.ts';
 export type { WorldPromptSource } from './promptSection.ts';
 const memorySource = 'dsh-world-history';
 const moodSource = 'dsh-world-mood';
+const elsewhereSource = 'dsh-world-elsewhere';
 const isRecall = (source: UserMessage['source'] | undefined, worldId?: string) => source?.kind === memorySource && (worldId === undefined || source.worldId === undefined || source.worldId === worldId);
 type RequestPosition = { turn: number; step: number };
 const promptRecord = 'plugin:dsh-world/system-prompt';
@@ -75,7 +77,7 @@ export function guardWorldContext(
         }
         if (!log.reset && event.type === 'user/message') {
           const kind = event.data.source.kind;
-          log.sawWorldContext ||= kind === memorySource || kind === moodSource || kind === 'dsh-world-channel-context';
+          log.sawWorldContext ||= kind === memorySource || kind === moodSource || kind === elsewhereSource || kind === 'dsh-world-channel-context';
         }
         if (event.type === legacyPromptReset as string && pluginRecordOf(event)) log.reset = true;
         if (event.type !== promptRecord as string) continue;
@@ -106,7 +108,7 @@ export function guardWorldContext(
     });
   }
   const revoked = (source: UserMessage['source'] | undefined, session: Session | undefined) => {
-    if (source?.kind === memorySource || source?.kind === moodSource) return !session || !authorize(session, source.worldId);
+    if (source?.kind === memorySource || source?.kind === moodSource || source?.kind === elsewhereSource) return !session || !authorize(session, source.worldId);
     return source?.kind === 'dsh-world-channel-context' && (!session || !authorize(session));
   };
   ctx.on('system-prompt/assemble', async (_assembly, context, next) => {
@@ -161,7 +163,7 @@ export function guardWorldContext(
       return;
     }
     yield* next();
-    if (compaction && session && scope && authorize(session, prompt?.worldId) !== scope) throw new LlmError(failure.message, failure.code);
+    if (compaction && session && scope && authorize(session, prompt?.worldId) !== scope) throw llmError(failure);
   });
 }
 
@@ -201,7 +203,11 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
   const prompts = world && createPromptSections(config, world, scopeToken, { logger: ctx.logger });
   const memory = new WeakMap<Session, MemoryState>();
   const service = world?.memory;
-  const worldTools = (inside: () => boolean) => [...service ? memoryTools(service, inside) : [], ...config.moodFile ? moodTools(config.moodFile, inside) : []];
+  const sessionNews = world?.elsewhere ? createSessionNews({ store, isHome: id => !!world.isHome(id), partner: () => world.names?.().partner ?? world.prompt.names.partner }) : undefined;
+  const worldTools = (inside: () => boolean, agent: Agent) => [
+    ...service ? memoryTools(service, inside, sourceId => sessionNews?.looked(agent.session, sourceId.slice('chat:'.length))) : [],
+    ...config.moodFile ? moodTools(config.moodFile, inside) : [],
+  ];
   const tools = service || config.moodFile ? createWorldToolRegistry({ tools: worldTools, inWorld: agent => !stopped && included(agent.session), faults, logger: ctx.logger }) : undefined;
   /** The world tools (memory, mood) follow world membership, whatever the life line does. */
   const syncTools = (agent: Agent): boolean => !tools ? false : included(agent.session) ? tools.attach(agent) : tools.detach(agent);
@@ -261,16 +267,30 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
     return event?.type === 'user/message' ? event.data.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('') : undefined;
   }
   /**
-   * Her mood rides just before the time block, appended like it: only when it differs from the latest one on the
-   * surface, never replacing an old one, so the cached prefix stays whole and compaction clears them all.
+   * Her mood rides just before the time block on every step, appended like it and never replacing an old one, so the
+   * cached prefix stays whole and compaction clears them all. Every step, because one wake can run a hundred steps: a
+   * snapshot shown only when it changed sank far behind her work and she stopped noticing it, so it never moved.
    */
   function moodMessage(session: Session): UserMessage | undefined {
     if (!config.moodFile) return undefined;
     const mood = readMood(config.moodFile);
     if (mood.kind === 'failed') faults.set('mood', `mood.md 读不出来：${mood.message}`); else faults.clear('mood');
-    const latest = latestMood(session);
-    const text = moodText(mood) ?? (latest === undefined ? undefined : MOOD_CLEARED);
-    return text === undefined || text === latest ? undefined : createUserMessage({ content: [{ type: 'text', text }], source: { kind: moodSource, form: 'snapshot', worldId: config.worldId } });
+    const updatedAt = mood.kind === 'mood' ? moodUpdatedAt(config.moodFile) : undefined;
+    const shown = moodText(mood, updatedAt === undefined ? undefined : moodAge(updatedAt, now()));
+    const latest = shown === undefined ? latestMood(session) : undefined;
+    // A removed file is said once, so the old values stop counting.
+    const text = shown ?? (latest === undefined || latest === MOOD_CLEARED ? undefined : MOOD_CLEARED);
+    return text === undefined ? undefined : createUserMessage({ content: [{ type: 'text', text }], source: { kind: moodSource, form: 'snapshot', worldId: config.worldId } });
+  }
+  const inGroup = (session: Session) => store.channelType(session.id) === 'group';
+  /**
+   * News from elsewhere is an event, told once: at a turn's start it comes before the new message (what gathered
+   * before it arrived), later in the turn at the step's end, ahead of her mood and the time.
+   */
+  function elsewhereMessage(session: Session): UserMessage | undefined {
+    const news = world?.elsewhere?.take(session, new Date(now()));
+    const text = news && inGroup(session) ? `${news}\n${GROUP_PRIVACY}` : news;
+    return text === undefined ? undefined : createUserMessage({ content: [{ type: 'text', text }], source: { kind: elsewhereSource, form: 'notice', worldId: config.worldId } });
   }
   function flushRetired(session: Session, state: MemoryState, position: RequestPosition): void {
     const retiring = state.retiring; state.retiring = [];
@@ -302,7 +322,8 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
   async function freshBlock(session: Session, state: MemoryState): Promise<UserMessage | undefined> {
     const turns = await history.loadRecentTurns(memoryTurns(), archivedByScope);
     const present = new Set(session.deriveMessages().map(message => message.id));
-    const text = renderHistory(excludePresentMessages(turns, present), config.timeZone, names(), config.archiveScope === 'home');
+    const rendered = renderHistory(excludePresentMessages(turns, present), config.timeZone, names(), config.archiveScope === 'home');
+    const text = rendered && inGroup(session) ? `${rendered}\n\n${GROUP_PRIVACY}` : rendered;
     // A session entering this workspace can still carry an inherited recall from another world.
     retireMemory(session, state, included(session));
     return text ? createUserMessage({ content: [{ type: 'text', text }], source: { kind: memorySource, form: 'recall', worldId: config.worldId } }) : undefined;
@@ -317,6 +338,7 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
   /** `fresh`: her world was just started from the console, so what was said while it was stopped is not archived. */
   async function start(options: { fresh?: boolean } = {}): Promise<void> {
     try {
+      if (sessionNews && world?.elsewhere) disposers.push(world.elsewhere.register(sessionNews.source));
       disposers.push(ctx.on('session/event', (session, event) => {
         if (event.type === 'agent-preset/selected') {
           const agent = ctx.agents.get(session.id);
@@ -325,7 +347,7 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
         const state = memory.get(session);
         const compacted = event.type === 'compaction/end' && event.data.error === undefined;
         if (state && event.type === 'user/message' && event.data.id === state.pendingId) { state.reload = false; state.pendingId = undefined; }
-        if (state && compacted) { state.reload = true; }
+        if (state && compacted) { state.reload = true; world?.elsewhere?.retell(session); }
         // The host assembles the system prompt after turn/start, so a cold session's first request already has both.
         const cold = !!state && event.type === 'turn/start' && state.lastRequestAt !== undefined && now() - state.lastRequestAt >= coldHours() * 60 * 60_000;
         if (cold) { state.reload = true; state.cold = true; }
@@ -357,6 +379,7 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
         await attach(agent);
         const state = memory.get(agent.session)!;
         const leave = () => {
+          if (state.inScope) world?.elsewhere?.retell(agent.session);
           state.restart ||= state.inScope; state.inScope = false;
           retireMemory(agent.session, state);
           const restart = state.restart; state.restart = false;
@@ -366,8 +389,9 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
         state.inScope = true;
         await archiveNow(agent.id); signal.throwIfAborted();
         if (!included(agent.session)) return leave();
-        const mood = moodMessage(agent.session);
-        if (mood) decision = { ...decision, messages: [...decision.messages, mood] };
+        const news = elsewhereMessage(agent.session), mood = moodMessage(agent.session);
+        const head = news && step === 1 ? [news] : [], tail = [...(news && step > 1 ? [news] : []), ...(mood ? [mood] : [])];
+        if (head.length || tail.length) decision = { ...decision, messages: [...head, ...decision.messages, ...tail] };
         if (!state.reload) return decision;
         // A block that cannot be built leaves the old one in place; she talks on, the fault shows, and the next step tries again.
         let block: UserMessage | undefined, built = true;
