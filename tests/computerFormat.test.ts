@@ -1,7 +1,7 @@
 // tests/computerFormat.test.ts
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { parseProcedure, ProcedureError, substitute } from '../src/ecosystem/computer/procedures/format.ts';
+import { parseProcedure, procedurePath, ProcedureError, substitute } from '../src/ecosystem/computer/procedures/format.ts';
 
 const unread = {
   name: 'bili_unread', description: '看谁找我', params: {}, onAlarm: true, summary: '私信 {{dm}}；回复我 {{count}}',
@@ -26,7 +26,7 @@ test('a whole tool parses and keeps what it declared', () => {
 
 test('mistakes are refused with where they are', () => {
   const bad = (patch: object, pattern: RegExp) => assert.throws(() => parseProcedure({ ...unread, ...patch }), (error: Error) => error instanceof ProcedureError && pattern.test(error.message));
-  bad({ name: 'Bili-Unread' }, /^name：/);
+  bad({ name: 'bili/unread' }, /^name：/);
   bad({ steps: [] }, /^steps：/);
   bad({ steps: [{ click: {} }] }, /^steps\[0\]\.click：/);
   bad({ steps: [{ click: { role: 'link' }, open: 'x' }] }, /^steps\[0\]：/);
@@ -87,4 +87,14 @@ test('an open step takes only web addresses, or a parameter that is checked when
   const open = (address: string) => () => parseProcedure({ ...unread, messages: undefined, summary: undefined, onAlarm: undefined, params: { url: { type: 'string' } }, steps: [{ open: address }] });
   for (const bad of ['file:///C:/', 'chrome://settings', 'edge://flags', 'javascript:alert(1)', 'data:text/html,x', 'example.com']) assert.throws(open(bad), (error: Error) => error instanceof ProcedureError && /只能打开 http 或 https 地址/.test(error.message));
   for (const good of ['https://example.com/', 'http://example.com/', 'about:blank', '{{url}}']) assert.doesNotThrow(open(good));
+});
+
+test('category has a default; names may be Chinese but never a path or the guide', () => {
+  const plain = parseProcedure({ name: '发送消息', description: '发', params: {}, steps: [{ open: 'https://example.com/' }] });
+  assert.equal(plain.category, '未分类');
+  assert.equal(procedurePath(plain), '未分类/发送消息');
+  assert.equal(parseProcedure({ name: 'x1', category: 'wechat', description: 'd', params: {}, steps: [{ open: 'https://e.com/' }] }).category, 'wechat');
+  assert.equal(parseProcedure({ name: 'x1', description: 'd', params: {}, steps: [{ open: 'https://e.com/' }] }, 'bilibili').category, 'bilibili', 'a file without category takes its folder');
+  for (const name of ['a/b', 'a.b', '目录', '', 'x'.repeat(41), 'a:b']) assert.throws(() => parseProcedure({ name, description: 'd', params: {}, steps: [{ open: 'https://e.com/' }] }), /^ProcedureError: name：/, name);
+  assert.throws(() => parseProcedure({ name: 'x1', category: '../up', description: 'd', params: {}, steps: [{ open: 'https://e.com/' }] }), /category：/);
 });

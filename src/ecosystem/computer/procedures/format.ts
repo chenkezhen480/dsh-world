@@ -23,12 +23,17 @@ export interface MessageMap {
   /** Evaluates to `true` for her own messages. */
   outgoing?: string;
 }
-export interface Procedure { name: string; description: string; params: Record<string, Param>; steps: Step[]; onAlarm?: boolean; summary?: string; messages?: MessageMap }
+export interface Procedure { name: string; category: string; description: string; params: Record<string, Param>; steps: Step[]; onAlarm?: boolean; summary?: string; messages?: MessageMap }
 
 export class ProcedureError extends Error { override name = 'ProcedureError'; }
 const fail = (path: string, why: string): never => { throw new ProcedureError(`${path}：${why}`); };
 
-export const PROCEDURE_NAME = /^[a-z][a-z0-9_]{1,40}$/;
+/** A category or operation name is also a folder or file name, so it holds no path characters. */
+export const ENTRY_NAME = /^[\p{L}\p{N}_-]{1,40}$/u;
+/** Her own notes for a category live in `<category>/目录.md`, so no operation may take that name. */
+export const GUIDE_NAME = '目录';
+/** Where files the development build left flat in `procedures/` belong. */
+export const UNSORTED = '未分类';
 const FIELD_NAME = /^[a-zA-Z_][a-zA-Z0-9_]{0,30}$/;
 const TEMPLATE = /\{\{([a-zA-Z_][a-zA-Z0-9_]*)\}\}/g;
 const ACTIONS = ['open', 'click', 'type', 'press', 'wait', 'check', 'extract', 'script'] as const;
@@ -165,11 +170,21 @@ function messages(value: unknown, known: ReadonlySet<string>): MessageMap {
   return out;
 }
 
-/** Her tool file, checked through: a mistake is refused with where it is, so nothing half-valid is ever saved or run. */
-export function parseProcedure(value: unknown): Procedure {
+export const procedurePath = (procedure: Pick<Procedure, 'category' | 'name'>) => `${procedure.category}/${procedure.name}`;
+export function entryName(value: unknown, path: string): string {
+  if (typeof value !== 'string' || !ENTRY_NAME.test(value) || value === GUIDE_NAME) return fail(path, `只能用文字、数字、下划线和连字符，1 到 40 个字，不能是「${GUIDE_NAME}」`);
+  return value;
+}
+
+/**
+ * Her tool file, checked through: a mistake is refused with where it is, so nothing half-valid is ever saved or run.
+ * `category` is the folder the file sits in, used when the file does not say.
+ */
+export function parseProcedure(value: unknown, category = UNSORTED): Procedure {
   const input = record(value, '工具');
-  only(input, ['name', 'description', 'params', 'steps', 'onAlarm', 'summary', 'messages'], '工具');
-  const name = typeof input.name === 'string' && PROCEDURE_NAME.test(input.name) ? input.name : fail('name', '要以小写字母开头，只用小写字母、数字和下划线，2 到 41 个字符');
+  only(input, ['name', 'category', 'description', 'params', 'steps', 'onAlarm', 'summary', 'messages'], '工具');
+  const name = entryName(input.name, 'name');
+  const own = input.category === undefined ? category : entryName(input.category, 'category');
   const declared = params(input.params);
   const known = new Set(Object.keys(declared));
   if (!Array.isArray(input.steps) || !input.steps.length || input.steps.length > MAX_STEPS) fail('steps', `要有 1 到 ${MAX_STEPS} 步`);
@@ -183,7 +198,7 @@ export function parseProcedure(value: unknown): Procedure {
   if (input.messages !== undefined && !steps.some(item => 'extract' in item)) fail('messages', '只有带 extract 的工具才能声明消息');
   const summary = optionalText(input.summary, 'summary', values);
   return {
-    name, description: text(input.description, 'description'), params: declared, steps,
+    name, category: own, description: text(input.description, 'description'), params: declared, steps,
     ...(onAlarm === undefined ? {} : { onAlarm }), ...(summary === undefined ? {} : { summary }),
     ...(input.messages === undefined ? {} : { messages: messages(input.messages, fields) }),
   };
