@@ -166,5 +166,33 @@
       "contextVtable": 151850184,
       "emoticonVtable": null
     }
+  },
+  {
+    "version": "4.2.0.53",
+    "size": 204154920,
+    "sha256": "ac6b174d98ee1b69e95c99a7a39c3197c8c167b7c6d32f5b72c7a7659c104825",
+    "timestamp": 1794391333,
+    "imageSize": 204644352,
+    "addresses": {
+      "application": 130192,
+      "scheduler": 135824,
+      "schedule": 3027776,
+      "context": 135584,
+      "provider": 3495456,
+      "manager": 7349200,
+      "text": 91194704,
+      "image": 65044640,
+      "emoticon": null,
+      "copyWide": 606352,
+      "validateGif": null,
+      "probeGif": null,
+      "releaseProbe": null,
+      "send": 24513408,
+      "allocate": 125211420,
+      "free": 125211488,
+      "accountRoot": 196523912,
+      "contextVtable": 151833784,
+      "emoticonVtable": null
+    }
   }
 ]

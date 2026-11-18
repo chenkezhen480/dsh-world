@@ -31,9 +31,11 @@ class SenderTest(unittest.TestCase):
 
     def test_each_supported_build_encodes_its_own_native_addresses(self):
         profiles = json.loads(PROFILES.read_text(encoding='utf-8-sig'))
-        self.assertEqual([profile['version'] for profile in profiles], ['4.1.15.13', '4.1.15.56', '4.2.0.11', '4.2.0.12', '4.2.0.13', '4.2.0.52'])
+        self.assertEqual([profile['version'] for profile in profiles], ['4.1.15.13', '4.1.15.56', '4.2.0.11', '4.2.0.12', '4.2.0.13', '4.2.0.52', '4.2.0.53'])
         self.assertEqual((profiles[5]['size'], profiles[5]['sha256']),
                          (204168240, 'd733489eea0b62af77e1aa61ba645cd941583d2a64fb2d7572da818d285f8d84'))
+        self.assertEqual((profiles[6]['size'], profiles[6]['sha256']),
+                         (204154920, 'ac6b174d98ee1b69e95c99a7a39c3197c8c167b7c6d32f5b72c7a7659c104825'))
         # The 4.2 profiles leave the native GIF slots unmapped.
         for profile, timestamp, imageSize, addresses in (
             (profiles[2], 0x6ae0a8d1, 0xc4dc000, (
@@ -52,6 +54,10 @@ class SenderTest(unittest.TestCase):
                 0x1fc90, 0x21290, 0x2e3340, 0x211a0, 0x355620, 0x702d70, 0x56fab30,
                 0x3e0a690, 0, 0x94090, 0, 0, 0,
                 0x1762670, 0x776c55c, 0x776c5a0, 0xbb6f788, 0x90d0cc8, 0)),
+            (profiles[6], 0x6af43d25, 0xc32a000, (
+                0x1fc90, 0x21290, 0x2e3340, 0x211a0, 0x355620, 0x7023d0, 0x56f8550,
+                0x3e080a0, 0, 0x94090, 0, 0, 0,
+                0x1760b80, 0x776931c, 0x7769360, 0xbb6b788, 0x90cccb8, 0)),
             (profiles[0], 0x6ab0a378, 0xc0ae000, (
                 0x45d10, 0x47310, 0x2fb010, 0x47220, 0x36c740, 0x6f4d90, 0x54b02f0,
                 0x3d9d990, 0x1bfb1c0, 0x9b5d0, 0xe7a8e0, 0x5309c0, 0x4e6360,
@@ -68,11 +74,13 @@ class SenderTest(unittest.TestCase):
 
     def test_a_build_without_the_sticker_path_refuses_native_stickers_but_sends_text_and_images(self):
         profiles = json.loads(PROFILES.read_text(encoding='utf-8-sig'))
-        self.assertEqual([sendsStickers(profile) for profile in profiles], [True, True, False, False, False, False])
-        encodeRequest(profiles[2], 123, 'wxid_bot', 'family@chatroom', 1, '你好')
-        encodeRequest(profiles[2], 123, 'wxid_bot', 'family@chatroom', 2, 'C:/a.png')
-        with self.assertRaisesRegex(ValueError, '4.2.0.11 未适配原生表情包'):
-            encodeRequest(profiles[2], 123, 'wxid_bot', 'family@chatroom', 3, 'C:/a.gif')
+        self.assertEqual([sendsStickers(profile) for profile in profiles], [True, True, False, False, False, False, False])
+        for profile in profiles[2:]:
+            with self.subTest(version=profile['version']):
+                encodeRequest(profile, 123, 'wxid_bot', 'family@chatroom', 1, '你好')
+                encodeRequest(profile, 123, 'wxid_bot', 'family@chatroom', 2, 'C:/a.png')
+                with self.assertRaisesRegex(ValueError, f"{profile['version']} 未适配原生表情包"):
+                    encodeRequest(profile, 123, 'wxid_bot', 'family@chatroom', 3, 'C:/a.gif')
         encodeRequest(profiles[1], 123, 'wxid_bot', 'family@chatroom', 3, 'C:/a.gif')
 
     def test_profile_selection_matches_file_size_and_hash_instead_of_list_order(self):

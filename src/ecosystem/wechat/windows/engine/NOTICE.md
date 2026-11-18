@@ -23,3 +23,9 @@ The 4.2.0.52 mapping was independently compared with the fingerprint-verified
 and its Authenticode signature was verified. The comparison covered x64
 instructions with relocation operands masked, call targets and scheduler
 literals, both account-root references, and context and manager RTTI records.
+
+The 4.2.0.53 mapping was independently compared with the fingerprint-verified
+4.2.0.52 DLL using the same checks. The new DLL was extracted offline from
+Tencent's installer at https://dldir1v6.qq.com/weixin/Universal/Windows/WeChatWin_4.2.0.exe,
+and both the installer and DLL Authenticode signatures were verified. The
+existing native bridge ABI is unchanged.
