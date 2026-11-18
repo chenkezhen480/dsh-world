@@ -77,11 +77,11 @@ test('a saved operation is found with computer_use and run with procedure_run, w
   assert.match(await s.run(s.tools(), 'procedure_save', { json: dm() }), /^已保存 bilibili\/读私信（第 1 版）/);
   assert.match(await s.run(s.tools(), 'procedure_note', { category: 'bilibili', text: '网站：bilibili.com（B站）' }), /^已写好 bilibili 的说明（第 1 版）/);
   assert.equal(s.tools().length, 13, 'saving never adds a tool');
-  assert.match(await s.run(s.tools(), 'computer_use', { target: 'B站' }), /^bilibili\n网站：bilibili\.com（B站）\n操作：\n- 读私信（uid）— 读阿明的私信（还没跑过）/);
+  assert.match(await s.run(s.tools(), 'computer_use', { target: 'B站' }), /^bilibili\n网站：bilibili\.com（B站）\n操作：读私信\n/);
+  assert.match(await s.run(s.tools(), 'computer_use', {}), /^现在能用：page_\*（你自己的浏览器）、procedure_\*（学会的操作）。\n学会的操作：bilibili（1 个）/, 'asked without a target, her modules come first');
   const out = await s.run(s.tools(), 'procedure_run', { path: 'bilibili/读私信', args: { uid: '42' } });
   assert.match(out, /"rows":\[\{"uid":"42","id":"m1","text":"你好"\}\]/);
   assert.match(out, /新记进归档 1 条/);
-  assert.match(await s.run(s.tools(), 'computer_use', { target: 'B站' }), /最近：成功/);
   await assert.rejects(s.run(s.tools(), 'procedure_run', { path: 'bilibili/读私信', args: {} }), /缺少参数 uid/);
   await assert.rejects(s.run(s.tools(), 'procedure_run', { path: 'bilibili/没有' }), /没有 bilibili\/没有 这个操作/);
 });
@@ -110,3 +110,23 @@ test('a broken newest version falls back to a kept one, and she is told her newe
   assert.match(out, /^\{"rows":\[\{"uid":"42","id":"m1","text":"你好"\}\]\}\n（最新版第 2 步（提取 选择器 \.new）没跑通：一条都没有提取到.*这次退回第 1 版跑通了。/);
 });
 
+
+test('the desktop tool is there only when her switch is on; its screenshot goes into the next message', async t => {
+  const s = setup(t);
+  assert.equal(s.tools().some(tool => tool.name === 'desktop'), false);
+  const dir = mkdtempSync(join(tmpdir(), 'computer-tools-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const library = createProcedureLibrary(dir);
+  const saved: unknown[] = [], deferred: unknown[] = [];
+  const desktop = { act: async (input: { action: string }) => input.action === 'shot' ? { text: '微信 的截图附在下一条消息里', image: { data: Buffer.from('png'), mediaType: 'image/png' as const } } : { text: '已按 tab。' } };
+  const make = (attachments: unknown) => computerTools({ agent: { id: 'home-1' } as unknown as Agent, browser: { run: async () => { throw new Error('no browser'); } }, library, recorder: { record: async () => ({ written: 0, skipped: 0, outOfScope: false }) }, attachments: () => attachments as never, desktop });
+  const store = { saveImages: async (images: unknown[]) => { saved.push(...images); return [{ id: 'a1' }]; } };
+  const context = { signal: new AbortController().signal, deferContext: (message: unknown) => { deferred.push(message); } } as never;
+  const tool = make(store).find(item => item.name === 'desktop')!;
+  assert.equal(await tool.execute({ action: 'shot' } as never, context), '微信 的截图附在下一条消息里');
+  assert.equal(saved.length, 1);
+  assert.match(JSON.stringify(deferred), /这是伙伴电脑上当前窗口的截图/);
+  assert.equal(await tool.execute({ action: 'press', key: 'tab' } as never, context), '已按 tab。');
+  assert.equal(deferred.length, 1, 'no image, nothing deferred');
+  const blind = make(undefined).find(item => item.name === 'desktop')!;
+  assert.match(await blind.execute({ action: 'shot' } as never, context) as string, /^微信 的截图附在下一条消息里（宿主图片存储不可用，看不到截图）$/);
+});

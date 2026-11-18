@@ -52,7 +52,7 @@ for (const scenario of [
   for (const marker of ['PRESET_WORLD_MARKER', 'PRESET_SELF_MARKER', 'PRESET_PERSONA_MARKER', 'PRESET_MEMORY_MARKER']) {
     assert.equal(text.includes(marker), scenario.included, marker);
   }
-  assert.deepEqual(request.tools?.filter(tool => tool.name.startsWith('memory_')).map(tool => tool.name) ?? [], scenario.included ? ['memory_find', 'memory_read'] : []);
+  assert.deepEqual(request.tools?.filter(tool => tool.name.startsWith('memory_')).map(tool => tool.name) ?? [], scenario.included ? ['memory_find', 'memory_image', 'memory_read'] : []);
   assert.equal(agent.session.header.agentPreset, scenario.created, 'the immutable creation header stays intact');
   assert.deepEqual(errors, []);
 });

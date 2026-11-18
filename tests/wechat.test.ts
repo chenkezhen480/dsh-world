@@ -488,3 +488,74 @@ test('the independent WeChat endpoint authenticates and validates before enterin
   await writeFile(file, JSON.stringify({ token: 'newer-module' }));
   channel.stop(); assert.equal(existsSync(file), true);
 });
+
+test('in her home WeChat words reach her at the next step of what she is doing; elsewhere they wait for it to end', async t => {
+  for (const midTurn of [true, false]) {
+    let release!: () => void, entered!: () => void, step = 0;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const busy = new Promise<void>(resolve => { entered = resolve; });
+    const requests: GenerateOptions[] = [];
+    const { ctx, cleanup } = await hostFixture(t, request => (async function* (): AsyncIterable<StreamChunk> {
+      requests.push(request);
+      if (step++) { yield* textResponse('我在'); return; }
+      const call = { type: 'tool-call' as const, id: ToolCallId('work'), name: 'long_work', arguments: '{}' };
+      yield { type: 'block-start', index: 0, blockType: 'tool-call' };
+      yield { type: 'tool-call-delta', index: 0, id: call.id, name: call.name, argumentsDelta: call.arguments };
+      yield { type: 'block-end', index: 0, block: call };
+      yield { type: 'finish', reason: { kind: 'tool-calls' } };
+    })());
+    cleanup.push(ctx.tools.register(defineTool({ name: 'long_work', description: 'test', parameters: {}, output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] }, execute: async () => { entered(); await gate; return 'done'; } })));
+    const home = (await ctx.agents.create({ sessionId: SessionId(`home-${midTurn}`), agentOptions: { provider: 'test', model: 'test' } })).agent;
+    const channel = createWechatHome({ ctx, home: async () => home, midTurn: () => midTurn }); cleanup.push(channel.stop);
+    home.followup(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: '去忙一件长的事' }] }));
+    await busy;
+    const reply = channel.ask('在吗', { ...identity, conversationType: 'private', conversationId: 'wxid_partner' });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    release();
+    // In her home the request ends once she has the words; elsewhere it waits for what she says.
+    assert.equal((await reply).text, midTurn ? '' : '我在');
+    await home.whenIdle();
+    const turns = home.session.snapshotEvents().filter(event => event.type === 'turn/end').length;
+    assert.equal(turns, midTurn ? 1 : 2, midTurn ? 'taken into the turn under way' : 'a turn of its own after the first ended');
+    if (midTurn) assert.match(JSON.stringify(requests[1]!.messages), /在吗/, 'the step after the busy one already has it');
+    else { assert.doesNotMatch(JSON.stringify(requests[1]!.messages), /在吗/); assert.match(JSON.stringify(requests[2]!.messages), /在吗/); }
+  }
+});
+
+test('in her home a request ends once she has the words, so a second message is not held behind her answer to the first', async t => {
+  const gates: (() => void)[] = [], entered: (() => void)[] = [];
+  const busy = [0, 1, 2].map(n => new Promise<void>(resolve => { entered[n] = resolve; }));
+  const requests: GenerateOptions[] = [];
+  let step = 0;
+  const { ctx, cleanup } = await hostFixture(t, request => (async function* (): AsyncIterable<StreamChunk> {
+    requests.push(request);
+    if (step++ >= 3) { yield* textResponse('玩完了'); return; }
+    const call = { type: 'tool-call' as const, id: ToolCallId(`play-${step}`), name: 'play', arguments: '{}' };
+    yield { type: 'block-start', index: 0, blockType: 'tool-call' };
+    yield { type: 'tool-call-delta', index: 0, id: call.id, name: call.name, argumentsDelta: call.arguments };
+    yield { type: 'block-end', index: 0, block: call };
+    yield { type: 'finish', reason: { kind: 'tool-calls' } };
+  })());
+  let played = 0;
+  cleanup.push(ctx.tools.register(defineTool({ name: 'play', description: 'test', parameters: {}, output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] }, execute: async () => { const n = played++; entered[n]!(); await new Promise<void>(resolve => { gates[n] = resolve; }); return 'ok'; } })));
+  const home = (await ctx.agents.create({ sessionId: SessionId('home-play'), agentOptions: { provider: 'test', model: 'test' } })).agent;
+  const channel = createWechatHome({ ctx, home: async () => home, midTurn: () => true }); cleanup.push(channel.stop);
+  const partner = { ...identity, conversationType: 'private' as const, conversationId: 'wxid_partner' };
+  home.followup(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: '打一会儿游戏' }] }));
+  await busy[0];
+  const first = channel.ask('在吗', partner);
+  await new Promise(resolve => setTimeout(resolve, 20));
+  gates[0]!();
+  assert.equal((await first).text, '', 'done once she has it, with no answer from her');
+  assert.equal(home.status, 'running', 'while she is still playing');
+  await busy[1];
+  const second = channel.ask('还在玩吗', partner);
+  await new Promise(resolve => setTimeout(resolve, 20));
+  gates[1]!();
+  assert.equal((await second).text, '');
+  await busy[2]; gates[2]!();
+  await home.whenIdle();
+  assert.equal(home.session.snapshotEvents().filter(event => event.type === 'turn/end').length, 1, 'both went into the one turn');
+  assert.match(JSON.stringify(requests[1]!.messages), /在吗/);
+  assert.match(JSON.stringify(requests[2]!.messages), /还在玩吗/);
+});

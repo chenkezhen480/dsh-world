@@ -21,7 +21,7 @@ import { reassembleOnChange, registerScopedTool, type InWorld } from '../../worl
 
 import { worldPath } from '../../worldRoutes.ts';
 
-export function createWechatModule(deps: { ctx: Context; home(identity: SpeakerIdentity): Promise<Agent>; file: string; worldId?: string; inWorld?: InWorld; incomingDir?: string; origin(): string; allowedHosts: readonly string[]; settings?(): { contextMessages: number; bufferSeconds: number }; record?(reply: PreparedReply): Promise<string>; receipt?(receipt: WechatReceipt): Promise<void> }) {
+export function createWechatModule(deps: { ctx: Context; home(identity: SpeakerIdentity): Promise<Agent>; midTurn?(agent: Agent): boolean; file: string; worldId?: string; inWorld?: InWorld; incomingDir?: string; origin(): string; allowedHosts: readonly string[]; settings?(): { contextMessages: number; bufferSeconds: number }; record?(reply: PreparedReply): Promise<string>; receipt?(receipt: WechatReceipt): Promise<void> }) {
   const path = worldPath(deps.worldId ?? 'default') + '/wechat/ask';
   const token = randomBytes(32).toString('hex');
   const stickerDir = join(dirname(deps.file), 'stickers');

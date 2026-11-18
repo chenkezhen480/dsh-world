@@ -14,7 +14,7 @@ export const WECHAT_REPLY_TIMEOUT_MS = 3 * 60_000;
 export class WechatHomeBusy extends Error {}
 
 /** One home, serialized channel requests; each caller receives only its own final answer. */
-export function createWechatHome(deps: { ctx: Context; home(identity: SpeakerIdentity): Promise<Agent>; inWorld?: InWorld; timers?: LifeTimers; images?(identity: SpeakerIdentity, context: ChannelContextMessage[], reference?: ChannelReference): Promise<ContentBlock[]> }) {
+export function createWechatHome(deps: { ctx: Context; home(identity: SpeakerIdentity): Promise<Agent>; inWorld?: InWorld; timers?: LifeTimers; midTurn?(agent: Agent): boolean; images?(identity: SpeakerIdentity, context: ChannelContextMessage[], reference?: ChannelReference): Promise<ContentBlock[]> }) {
   const queue = createChannelQueue('WeChat', { limit: 32, timeoutMs: WECHAT_REPLY_TIMEOUT_MS, timers: deps.timers });
   async function ask(text: string, suppliedIdentity: SpeakerIdentity, suppliedContext?: ChannelContextMessage[], suppliedMedia?: ChannelContextMessage[], suppliedReference?: ChannelReference): Promise<{ id: string; text: string }> {
     const identity = speakerIdentity(suppliedIdentity);
@@ -27,12 +27,17 @@ export function createWechatHome(deps: { ctx: Context; home(identity: SpeakerIde
       handedOver.catch(() => {});
       // Checked again after every wait: the session may leave her world meanwhile.
       const agent = admit(deps.inWorld, await Promise.race([deps.home(identity), handedOver]));
-      await Promise.race([agent.whenIdle(), handedOver]);
+      const content = incomingText(text, reference);
+      // Her home takes words at her next step, the way the partner's words in DSH reach her while she is busy; any other
+      // session, and a picture with no words (context, not someone speaking), waits for the turn under way to end.
+      // Taken in, the request is done: the adapter reads the chat one message at a time, so waiting here for her answer
+      // (which leaves through wechat_send anyway) held back every later message, and timed out into a blocked chat.
+      const midTurn = Boolean(content) && deps.midTurn?.(agent) === true;
+      if (!midTurn) await Promise.race([agent.whenIdle(), handedOver]);
       admit(deps.inWorld, agent);
       if ((reference?.image || [...context, ...media].some(message => message.image || message.reference?.image)) && !deps.images) throw new Error('Image admission is unavailable');
       const images = await Promise.race([deps.images?.(identity, [...context, ...media], reference) ?? Promise.resolve([]), handedOver]);
       queue.alive();
-      const content = incomingText(text, reference);
       const source = content ? { kind: 'user' as const, identity } : { kind: 'dsh-world-channel-context' as const, form: 'recall' as const };
       const words = createUserMessage({ source, content: [{ type: 'text', text: identityPrefix(identity) + (content || '【收到微信图片】') }] });
       // How to reply lives in the WeChat tools' descriptions, which are sent once; only what this message brings along comes here.
@@ -46,7 +51,7 @@ export function createWechatHome(deps: { ctx: Context; home(identity: SpeakerIde
         : undefined;
       // What she sends to this chat herself is her answer; the rest of her turn is not this request's to wait for.
       const answered = (sent: UserMessage['source']) => sent.kind === 'dsh-world-wechat-outgoing' && sent.identity.conversationId === identity.conversationId;
-      const reply = await askTurn(deps.ctx, agent, words, { name: 'WeChat', context: instructions, cancelled, inWorld: deps.inWorld, answered });
+      const reply = await askTurn(deps.ctx, agent, words, { name: 'WeChat', context: instructions, cancelled, inWorld: deps.inWorld, answered, steer: midTurn, untilTaken: midTurn });
       queue.alive();
       return { id: words.id, text: reply };
     });

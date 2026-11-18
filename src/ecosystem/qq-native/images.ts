@@ -1,9 +1,13 @@
 import type { Context } from '@deepseek-ai/cordis';
-import type { AttachmentStore, ImageAttachmentLimits } from '@deepseek-ai/dsh-attachment';
+import type { AttachmentStore, ImageAttachmentLimits, ImageAttachmentRef } from '@deepseek-ai/dsh-attachment';
 import type { ContentBlock } from '@deepseek-ai/dsh-llm';
+import { keepImages, keptLines, shownImage } from '../../images.ts';
 import type { SpeakerIdentity } from '../shared/identity.ts';
 
+/** Pictures of one batch put in front of her at once. */
 export const MAX_BATCH_IMAGES = 4;
+/** Pictures of one batch that are fetched and kept: QQ's links expire, so one not fetched on arrival is gone. */
+export const MAX_KEPT_IMAGES = 12;
 const DOWNLOAD_TIMEOUT_MS = 10_000;
 // QQ's own image hosts: the CDN behind get_image (multimedia.nt.qq.com.cn) and the sticker shop (gxh.vip.qq.com) (#44).
 const QQ_IMAGE_DOMAINS = ['qq.com', 'qq.com.cn'];
@@ -55,25 +59,27 @@ export async function admitQqImages(ctx: Context, images: readonly QqImage[], ge
   if (!store) return [unavailable];
 
   const limits = store.imageLimits;
-  const selected = images.slice(0, Math.min(MAX_BATCH_IMAGES, limits.maxImagesPerMessage));
+  const selected = images.slice(0, MAX_KEPT_IMAGES), shownMax = Math.min(MAX_BATCH_IMAGES, limits.maxImagesPerMessage);
   const downloads = await Promise.allSettled(selected.map(image => fetchQqImage(image, limits, getImage)));
   const content: ContentBlock[] = [];
+  const kept: ImageAttachmentRef[] = [];
   let remainingBytes = limits.maxMessageImageBytes;
-  let saved = 0;
+  let saved = 0, shown = 0;
   for (const [index, result] of downloads.entries()) {
-    if (result.status === 'rejected' || result.value.data.byteLength > remainingBytes) continue;
+    if (result.status === 'rejected') continue;
     try {
-      const [attachment] = await store.saveImages([result.value]);
+      const [attachment] = await keepImages(store, [result.value]);
       if (!attachment) continue;
-      const { platformMessageId, speakerId, speakerName } = selected[index]!.identity;
-      content.push(
-        { type: 'text', text: `下面是本次收到的第 ${index + 1} 张 QQ 图片，来源：${JSON.stringify({ messageId: platformMessageId, speakerId, speakerName })}。` },
-        { type: 'image', attachment },
-      );
-      remainingBytes -= result.value.data.byteLength;
       saved++;
+      // Every picture sent to her is kept; only as many as one message may carry are put in front of her now.
+      if (shown >= shownMax || result.value.data.byteLength > remainingBytes) { kept.push(attachment); continue; }
+      const { platformMessageId, speakerId, speakerName } = selected[index]!.identity;
+      content.push(...shownImage(`下面是本次收到的第 ${index + 1} 张 QQ 图片，来源：${JSON.stringify({ messageId: platformMessageId, speakerId, speakerName })}。`, attachment));
+      remainingBytes -= result.value.data.byteLength;
+      shown++;
     } catch { /* 一张无法保存时仍交付同批的其他图片和文字。 */ }
   }
+  content.push(...keptLines(`这次还有 ${kept.length} 张 QQ 图片存下了，没有直接附上：`, kept));
   if (saved < images.length) content.push(unavailable);
   return content;
 }

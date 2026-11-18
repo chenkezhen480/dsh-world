@@ -4,6 +4,7 @@ import { join, relative } from 'node:path';
 import type { Context } from '@deepseek-ai/cordis';
 import type { AttachmentStore, SaveImageAttachment } from '@deepseek-ai/dsh-attachment';
 import type { ContentBlock } from '@deepseek-ai/dsh-llm';
+import { keepImages, shownImage } from '../../images.ts';
 import { channelContext, channelMedia, channelReference, type ChannelContextMessage, type ChannelImage, type ChannelReference } from '../shared/context.ts';
 import { conversationKey, type SpeakerIdentity } from '../shared/identity.ts';
 
@@ -34,9 +35,6 @@ export async function admitContextImages(ctx: Context, incomingDir: string, iden
       inputs.push({ data, mediaType: 'image/png', name: `微信图片-${index + 1}-${message.image.quality}.png` });
     } finally { await handle.close(); }
   }
-  const refs = await attachments.saveImages(inputs);
-  return refs.flatMap((attachment, index): ContentBlock[] => [
-    { type: 'text', text: `下面这张微信图片的来源：${JSON.stringify({ ...images[index].source, quality: images[index].image.quality })}。thumbnail 为缩略图，cached 为微信本机缓存版本，original 为原图档。${images[index].image.firstFrame ? '动图仅查看首帧，尚未查看完整动画。' : ''}` },
-    { type: 'image', attachment },
-  ]);
+  const refs = await keepImages(attachments, inputs);
+  return refs.flatMap((attachment, index) => shownImage(`下面这张微信图片的来源：${JSON.stringify({ ...images[index].source, quality: images[index].image.quality })}。thumbnail 为缩略图，cached 为微信本机缓存版本，original 为原图档。${images[index].image.firstFrame ? '动图仅查看首帧，尚未查看完整动画。' : ''}`, attachment));
 }

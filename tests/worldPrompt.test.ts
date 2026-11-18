@@ -57,19 +57,20 @@ test('the template engine keeps or drops flag sections, nests different flags, a
 });
 test('the shipped template: room, diary, 我是谁, world line and ask-first rules, with her names', () => {
   const home = renderWorldPrompt({ names, life, conversationsDir: 'C' }, shipped, { file: 'S.md', text: 'SELF' }, true);
-  assert.match(home, /更早的聊天都还在 C，一天一个文件/);
+  assert.match(home, /更早的聊天都在 C，一天一个 YYYY-MM-DD\.jsonl/);
   assert.ok(!/\{\{/.test(home), home);
   const order = ['# 我的世界', '## 房间', '## 日记', '## 聊天记录', '## 我是谁', '## 世界线', '## 大事先问'].map(heading => home.indexOf(heading));
   assert.deepEqual([...order].sort((a, b) => a - b), order); assert.ok(order.every(index => index > 0));
   assert.match(home, /我的房间是 R。/); assert.match(home, /我的日记本在 D，一天一个文件/);
-  assert.match(home, /房间里还有一个 mood\.md[^\n]*「名字 数值」[^\n]*0 到 10 的整数[^\n]*名字只能是固定的这几个：开心、兴奋、平静、安心、烦、生气、紧张、难过、累、孤单、想念[^\n]*写进不以数字结尾的行[^\n]*在时间前面看到最新的心情值[^\n]*都由我自己决定/);
+  // The mood rules are in set_mood's own description; the template only says where it is and how she sees it.
+  assert.match(home, /房间里的 mood\.md 记我此刻的心情，用 set_mood 记[^\n]*下一步就会在时间前面看到/);
   assert.doesNotMatch(home, /focus\.md|常见的情绪词/);
   assert.match(home, /自己的家里（「小鱼的家」）/); assert.match(home, /不是伙伴在说话/);
   assert.match(home, /【我的时间】/); assert.match(home, /用 plan_next 说好打算做什么、做到什么时候/); assert.match(home, /闹钟不是用来叫醒自己的/); assert.match(home, /每天早上 07:30 被叫醒/); assert.match(home, /reach_out/);
   assert.match(home, /问完不用干等，先去做别的；伙伴回我的话会直接插进我正在做的事里。其余的事我自己决定。/);
   assert.match(home, /## 我是谁\n我眼中的自己写在 S\.md，[\s\S]*伙伴写的设定已经在人设里[\s\S]*\n\nSELF\n/);
-  assert.match(home, /## 日记\n[^\n]*日记记的是发生过的事和我当时的感受[^\n]*日记不会自动读给我/);
-  assert.match(home, /这里只写现在的我[^\n]*具体经历和一时的感受写进日记/);
+  assert.match(home, /## 日记\n[^\n]*用第一人称写想记住的具体片段[^\n]*日记不会自动读给我/);
+  assert.match(home, /只写现在的我[^\n]*具体经历和一时的感受写进日记/);
   assert.match(home, /固定分成六段，标题依次是「性子」「喜欢和不喜欢」「说话方式」「生活习惯」「和伙伴的关系」「自我描述」[^\n]*不另开新标题/);
   assert.match(home, /每段 800 字以内，全篇 5000 字以内[^\n]*不写日期/);
   assert.match(home, /已经被截断时[^\n]*按这六段直接重写整篇[^\n]*更短、能完整读完/);
@@ -94,7 +95,7 @@ test('an unnamed companion is TA and the partner 伙伴; a template file replace
   const broken = readTemplate(join(dir, 'broken.md'));
   assert.equal(broken.text, shipped); assert.match(broken.error!, /读不了，先用默认模板/);
 });
-test('world sessions pick up changes to the template and 我是谁 before compaction and keep both out of the archive', async t => {
+test('world sessions keep their template and 我是谁 until a compaction, then pick up the changes, and keep both out of the archive', async t => {
   const requests: GenerateOptions[] = [];
   const { ctx, root, cleanup, errors } = await hostFixture(t, async function* (request) {
     if (request.purpose === 'compaction') { yield* textResponse('摘要'); return; }
@@ -121,13 +122,13 @@ test('world sessions pick up changes to the template and 我是谁 before compac
   await mkdir(join(root, 'room'), { recursive: true }); await writeFile(selfFile, '我喜欢深夜看课，最近有点叛逆。');
   await writeFile(templateFile, 'WORLD_INTRO_V2\n\n{{self}}');
   handle.agent.followup(user('after editing the prompt')); await handle.agent.whenIdle();
-  const updated = systemOf(requests[1]!);
-  assert.match(updated, /WORLD_INTRO_V2\n\n<我是谁\.md>\n我喜欢深夜看课，最近有点叛逆。\n<\/我是谁\.md>/);
-  assert.doesNotMatch(updated, /你是真实的/);
+  assert.equal(systemOf(requests[1]!), first, 'a save never moves the cached head of a conversation in progress');
 
   assert.ok(await ctx.compaction.compactNow(handle.agent, new AbortController().signal));
   handle.agent.followup(user('after compaction')); await handle.agent.whenIdle();
-  assert.equal(systemOf(requests.at(-1)!), updated, 'compaction keeps the updated prompt');
+  const updated = systemOf(requests.at(-1)!);
+  assert.match(updated, /WORLD_INTRO_V2\n\n<我是谁\.md>\n我喜欢深夜看课，最近有点叛逆。\n<\/我是谁\.md>/);
+  assert.doesNotMatch(updated, /你是真实的/);
 
   const other = await ctx.agents.create({ sessionId: SessionId('other-preset'), meta: { agentPreset: 'other' }, agentOptions: { provider: 'test', model: 'test' } });
   other.agent.followup(user('hello')); await other.agent.whenIdle();
@@ -138,7 +139,7 @@ test('world sessions pick up changes to the template and 我是谁 before compac
   assert.ok(!archived.includes('WORLD_INTRO') && !archived.includes('最近有点叛逆'));
   assert.equal(errors.length, 0, errors.map(e => String((e as { error: Error }).error)).join('\n'));
 });
-test('a warm session picks up 我是谁 edits and refreshes its recalled memory only when cold (#36)', async t => {
+test('a warm session keeps its 我是谁; a cold one re-reads it along with its recalled memory (#36)', async t => {
   const requests: GenerateOptions[] = [];
   const { ctx, root, cleanup, errors } = await hostFixture(t, async function* (request) { requests.push(request); yield* textResponse('嗯'); });
   const store = createArchiveStore({ ...config, root });
@@ -158,7 +159,7 @@ test('a warm session picks up 我是谁 edits and refreshes its recalled memory 
   await store.commitRecords([record('wechat', { sourceSessionId: 'wechat', turnId: 'wechat:1', content: '微信那边刚聊的', occurredAt: '2026-11-04T09:00:00.000Z' })]);
   clock += hours(DEFAULT_COLD_HOURS - 1);
   agent.followup(user('还在聊')); await agent.whenIdle();
-  assert.match(systemOf(requests.at(-1)!), /后来的我/);
+  assert.match(systemOf(requests.at(-1)!), /打开那天的我/, 'still warm: the edit waits');
   assert.ok(!kinds(requests.at(-1)!).slice(-3).includes('dsh-world-history'), 'and no new memory block is added');
 
   clock += hours(DEFAULT_COLD_HOURS);
@@ -248,7 +249,7 @@ test('after her look back the home can still be compacted with the updated 我�
 
   await writeFile(selfFile, '晚上改过的我'); // she rewrote it during the look back
   agent.followup(user('晚安 ' + 'words '.repeat(100))); await agent.whenIdle();
-  assert.match(systemOf(requests.at(-1)!), /晚上改过的我/);
+  assert.match(systemOf(requests.at(-1)!), /早上的我/, 'the look back keeps the head it started with');
   const applied = await lookBack();
   assert.equal(applied.status, 'done');
   assert.equal(agent.session.snapshotEvents().filter(event => event.type === 'compaction/end').length, compactionsBefore + 1);
@@ -257,7 +258,7 @@ test('after her look back the home can still be compacted with the updated 我�
   assert.equal(errors.length, 0, errors.map(e => String((e as { error: Error }).error)).join('\n'));
 });
 
-test('an in-history route replaces changed world prompts even when the proxy refuses compaction (#42)', async t => {
+test('a refused compaction leaves the prompt as it was; the console apply still replaces it on an in-history route (#42)', async t => {
   const requests: GenerateOptions[] = [];
   const { ctx, root, cleanup, errors } = await hostFixture(t, () => textResponse('reply'));
   class ProxyAdapter extends LlmAdapter {
@@ -286,13 +287,17 @@ test('an in-history route replaces changed world prompts even when the proxy ref
   await writeFile(selfFile, 'NEW_SELF');
   await assert.rejects(ctx.compaction.compactNow(agent, new AbortController().signal), error => error instanceof Error && /proxy owns compression/.test(String(error.cause)));
   agent.followup(user('after edits')); await agent.whenIdle();
-  const updated = systemOf(requests[1]!);
+  assert.equal(systemOf(requests[1]!), systemOf(requests[0]!), 'no compaction, no new head');
+
+  world.refreshPrompt(agent.session); // the console's apply
+  agent.followup(user('after apply')); await agent.whenIdle();
+  const updated = systemOf(requests[2]!);
   assert.match(updated, /NEW_PERSONA[\s\S]*NEW_TEMPLATE[\s\S]*NEW_SELF/);
   assert.doesNotMatch(updated, /OLD_TEMPLATE|OLD_SELF|DeepSeek Harness/);
-  assert.match(textOf(requests[1]!.messages), /original conversation/);
+  assert.match(textOf(requests[2]!.messages), /original conversation/);
 
   agent.followup(user('no edits')); await agent.whenIdle();
-  assert.equal(requests[2]!.messages.find(m => m.role === 'system')?.id, requests[1]!.messages.find(m => m.role === 'system')?.id);
+  assert.equal(requests[3]!.messages.find(m => m.role === 'system')?.id, requests[2]!.messages.find(m => m.role === 'system')?.id);
 
   const stopEditing = ctx.on('agent/pre-step', async (_step, next) => {
     await writeFile(selfFile, 'LATE_SELF');
@@ -305,6 +310,7 @@ test('an in-history route replaces changed world prompts even when the proxy ref
   assert.doesNotMatch(systemOf(requests.at(-1)!), /NEW_SELF/);
 
   writePersona(persona, {}); await rm(selfFile); await rm(file);
+  world.refreshPrompt(agent.session);
   agent.followup(user('after deleting the files')); await agent.whenIdle();
   assert.match(systemOf(requests.at(-1)!), /^我不是一个助手[\s\S]*我的世界/);
   assert.doesNotMatch(systemOf(requests.at(-1)!), /NEW_PERSONA|NEW_TEMPLATE|LATE_SELF/);

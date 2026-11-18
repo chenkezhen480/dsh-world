@@ -43,6 +43,7 @@ import { createAdapterSupervisor, type AdapterSupervisor } from './ecosystem/wec
 import { createChannelSessions } from './ecosystem/shared/sessions.ts';
 import { canonicalPath, createArchiveSelection, createWorkspaceMembership } from './archiveSelection.ts';
 import { inWorld } from './sourceArchive.ts';
+import { addWorldEntry } from './worldAdd.ts';
 import { validWorldId, worldListRoute, worldPath } from './worldRoutes.ts';
 import { createWorkspacePermissions } from './workspacePermissions.ts';
 import { createPhotoStore, type PhotoStore } from './life/photos.ts';
@@ -105,6 +106,7 @@ export const Config = z.object({
   }).description('QQ 直接连 OneBot：不经过 qq-bridge 进程，会话与状态都由这个插件自己管'),
   wechat: z.boolean().default(false),
   computer: z.boolean().default(false).description('她自己的浏览器与自己学会的工具（只在家会话）'),
+  desktop: z.boolean().default(false).description('她也用伙伴的电脑，在后台操作（Windows，只在家会话，要先开 computer）'),
   wechatAdapter: z.object({ python: z.string(), config: z.string() }).description('随微信模块启动和停止 Windows 适配器；写上即视为允许它发送消息'),
   toast: z.boolean().default(true),
   toastAppId: z.string().description('系统通知用的 AppUserModelID；不填就在开始菜单里找 DSH 桌面版'),
@@ -281,7 +283,15 @@ export function apply(ctx: Context, config: Config): void {
     function startComputer(): void {
       if (computer || !config.computer || !power.computerEnabled()) return;
       try {
-        computer = createComputerModule({ worldDir, worldId: config.worldId, faults, store, archived: archiveSession, attachments: () => lifeCtx.get('attachments') as AttachmentStore | undefined });
+        computer = createComputerModule({ worldDir, worldId: config.worldId, faults, store, archived: archiveSession, attachments: () => lifeCtx.get('attachments') as AttachmentStore | undefined,
+          // 信箱随「她用电脑」开关：替她看任务栏（按钮在闪、系统通知），有动静时汇总成一句话告诉她，看不看由她定。
+          inbox: {
+            timeZone: config.timeZone, tell: async (text: string) => await life?.tell(text) ?? false,
+            // A program with a channel of its own reaches her there; the taskbar would tell her the same thing twice.
+            ignore: () => [...(wechat ? ['Weixin', 'WeChat', '微信'] : []), ...(qqNative ? ['QQ'] : [])],
+          },
+          companion: () => names().companion, notice: text => life?.notice(text) });
+        computer.setDesktop(Boolean(config.desktop) && power.desktopEnabled());
         faults.clear('computer-module');
       } catch (error) { faults.set('computer-module', `她的浏览器模块没能启动：${errorText(error)}`); lifeCtx.logger.error(error); }
     }
@@ -312,7 +322,7 @@ export function apply(ctx: Context, config: Config): void {
       if (wechat || life !== current || disposed || hostAbort.signal.aborted || !power.running() || !power.wechatEnabled()) return;
       const groupSessions = createChannelSessions({ ctx: lifeCtx, host, store, roomDir: options.roomDir, roomTitle: roomTitle(names()), agentPreset: config.agentPreset });
       channels = groupSessions;
-      wechat = createWechatModule({ ctx: lifeCtx, worldId: config.worldId, inWorld: inWorldSession, home: identity => identity.conversationType === 'group' ? groupSessions.open(identity) : current.home(), origin: () => host.origin(), file: join(worldDir, 'wechat.json'), incomingDir: join(worldDir, 'wechat-incoming'), allowedHosts: config.allowedHosts, settings: () => ({ contextMessages: power.wechatContext(), bufferSeconds: power.wechatBufferSeconds() }),
+      wechat = createWechatModule({ ctx: lifeCtx, worldId: config.worldId, inWorld: inWorldSession, home: identity => identity.conversationType === 'group' ? groupSessions.open(identity) : current.home(), midTurn: agent => current.isHome(agent.id), origin: () => host.origin(), file: join(worldDir, 'wechat.json'), incomingDir: join(worldDir, 'wechat-incoming'), allowedHosts: config.allowedHosts, settings: () => ({ contextMessages: power.wechatContext(), bufferSeconds: power.wechatBufferSeconds() }),
         ...createWechatRecorder(store, config.worldId, archiveSession) });
       wechat.start(); unregisterWechat = webServer.register(wechat.route); unregisterWechatNews = elsewhere.register(wechat.elsewhere);
       if (config.wechatAdapter?.python && config.wechatAdapter.config) { adapter = createAdapterSupervisor({ python: config.wechatAdapter.python, config: config.wechatAdapter.config, logFile: join(worldDir, 'wechat-adapter.log'), log: message => lifeCtx.logger.warn(message) }); adapter.start(); }
@@ -395,7 +405,7 @@ export function apply(ctx: Context, config: Config): void {
         const outlets = config.outlets.map(outlet => createOutlet(outlet, () => host.origin()));
         const notifier: Notifier = { ...(config.toast && toastSupported() ? { toast: windowsToast(config.toastAppId || undefined) } : {}), outlets };
         const runtime = createLifeRuntime({ ctx: lifeCtx, config: { ...config, companionName: names().companion }, options, store: lifeStore, host, notifier, dailyBudget: power.dailyBudget, inWorkspace, photos, alarmContext: now => alarmContext(now),
-          homeTools: { tools: agent => computer?.tools(agent) ?? [], revision: () => computer?.revision() ?? 'off' }, afterReview: () => { if (power.compactAfterReview()) homeApply.request(); } });
+          homeTools: { tools: agent => computer?.tools(agent) ?? [], revision: () => computer?.revision() ?? 'off' }, afterReview: () => { if (power.compactAfterReview()) homeApply.request(); }, partnerSpoke: () => computer?.partnerSpoke() });
         life = current = runtime; isHome = runtime.isHome;
         if (config.bridge) { bridge = createBridge({ ctx: lifeCtx, prefix, home: () => runtime.home(), inWorld: inWorldSession, outlets, origin: () => host.origin(), file: join(worldDir, 'bridge.json'), name: names().companion }); bridge.start(); }
         if (config.wechat && power.wechatEnabled()) await startWechat(runtime);
@@ -429,7 +439,7 @@ export function apply(ctx: Context, config: Config): void {
     // Her album lives in her room, so the console shows it whether or not the life line is running.
     const sources = consoleSources({ ctx: lifeCtx, config: memoryConfig, archive: store, moodFile, longTerm: memoryService, names, ...(lifeStore ? { lifeStore } : {}), life: () => life, homeApply: homeApply.snapshot, compactAfterReview: power.compactAfterReview, ...(config.life ? { schedule: () => ({ review: power.reviewTime(), wake: power.wakeTime(), defaults: { review: DEFAULT_REVIEW_TIME, wake: config.fallbackWakeTime } }) } : {}), photos, diaryDir: options.diaryDir, running: power.running, dailyBudget: power.dailyBudget, memoryTurns: power.memoryTurns, coldHours: power.coldHours, selectedArchiveScope: power.selectedArchiveScope, workspacePermissions: permissions.snapshot, wechat: () => wechat ? { ...wechat.status(), adapter: adapter?.status() ?? null } : undefined, archiveSession, native: () => qqNative?.status() ?? null,
       compactionPreset: () => configEditor ? compactionPresetOverride(configEditor, config.agentPreset, profileDir()) : null,
-      modules: () => ({ wechat: { available: config.wechat, enabled: power.wechatEnabled(), running: wechat !== undefined }, qq: { available: Boolean(config.qqNative?.enabled), enabled: power.qqEnabled(), running: qqNative !== undefined, ...(qqSdk.needsRestart() ? { restartRequired: true } : {}) }, computer: { available: Boolean(config.computer), enabled: power.computerEnabled(), running: computer !== undefined } }), computer: () => computer?.status(), faults: () => [...faults.list(), ...(adapter?.status().error ? [`微信适配器：${adapter.status().error}`] : []), ...(memory?.faults() ?? []), ...(bridge?.faults() ?? []), ...memoryHealth()] });
+      modules: () => ({ wechat: { available: config.wechat, enabled: power.wechatEnabled(), running: wechat !== undefined }, qq: { available: Boolean(config.qqNative?.enabled), enabled: power.qqEnabled(), running: qqNative !== undefined, ...(qqSdk.needsRestart() ? { restartRequired: true } : {}) }, computer: { available: Boolean(config.computer), enabled: power.computerEnabled(), running: computer !== undefined }, desktop: { available: Boolean(config.computer && config.desktop), enabled: power.desktopEnabled(), running: computer?.desktopOn() === true }, foreground: { available: computer?.desktopOn() === true, enabled: computer?.foregroundOn() === true, running: computer?.foregroundOn() === true } }), computer: () => computer?.status(), faults: () => [...faults.list(), ...(adapter?.status().error ? [`微信适配器：${adapter.status().error}`] : []), ...(memory?.faults() ?? []), ...(bridge?.faults() ?? []), ...memoryHealth()] });
     const actions: ConsoleActions = {
       start: () => changeWorld(async () => {
         if (disposed || power.running()) return;
@@ -463,6 +473,7 @@ export function apply(ctx: Context, config: Config): void {
         if (patch.wechat !== undefined && !config.wechat) return '没有配置微信模块（配置里 wechat: true）';
         if (patch.qq !== undefined && !config.qqNative?.enabled) return '没有配置原生 QQ 通道（配置里 qqNative.enabled）';
         if (patch.computer !== undefined && !config.computer) return '没有配置计算机模块（配置里 computer: true）';
+        if (patch.desktop !== undefined && !(config.computer && config.desktop)) return '没有配置她用电脑（配置里 computer: true 和 desktop: true）';
         const change = patch.qq === undefined ? qqChange : ++qqChange;
         let restartRequired = false;
         if (patch.qq === true) {
@@ -477,6 +488,14 @@ export function apply(ctx: Context, config: Config): void {
           if (patch.computer === false) stopComputer();
           if (patch.computer === true && life) startComputer();
           if (patch.computer === true && life && !computer) return '她的浏览器模块没能启动，请查看健康状态';
+          if (patch.desktop !== undefined) computer?.setDesktop(patch.desktop);
+          if (patch.desktop === true && computer && !computer.desktopOn()) return '她用电脑没能打开，请查看健康状态';
+          // Not kept in world.json: every time it is on, the partner has just approved it.
+          if (patch.foreground !== undefined) {
+            if (!computer) return '她的浏览器模块没有运行';
+            const refused = await computer.setForeground(patch.foreground);
+            if (refused) return refused;
+          }
           if (patch.qq === false) stopQqNative();
           if (patch.qq === true && life && !restartRequired) await startQqNative(life);
           if (patch.qq === true && life && !restartRequired && !qqNative) return 'QQ 模块没能启动，请查看健康状态';
@@ -497,7 +516,14 @@ export function apply(ctx: Context, config: Config): void {
     };
     lifeCtx.effect(() => webServer.register(consoleRoute(prefix, sources, actions, config.allowedHosts)), 'dsh-world console routes');
     lifeCtx.effect(() => {
-      worlds.unregisterList ??= webServer.register(worldListRoute(worlds.consoles));
+      // Profile-wide like the list itself, so it hangs on the root: the world that registered it may be the first to go.
+      const addWorld = (id: string, companionName: string) => worlds.profileEdits = worlds.profileEdits.then(() => {}, () => {}).then(() => {
+        if ([...worlds.rooms.keys()].some(loaded => loaded.toLowerCase() === id.toLowerCase())) throw new Error(`${id} 这个世界已经加载了`);
+        const patchFile = (root.get('profileContext') as { patchPath?: string } | undefined)?.patchPath;
+        if (!patchFile) throw new Error('宿主没有给出配置文件的位置，请手动添加（见 README「添加第二个世界」）');
+        addWorldEntry(patchFile, id, companionName);
+      });
+      worlds.unregisterList ??= webServer.register(worldListRoute(worlds.consoles, addWorld));
       worlds.consoles.set(worldId, config.allowedHosts);
       return () => {
         worlds.consoles.delete(worldId);

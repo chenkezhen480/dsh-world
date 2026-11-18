@@ -1,7 +1,7 @@
 // tests/computerLibrary.test.ts
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Faults } from '../src/faults.ts';
@@ -62,9 +62,25 @@ test('kept versions come newest first, without repeats or files that no longer p
   assert.deepEqual(library.kept('wechat/发送消息'), []);
   for (const description of ['一', '二', '二', '三']) library.save(tool(description));
   writeFileSync(join(dir, 'wechat', '发送消息.v9.json'), '{"name":');
-  assert.deepEqual(library.kept('wechat/发送消息').map(({ procedure, version }) => [version, procedure.description]), [[3, '二'], [1, '一']]);
+  assert.deepEqual(library.kept('wechat/发送消息').map(({ procedure, version }) => [version, procedure.description]), [[3, '二']], 'a repeat adds nothing');
   assert.equal(library.save(tool('二')).version, 11);
-  assert.deepEqual(library.kept('wechat/发送消息').map(({ version }) => version), [10, 1], 'one the same as the newest adds nothing');
+  assert.deepEqual(library.kept('wechat/发送消息').map(({ version }) => version), [10]);
+});
+
+test('a save keeps the two newest of what it replaced and removes the older ones of that name only', t => {
+  const dir = scratch(t);
+  const library = createProcedureLibrary(dir);
+  const versions = (folder: string, start: string) => readdirSync(join(dir, folder)).filter(name => name.startsWith(`${start}.v`)).sort();
+  library.save(tool('别的', { name: '别的操作' }));
+  for (const description of ['一', '二', '三']) library.save(tool(description));
+  library.save(tool('别的二', { name: '别的操作' }));
+  assert.deepEqual(versions('wechat', '发送消息'), ['发送消息.v1.json', '发送消息.v2.json'], 'two kept: nothing to remove yet');
+  for (const description of ['四', '五']) library.save(tool(description));
+  assert.deepEqual(versions('wechat', '发送消息'), ['发送消息.v3.json', '发送消息.v4.json']);
+  assert.deepEqual(library.kept('wechat/发送消息').map(({ procedure }) => procedure.description), ['四', '三']);
+  assert.deepEqual(versions('wechat', '别的操作'), ['别的操作.v1.json'], 'another operation is not touched');
+  for (const text of ['甲', '乙', '丙', '丁']) library.saveGuide('wechat', text);
+  assert.deepEqual(versions('wechat', '目录'), ['目录.v2.md', '目录.v3.md'], 'her notes are kept the same way');
 });
 
 test('her category notes are hers: written only when she saves, the old one kept', t => {

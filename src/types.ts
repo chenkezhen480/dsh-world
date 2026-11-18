@@ -39,6 +39,8 @@ export interface WorldConfig {
   wechat?: boolean;
   /** Her own browser and the tools she makes with it (home only); see src/ecosystem/computer/README.md. */
   computer?: boolean;
+  /** She also uses the partner's computer, in the background (Windows; needs `computer`); see src/ecosystem/computer/README.md. */
+  desktop?: boolean;
   /** QQ straight to OneBot: no qq-bridge process, the plugin owns the sockets, the sessions and the state. */
   qqNative?: { enabled?: boolean; wsUrl?: string; accessToken?: string; allowPrivate?: string[]; ownerQQ?: string; allowGroups?: string[]; autoReply?: boolean; batchQuietMs?: number; contextMessages?: number; bindHomeSession?: 'owner' | 'all' | 'none' | '';
     /** 群里什么时候接话：mention 只接被叫到的（被 @ / 被引用她的话 / 命中关键词），all 每句都接。 */

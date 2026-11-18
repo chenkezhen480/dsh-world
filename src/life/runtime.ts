@@ -5,7 +5,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent';
 import type { AttachmentStore } from '@deepseek-ai/dsh-attachment';
 import type {} from '@deepseek-ai/dsh-agent-loop';
 import { createUserMessage, type UserMessage } from '@deepseek-ai/dsh-llm';
-import { SessionSeq } from '@deepseek-ai/dsh-session';
+import { SessionSeq, type SessionEvent } from '@deepseek-ai/dsh-session';
 import type { ToolDefinition } from '@deepseek-ai/dsh-tools';
 import type {} from '@deepseek-ai/dsh-system-prompt';
 import '../hostContract.ts';
@@ -25,6 +25,7 @@ import { createHome } from './home.ts';
 import type { LifeHost } from './host.ts';
 import { createJournal } from './journal.ts';
 import { stepCost } from './pricing.ts';
+import { addStep, openTurn, turnTrigger } from './turnCost.ts';
 import type { LifeStore } from './lifeStore.ts';
 import { exampleTime, readAlarmMessages } from './messages.ts';
 import type { Notifier } from './notify.ts';
@@ -32,7 +33,7 @@ import { createToolRegistry } from './toolRegistry.ts';
 import { alarmDescriptions, lifeTools } from './tools.ts';
 import type { PhotoStore } from './photos.ts';
 import { photoTools } from './photoTools.ts';
-import type { Alarm, Greeting, LifeOptions, PendingWake, Review, WakeRecord } from './types.ts';
+import type { Alarm, Greeting, LifeOptions, PendingWake, Review, SpendTurn, WakeRecord } from './types.ts';
 
 /** How long a word may sit in her home without its turn starting a step before the console says so. */
 const STALL_MINUTES = 5;
@@ -43,6 +44,8 @@ export interface LifeDeps {
   ctx: Context; config: WorldConfig; options: LifeOptions; store: LifeStore; host: LifeHost; notifier: Notifier; clock?: () => Date; timers?: LifeTimers;
   /** CNY her home may spend a day; undefined or absent is no limit. */
   dailyBudget?: () => number | undefined;
+  /** Called whenever her partner's words reach her home: a stop they pressed on her use of the computer is lifted. */
+  partnerSpoke?: () => void;
   /** Called once each evening look back has been handed to her home (not for alarms or greetings, and not when delivery failed). */
   afterReview?: () => void;
   /** Read-only facts appended after the user's alarm template is rendered; may take a moment (her own tools run first). */
@@ -356,23 +359,53 @@ export function createLifeRuntime(deps: LifeDeps) {
     void home.open().then(agent => stopped ? undefined : say(agent, text)).catch(error => { earlyStop.ownTurnFailed(); ctx.logger.error(error); });
   }
 
-  // What her home spends: each model step priced as it lands; past the daily budget she is told once that day.
-  function spent(usage: Parameters<typeof stepCost>[0], model: string): void {
-    const now = clock(); const day = formatLocalTime(now, timeZone).slice(0, 10);
-    const spend = state.spend?.day === day ? state.spend : (state.spend = { day, yuan: 0 });
-    spend.yuan += stepCost(usage, model, now);
+  // What her home spends: each model step priced as it lands, and added to the turn it is part of; past the daily
+  // budget she is told once that day.
+  const today = () => {
+    const day = formatLocalTime(clock(), timeZone).slice(0, 10);
+    return state.spend?.day === day ? state.spend : (state.spend = { day, yuan: 0 });
+  };
+  /** The turn under way, as the console lists it; opened by turn/start, closed by turn/end. */
+  let turn: SpendTurn | undefined;
+  function turnEvent(event: SessionEvent): void {
+    if (event.type === 'turn/start') { turn = openTurn(today(), clock()); return; }
+    if (event.type === 'user/message' && turn && !turn.trigger) { const trigger = turnTrigger(event.data); if (trigger) turn.trigger = trigger; return; }
+    if (event.type === 'turn/end' && turn) { turn.ended = true; turn = undefined; record(() => store.write(state)); }
+  }
+  function spent(usage: Parameters<typeof stepCost>[0], model: string, tools: string[]): void {
+    const spend = today();
+    const yuan = stepCost(usage, model, clock());
+    spend.yuan += yuan;
+    // A step with no turn seen opening (the plugin started mid-turn) still belongs somewhere on the list.
+    turn ??= openTurn(spend, clock());
+    addStep(turn, { yuan, hit: usage.cacheReadTokens ?? 0, miss: usage.inputTokens, out: usage.outputTokens, tools });
     const budget = deps.dailyBudget?.();
     const remind = budget !== undefined && spend.yuan >= budget && !spend.reminded;
     if (remind) spend.reminded = true;
     record(() => store.write(state));
     if (!remind) return;
-    const text = budgetText(spend.yuan, budget, alarmMessages(), templateValues());
+    notice(budgetText(spend.yuan, budget, alarmMessages(), templateValues()));
+  }
+  /** A word for her now: into the running turn at its next step, or a turn of its own that is not asked about. */
+  function notice(text: string): void {
     void home.open().then(agent => {
       if (stopped) return;
-      // Into the running turn at its next step, or a turn of its own that is not asked about.
       if (agent.status !== 'running') earlyStop.startsOwnTurn();
       return say(agent, text);
     }).catch(error => { earlyStop.ownTurnFailed(); ctx.logger.error(error); });
+  }
+
+  /**
+   * A word of the plugin's own for a home that is free: false while she is in a turn or another word is on its way,
+   * so the caller keeps it and asks again. Its turn is never asked about as an early stop.
+   */
+  async function tell(text: string): Promise<boolean> {
+    if (stopped) return false;
+    const agent = await home.open();
+    if (stopped || agent.status === 'running' || state.delivering) return false;
+    earlyStop.startsOwnTurn();
+    try { await say(agent, text); return true; }
+    catch (error) { earlyStop.ownTurnFailed(); throw error; }
   }
 
   // Her tools and her home.
@@ -430,8 +463,9 @@ export function createLifeRuntime(deps: LifeDeps) {
         journal.world(session, event);
         if (session.id !== state.homeSessionId) return;
         journal.home(session, event);
-        if (event.type === 'assistant/message' && event.data.usage) spent(event.data.usage, event.data.message.source.model);
-        if (event.type === 'user/message' && event.data.source.kind === 'user') earlyStop.partnerSpoke();
+        turnEvent(event);
+        if (event.type === 'assistant/message' && event.data.usage) spent(event.data.usage, event.data.message.source.model, event.data.message.content.flatMap(block => block.type === 'tool-call' ? [block.name] : []));
+        if (event.type === 'user/message' && event.data.source.kind === 'user') { earlyStop.partnerSpoke(); deps.partnerSpoke?.(); }
         // Before the fallback below, so a word whose turn never ran goes back first.
         const pending = state.delivering;
         if (pending?.sessionId === session.id) {
@@ -473,7 +507,7 @@ export function createLifeRuntime(deps: LifeDeps) {
     tools.clear();
   }
   return {
-    start, stop, planNext, checkAlarm, cancelAlarm, deliver, reschedule,
+    start, stop, planNext, checkAlarm, cancelAlarm, deliver, reschedule, tell, notice,
     snapshot: () => ({ homeSessionId: state.homeSessionId, alarm: state.alarm, review: state.review, spend: state.spend, faults: faults.list() }),
     /** Resolves once no alarm delivery is in flight (its durability flush can outlast the turn it starts). */
     settled: async () => { while (delivery) await delivery; },

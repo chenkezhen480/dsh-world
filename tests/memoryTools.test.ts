@@ -37,12 +37,12 @@ async function setup(t: test.TestContext, script: (request: GenerateOptions, ind
   return { ctx, store, world, requests, errors, room, memory: real };
 }
 
-test('both tools reach every world session with no life line at all, not other presets, and a lookup goes end to end', async t => {
+test('the memory tools reach every world session with no life line at all, not other presets, and a lookup goes end to end', async t => {
   const s = await setup(t, (request, index) => index === 0 ? call('memory_find', { query: '潮汐' }) : index === 1 ? call('memory_read', { ref: JSON.parse(lastToolResult(request)).items[0].ref }) : textResponse('好'));
   await s.store.commitRecords([record('a1', { content: '我们聊过潮汐', sourceSessionId: 'chat', turnId: 'chat:1' })]);
   const agent = await create(s.ctx, 'chat');
   agent.followup(user('想想')); await agent.whenIdle();
-  assert.deepEqual(memoryToolNames(s.requests[0]!), ['memory_find', 'memory_read']);
+  assert.deepEqual(memoryToolNames(s.requests[0]!), ['memory_find', 'memory_image', 'memory_read']);
   const found = JSON.parse(lastToolResult(s.requests[1]!));
   assert.equal(found.items[0].kind, 'conversation'); assert.equal(found.coverage, undefined, 'a ready index adds nothing to the result'); assert.equal(found.items[0].text, '我们聊过潮汐');
   assert.equal(JSON.parse(lastToolResult(s.requests[2]!)).content, '我们聊过潮汐');
@@ -82,7 +82,7 @@ test('stopping the world takes the tools away and starting again registers them 
   const s = await setup(t, () => textResponse('好'));
   const agent = await create(s.ctx, 'chat');
   agent.followup(user('一')); await agent.whenIdle();
-  assert.equal(memoryToolNames(s.requests.at(-1)!).length, 2);
+  assert.equal(memoryToolNames(s.requests.at(-1)!).length, 3);
   await s.world.stop();
   agent.followup(user('二')); await agent.whenIdle();
   assert.deepEqual(memoryToolNames(s.requests.at(-1)!), []);
@@ -91,7 +91,7 @@ test('stopping the world takes the tools away and starting again registers them 
   const reopened = await create(s.ctx, 'chat-2');
   for (const text of ['三', '四']) { reopened.followup(user(text)); await reopened.whenIdle(); }
   agent.followup(user('五')); await agent.whenIdle();
-  assert.deepEqual(memoryToolNames(s.requests.at(-1)!), ['memory_find', 'memory_read'], 'once, not twice');
+  assert.deepEqual(memoryToolNames(s.requests.at(-1)!), ['memory_find', 'memory_image', 'memory_read'], 'once, not twice');
   await again.stop();
 });
 

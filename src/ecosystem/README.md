@@ -9,7 +9,7 @@
 - `qq-native/`：QQ 的原生通道——直连 OneBot 的 WebSocket（收发、去重、白名单、群里被叫到才接、主动开口引擎），以及「阳台」那条给本机别的程序用的线（`native-bridge.ts`，对面跑的是 `src/qq-line.ts`）。
 - `shared/`：通用来源身份、群上下文、平台会话路由和消息出口。
 - `bridge/`：桌宠及其他本地程序向家的通用桥。
-- `computer/`：她自己的浏览器（系统 Edge、CDP）、页面原语和她自己存的工具；只在家会话。见 [说明](computer/README.md)。
+- `computer/`：她自己的浏览器（系统 Edge、CDP）、页面原语和她按分类学会的操作（`computer_use` 查、`procedure_run` 跑）；只在家会话。见 [说明](computer/README.md)。
 
 各平台自身逻辑放在各自目录；B 站等网页平台由她用 `computer/` 自己学，不再新增平台目录。平台适配器使用共同的身份和会话协议，通过现有归档服务保存正文，不各建一份记忆。
 

@@ -42,7 +42,7 @@ function fakeTimers(clock: { now: Date }) {
     jump(ms: number) { clock.now = new Date(clock.now.getTime() + ms); for (const entry of pending) entry.at += ms; },
   };
 }
-interface SetupOptions { afterReview?: () => void; before?: (worldDir: string) => Promise<void>; host?: (host: LifeHost) => LifeHost; store?: (store: LifeStore) => LifeStore; notifier?: Notifier; dailyBudget?: () => number | undefined; inWorkspace?: (id: string) => boolean; alarmContext?: (now: Date) => string | undefined | Promise<string | undefined>; schedule?: { review: string; wake: string } }
+interface SetupOptions { afterReview?: () => void; partnerSpoke?: () => void; before?: (worldDir: string) => Promise<void>; host?: (host: LifeHost) => LifeHost; store?: (store: LifeStore) => LifeStore; notifier?: Notifier; dailyBudget?: () => number | undefined; inWorkspace?: (id: string) => boolean; alarmContext?: (now: Date) => string | undefined | Promise<string | undefined>; schedule?: { review: string; wake: string } }
 async function setup(t: test.TestContext, model: (request: GenerateOptions, index: number) => AsyncIterable<StreamChunk>, setupOptions: SetupOptions = {}) {
   const requests: GenerateOptions[] = [];
   const { ctx, root, cleanup, errors } = await hostFixture(t, request => { if (request.purpose !== 'compaction') requests.push(request); return model(request, requests.length - 1); });
@@ -69,7 +69,7 @@ async function setup(t: test.TestContext, model: (request: GenerateOptions, inde
   const baseStore = createLifeStore(worldDir, config.timeZone);
   const store = setupOptions.store?.(baseStore) ?? baseStore;
   const options = { worldDir, roomDir: join(worldDir, 'room'), diaryDir: join(worldDir, 'diary'), selfFile: join(worldDir, 'room', 'self.md'), schedule: () => setupOptions.schedule ?? { review: '23:00', wake: '09:00' }, timeZone: config.timeZone, alarmFile: join(worldDir, 'alarm.md') };
-  const make = () => createLifeRuntime({ ctx, config, options, store, host, notifier: setupOptions.notifier ?? { toast: async () => {}, outlets: [] }, clock: () => clock.now, timers, ...(setupOptions.dailyBudget ? { dailyBudget: setupOptions.dailyBudget } : {}), inWorkspace: setupOptions.inWorkspace, alarmContext: setupOptions.alarmContext, ...(setupOptions.afterReview ? { afterReview: setupOptions.afterReview } : {}) });
+  const make = () => createLifeRuntime({ ctx, config, options, store, host, notifier: setupOptions.notifier ?? { toast: async () => {}, outlets: [] }, clock: () => clock.now, timers, ...(setupOptions.dailyBudget ? { dailyBudget: setupOptions.dailyBudget } : {}), inWorkspace: setupOptions.inWorkspace, alarmContext: setupOptions.alarmContext, ...(setupOptions.afterReview ? { afterReview: setupOptions.afterReview } : {}), ...(setupOptions.partnerSpoke ? { partnerSpoke: setupOptions.partnerSpoke } : {}) });
   let life = make();
   cleanup.push(() => life.stop());
   /** Waits out deliveries and the home turns they start, a few rounds deep. */
@@ -472,6 +472,30 @@ test('started again from the console, a home without an alarm of her own is told
   assert.ok(!waiting.requests.some(request => /我回来了/.test(textOf(request))), 'her own alarm speaks instead');
   assert.match(textOf(waiting.requests[0]!), /「看书」/);
 });
+test('a word of the plugin\'s own reaches a free home as a turn that is not asked about, and never a stopped life', async t => {
+  const s = await setup(t, () => textResponse('知道了'), { before: existingHome('看书') });
+  await createAgent(s.ctx, 'home-0');
+  await s.start();
+  const before = s.requests.length;
+  assert.equal(await s.life.tell('外面有动静。'), true);
+  await s.idle();
+  assert.equal(s.requests.length, before + 1, 'one turn, no early-stop question after it');
+  assert.match(textOf(s.requests.at(-1)!), /外面有动静。/);
+  s.life.stop();
+  assert.equal(await s.life.tell('外面有动静。'), false);
+});
+test('the partner\'s words in her home are reported, and a word of the plugin\'s own is not theirs', async t => {
+  let spoke = 0;
+  const s = await setup(t, () => textResponse('嗯'), { before: existingHome('看书'), partnerSpoke: () => { spoke++; } });
+  await createAgent(s.ctx, 'home-0');
+  await s.start();
+  assert.equal(spoke, 0);
+  s.life.notice('（伙伴刚才按了停下。）'); await s.idle();
+  assert.equal(spoke, 0, 'the plugin speaking is not the partner');
+  assert.match(textOf(s.requests.at(-1)!), /伙伴刚才按了停下/);
+  s.ctx.agents.get(SessionId('home-0'))!.followup(userMessage('好了，继续吧')); await s.idle();
+  assert.equal(spoke, 1);
+});
 test('her home\'s spending is counted per local day, and past the daily budget she is told once', async t => {
   let budget: number | undefined = 0.01;
   const usage = { inputTokens: 4000, outputTokens: 1000 };
@@ -496,6 +520,14 @@ test('her home\'s spending is counted per local day, and past the daily budget s
   assert.equal(spend()?.reminded, true);
   home.followup(userMessage('又一句')); await s.idle();
   assert.equal(textOf(s.requests.at(-1)!).split('过了伙伴给我定的每天').length - 1, 1, 'not told again that day');
+  // The console lists each turn, not each step: what started it, how many steps, what they cost in all.
+  const asked = spend()!.turns!.find(each => each.trigger === 'DSH：再聊一句')!;
+  assert.ok(asked && asked.ended && asked.steps >= 1, JSON.stringify(spend()!.turns));
+  assert.equal(Math.round(asked.yuan * 1e9), Math.round(step * asked.steps * 1e9));
+  assert.deepEqual([asked.hit, asked.miss, asked.out, asked.tools], [0, 4000 * asked.steps, 1000 * asked.steps, {}]);
+  for (let more = 0; more < 8; more++) { home.followup(userMessage(`第 ${more} 句`)); await s.idle(); }
+  assert.equal(spend()!.turns!.length, 8, 'never more than eight');
+  assert.equal(spend()!.turns!.at(-1)!.trigger, 'DSH：第 7 句');
   budget = undefined;
 });
 test('a home rebuilt while her own alarm is pending greets her at once, is not asked about, and the alarm still rings', async t => {
@@ -851,7 +883,7 @@ test('a word stuck before its first step is reported, and after a restart it is 
 const gated = () => { let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; }); return { gate, release: () => release() }; };
 test('alarm facts that take a while are waited for and appear in the alarm', async t => {
   const g = gated();
-  const s = await setup(t, () => textResponse('嗯'), { alarmContext: async () => { await g.gate; return 'my_bili_unread：私信 2'; } });
+  const s = await setup(t, () => textResponse('嗯'), { alarmContext: async () => { await g.gate; return 'bilibili/看未读：私信 2'; } });
   await s.start();
   s.life.planNext({ after_minutes: 1 }, '看书');
   const before = s.requests.length;
@@ -859,7 +891,7 @@ test('alarm facts that take a while are waited for and appear in the alarm', asy
   assert.equal(s.requests.length, before, 'nothing is sent while the facts are still coming');
   g.release(); await s.idle();
   assert.equal(s.requests.length, before + 1);
-  assert.match(textOf(s.requests.at(-1)!), /my_bili_unread：私信 2/);
+  assert.match(textOf(s.requests.at(-1)!), /bilibili\/看未读：私信 2/);
 });
 test('an alarm replaced while its facts are gathered is not sent stale; the new one goes out once', async t => {
   const g = gated();

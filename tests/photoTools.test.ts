@@ -23,7 +23,7 @@ function setup(t: { after(fn: () => unknown): void }) {
   let inside = true, leaveOnRead = false; const read: string[] = []; const saved: { name?: string; mediaType: string }[] = [];
   const attachments = {
     readImage: async (r: { attachmentId: string }) => { read.push(r.attachmentId); if (leaveOnRead) inside = false; return { ref: ref(r.attachmentId), data: new Uint8Array([1, 2, 3, 4]) }; },
-    saveImage: async (input: { name?: string; mediaType: string }) => { saved.push(input); return ref('from-file'); },
+    saveImages: async (inputs: { name?: string; mediaType: string }[]) => { saved.push(...inputs); return inputs.map(() => ref('from-file')); },
   };
   const tools = photoTools({ agent, store: () => store, inside: () => inside, attachments: () => attachments as never });
   const run = (name: string, args: object = {}) => tools.find(tool => tool.name === name)!.execute(args as never, { signal: new AbortController().signal } as never);

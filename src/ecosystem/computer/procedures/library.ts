@@ -1,12 +1,13 @@
 // src/ecosystem/computer/procedures/library.ts
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { errorText, type Faults } from '../../../faults.ts';
 import { durableWrite } from '../../../life/lifeStore.ts';
 import { ENTRY_NAME, entryName, GUIDE_NAME, parseProcedure, procedurePath, ProcedureError, UNSORTED, type Procedure } from './format.ts';
-import type { KeptVersion } from './run.ts';
+import { MAX_FALLBACK, type KeptVersion } from './run.ts';
 
-export interface StoredProcedure { procedure: Procedure; path: string; file: string }
+/** `modified` is the file's time: when she last saved it or edited it by hand. */
+export interface StoredProcedure { procedure: Procedure; path: string; file: string; modified: number }
 export interface Category { name: string; guide: string }
 export interface RunNote { at: string; ok: boolean; detail?: string }
 export type ProcedureLibrary = ReturnType<typeof createProcedureLibrary>;
@@ -19,7 +20,8 @@ const ENTRY_OK = (name: string) => name !== GUIDE_NAME && ENTRY_NAME.test(name);
 
 /**
  * Her operations, one file each in `<world>/procedures/<category>/`, with her own `目录.md` per category. They are hers:
- * the plugin writes a file only when she saves, and keeps what it replaces as `<name>.v<n>.json` (`目录.v<n>.md`). She may
+ * the plugin writes a file only when she saves, and keeps what it replaces as `<name>.v<n>.json` (`目录.v<n>.md`), the
+ * newest two of them: a run never tries more, and mending often would otherwise fill the folder. She may
  * also edit them by hand; the revision follows the files. Files the development build left flat in `procedures/` are
  * read in place as the category 未分类 and never moved.
  */
@@ -52,6 +54,12 @@ export function createProcedureLibrary(dir: string, deps: { faults?: Faults } = 
     const replaced = existsSync(file);
     if (replaced) durableWrite(join(folder, `${name}.v${highest + 1}.${ext}`), readFileSync(file, 'utf8'));
     durableWrite(file, content);
+    // Only on a save, and only this name: nothing is tidied that she did not just replace.
+    for (const old of keptNumbers(folder, name, ext).slice(MAX_FALLBACK)) {
+      const key = `procedure-old:${name}.v${old}.${ext}`;
+      try { rmSync(join(folder, `${name}.v${old}.${ext}`)); deps.faults?.clear(key); }
+      catch (error) { deps.faults?.set(key, `旧版本 ${name}.v${old}.${ext} 没能删掉：${errorText(error)}`); }
+    }
     cache = undefined;
     return highest + (replaced ? 2 : 1);
   }
@@ -67,7 +75,7 @@ export function createProcedureLibrary(dir: string, deps: { faults?: Faults } = 
         if (`${procedure.name}.json` !== base) throw new ProcedureError(`文件名应该是 ${procedure.name}.json`);
         if (procedure.category !== category) throw new ProcedureError(`分类应该是 ${category}，或者把文件挪进 ${procedure.category} 文件夹`);
         const path = procedurePath(procedure);
-        if (!paths.has(path)) { paths.add(path); out.push({ procedure, path, file }); }
+        if (!paths.has(path)) { paths.add(path); out.push({ procedure, path, file, modified: statSync(file).mtimeMs }); }
         deps.faults?.clear(key); faulted.delete(key);
       } catch (error) { deps.faults?.set(key, `她的操作 ${label} 没能载入：${errorText(error)}`); faulted.add(key); }
     }

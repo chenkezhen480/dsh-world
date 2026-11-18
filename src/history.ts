@@ -1,3 +1,4 @@
+import { shortenArchivedImages } from './images.ts';
 import { formatLocalTime } from './timeContext.ts';
 import type { ArchiveCursor, ArchiveReader, ConversationRecord, ConversationTurn } from './types.ts';
 import { homeTitle, type WorldNames } from './worldPrompt.ts';
@@ -110,7 +111,7 @@ export function renderHistory(turns: readonly ConversationTurn[], timeZone: stri
         role: message.role === 'assistant' ? selfName : message.role, time: minute(message.occurredAt),
         ...(chat ? { via: chat } : {}), ...(chat && message.role === 'user' && message.conversationType === 'group' ? { who: who(message) } : {}),
         ...(message.wechatDelivery ? { sent: sentState(message.wechatDelivery) } : {}),
-        ...(words ? { content: shortenLocalImages(words) } : {}), ...(message.status === 'interrupted' ? { interrupted: true } : {}),
+        ...(words ? { content: shortenArchivedImages(shortenLocalImages(words)) } : {}), ...(message.status === 'interrupted' ? { interrupted: true } : {}),
       };
     }),
   }));

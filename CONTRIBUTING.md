@@ -139,14 +139,14 @@ npm run test:package
 使用上述检查生成的同一个 `.tgz` 发布，避免发布时重新构建出不同内容。包已通过 `publishConfig` 指定 npm 官方源和公开访问；先完成发布预检：
 
 ```powershell
-npm publish .\artifacts\dsh-world-0.6.5.tgz --dry-run --ignore-scripts --registry=https://registry.npmjs.org/
+npm publish .\artifacts\dsh-world-0.8.0.tgz --dry-run --ignore-scripts --registry=https://registry.npmjs.org/
 ```
 
 确定发布后，用有包发布权限的 npm 账号登录，按 npm 提示完成浏览器和二次验证，再执行：
 
 ```powershell
 npm login --registry=https://registry.npmjs.org/
-npm publish .\artifacts\dsh-world-0.6.5.tgz --ignore-scripts --access public --registry=https://registry.npmjs.org/
+npm publish .\artifacts\dsh-world-0.8.0.tgz --ignore-scripts --access public --registry=https://registry.npmjs.org/
 ```
 
 首次发布会创建该包；之后每次发布都要提升版本号，同一个包名和版本不能覆盖。发布成功后使用者可按 [安装说明](INSTALL.md#第一步把-dsh-world-装进-profile) 从 npm 安装或更新。后续版本替换示例中的版本号。流程依据 [npm 发布文档](https://docs.npmjs.com/cli/v11/commands/npm-publish/)；npm 登录信息和令牌不要写进仓库。

@@ -1,6 +1,8 @@
 import type { Agent } from '@deepseek-ai/dsh-agent';
+import type { AttachmentStore } from '@deepseek-ai/dsh-attachment';
 import { defineTool, type ToolDefinition } from '@deepseek-ai/dsh-tools';
 import { errorText, type Faults } from './faults.ts';
+import { imagesMessage, shortenArchivedImages, shownImage, storedImage } from './images.ts';
 import type { MemoryPage, MemoryService } from './memory.ts';
 import type { MemoryOrigin } from './memoryStore.ts';
 import { OutsideWorldError, registerScopedTool } from './worldScope.ts';
@@ -20,14 +22,14 @@ function compactFind(page: MemoryPage) {
   return {
     items: page.items.map(item => ({
       ref: item.ref, time: item.time, kind: item.kind, ...(item.kind === 'conversation' ? {} : { title: item.title }),
-      ...(who(item.origin) ? { who: who(item.origin) } : {}), ...(item.current ? {} : { old: true }), text: clip(item.excerpt, TOOL_EXCERPT_CHARS),
+      ...(who(item.origin) ? { who: who(item.origin) } : {}), ...(item.current ? {} : { old: true }), text: clip(shortenArchivedImages(item.excerpt), TOOL_EXCERPT_CHARS),
     })),
     ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
     ...(page.coverage.state === 'ready' ? {} : { coverage: page.coverage }),
   };
 }
 /** `looked`: she paged the newest lines of one chat source (no query, newest first, first page), so it is caught up. */
-export function memoryTools(service: MemoryService, inside: () => boolean, looked?: (sourceId: string) => void): ToolDefinition[] {
+export function memoryTools(service: MemoryService, inside: () => boolean, looked?: (sourceId: string) => void, images?: () => AttachmentStore | undefined): ToolDefinition[] {
   const checked = async <T>(work: () => Promise<T>): Promise<T> => {
     if (!inside()) throw new OutsideWorldError();
     const result = await work();
@@ -57,7 +59,19 @@ export function memoryTools(service: MemoryService, inside: () => boolean, looke
       output,
       execute: async input => {
         const found = await checked(() => service.read({ limit: TOOL_READ_LIMIT, ...(input as Record<string, unknown>) }));
-        return JSON.stringify({ ref: found.ref, kind: found.kind, title: found.title, time: found.time, ...(who(found.origin) ? { who: who(found.origin) } : {}), ...(found.turnId ? { turnId: found.turnId } : {}), content: found.content, offset: found.offset, ...(found.nextOffset === undefined ? {} : { nextOffset: found.nextOffset }), totalChars: found.totalChars });
+        return JSON.stringify({ ref: found.ref, kind: found.kind, title: found.title, time: found.time, ...(who(found.origin) ? { who: who(found.origin) } : {}), ...(found.turnId ? { turnId: found.turnId } : {}), content: shortenArchivedImages(found.content), offset: found.offset, ...(found.nextOffset === undefined ? {} : { nextOffset: found.nextOffset }), totalChars: found.totalChars });
+      },
+    }),
+    // A picture in memory is one line naming the stored object; the line itself is what brings it back, so nothing is looked up.
+    defineTool({
+      name: 'memory_image',
+      description: '再看一眼记忆里的一张图片。记忆里的图片是一整段 [图片 sha256:… image/jpeg 宽×高 多少字节]，把那一整段从 [ 到 ] 原样填进 image。图片会附在下一条消息里。',
+      parameters: { image: { type: 'string', required: true } },
+      output,
+      execute: async ({ image }, context) => {
+        const ref = await checked(() => storedImage(images?.(), image, context.signal));
+        context.deferContext(imagesMessage(shownImage('这是记忆里的那张图片。', ref)));
+        return '图片已附在下一条消息里。';
       },
     }),
   ];

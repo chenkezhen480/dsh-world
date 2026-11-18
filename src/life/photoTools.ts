@@ -1,8 +1,9 @@
 import { readFile, stat } from 'node:fs/promises';
 import { basename, resolve } from 'node:path';
 import type { Agent } from '@deepseek-ai/dsh-agent';
-import type { AttachmentStore, ImageAttachmentRef, ImageMediaType, StoredImageAttachment } from '@deepseek-ai/dsh-attachment';
+import type { AttachmentStore, ImageAttachmentRef, StoredImageAttachment } from '@deepseek-ai/dsh-attachment';
 import { defineTool } from '@deepseek-ai/dsh-tools';
+import { keepImages, sniffMediaType } from '../images.ts';
 import type { PhotoStore } from './photos.ts';
 
 const MAX_FILE_BYTES = 20 * 1024 * 1024;
@@ -23,24 +24,16 @@ function visibleImages(agent: Agent): ImageAttachmentRef[] {
   return found;
 }
 
-/** Only the four image types the attachment service keeps; the bytes decide, never the file name. */
-function mediaTypeOf(bytes: Uint8Array): ImageMediaType | undefined {
-  const starts = (...head: number[]) => head.every((byte, at) => bytes[at] === byte);
-  if (starts(0x89, 0x50, 0x4e, 0x47)) return 'image/png';
-  if (starts(0xff, 0xd8, 0xff)) return 'image/jpeg';
-  if (starts(0x47, 0x49, 0x46, 0x38)) return 'image/gif';
-  if (starts(0x52, 0x49, 0x46, 0x46) && bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) return 'image/webp';
-  return undefined;
-}
 /** A picture on her computer: committed to the host's attachment store like any channel image, then read back verified. */
 async function fileImage(attachments: AttachmentStore, path: string, signal: AbortSignal): Promise<StoredImageAttachment> {
   const info = await stat(path).catch(() => undefined);
   if (!info?.isFile()) throw new Error(`没有找到这个图片文件：${path}`);
   if (info.size > MAX_FILE_BYTES) throw new Error('图片文件最多 20MB');
   const data = new Uint8Array(await readFile(path, { signal }));
-  const mediaType = mediaTypeOf(data);
+  const mediaType = sniffMediaType(data);
   if (!mediaType) throw new Error('只能收藏 png、jpg、webp、gif 图片');
-  return attachments.readImage(await attachments.saveImage({ data, mediaType, name: basename(path) }), signal);
+  const [kept] = await keepImages(attachments, [{ data, mediaType, name: basename(path) }]);
+  return attachments.readImage(kept!, signal);
 }
 
 export function photoTools(deps: { agent: Agent; store(): PhotoStore; attachments(): AttachmentStore | undefined; inside(): boolean }) {

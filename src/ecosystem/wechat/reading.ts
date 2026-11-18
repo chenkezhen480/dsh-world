@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { createUserMessage, type ContentBlock } from '@deepseek-ai/dsh-llm';
+import type { ContentBlock } from '@deepseek-ai/dsh-llm';
+import { imagesMessage } from '../../images.ts';
 import { defineTool, type ToolRunContext } from '@deepseek-ai/dsh-tools';
 import { channelContext, type ChannelContextMessage } from '../shared/context.ts';
 import type { SpeakerIdentity } from '../shared/identity.ts';
@@ -62,7 +63,7 @@ export function createWechatReading(deps: { target(chatId: string): SpeakerIdent
         const blocks = await deps.images(identity, [entry]);
         context.signal.throwIfAborted();
         if (!blocks.some(block => block.type === 'image')) throw new Error('图片没能交给模型');
-        context.deferContext(createUserMessage({ source: { kind: 'dsh-world-channel-context', form: 'recall' }, content: blocks }));
+        context.deferContext(imagesMessage(blocks));
         return `图片 ${entry.id}（${entry.identity.speakerName ?? entry.identity.speakerId}，${entry.occurredAt}）已附在下一条消息里。`;
       },
     }),

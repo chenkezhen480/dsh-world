@@ -2,7 +2,8 @@
 import { errorText } from '../../../faults.ts';
 import { describeAnchor, type Row } from '../browser/page.ts';
 import type { ProcedureLibrary } from './library.ts';
-import { isWebAddress, procedurePath, substitute, WEB_ONLY, type Anchor, type Condition, type ExtractSpec, type Procedure, type Step, type Target } from './format.ts';
+import type { DesktopInput, DesktopResult } from '../desktop/desktop.ts';
+import { isOpenTooSoon, isWebAddress, procedurePath, substitute, WEB_ONLY, type Anchor, type Condition, type DesktopProcedure, type DesktopStep, type ExtractSpec, type Procedure, type Step, type Target } from './format.ts';
 
 /** What replaying needs from a page; her browser's `Page` is one. */
 export interface Driver {
@@ -16,6 +17,8 @@ export interface Driver {
   evaluate(script: string, args: Record<string, unknown>): Promise<unknown>;
   brief(): Promise<string>;
 }
+/** What replaying a desktop operation needs: her `desktop` hands, each action answered with a fresh picture. */
+export interface Hands { act(input: DesktopInput): Promise<DesktopResult> }
 export type Args = Record<string, string | number | boolean>;
 export type Failure = { ok: false; step: number; action: string; error: string; outwardDone: boolean; page: string };
 export type RunResult = { ok: true; rows: Row[]; values: Record<string, unknown> } | Failure;
@@ -27,7 +30,7 @@ export interface VersionedRun { result: RunResult; ran: Procedure; fallback?: { 
 /** How long a `check` waits for the page a step led to, so a check right after sending sees the page it opened. */
 const CHECK_MS = 3000;
 /** Kept versions tried after the newest fails, so a long repair history cannot make one call run for minutes. */
-const MAX_FALLBACK = 3;
+export const MAX_FALLBACK = 2;
 
 export function checkArgs(procedure: Procedure, input: Record<string, unknown>): Args {
   const out: Args = {};
@@ -62,12 +65,15 @@ function emptyRows(spec: ExtractSpec, rows: Row[]): string | undefined {
   return blank === undefined ? undefined : `提取到 ${rows.length} 条，但字段 ${blank} 每一条都是空的${EMPTY_HINT}`;
 }
 
-export function describeStep(step: Step): string {
+const at = (point: { x?: number; y?: number }) => point.x === undefined ? '' : `（${point.x}, ${point.y}）`;
+export function describeStep(step: Step | DesktopStep): string {
   if ('open' in step) return `打开 ${step.open}`;
-  if ('click' in step) return `点 ${describeAnchor(step.click)}`;
-  if ('type' in step) return `在 ${describeAnchor(step.type.into)} 输入`;
+  if ('click' in step) return 'x' in step.click ? `点${at(step.click)}` : `点 ${describeAnchor(step.click)}`;
+  if ('type' in step) return 'into' in step.type ? `在 ${describeAnchor(step.type.into)} 输入` : `输入${at(step.type)}`;
+  if ('drag' in step) return `从${at(step.drag)}拖到${at({ x: step.drag.x2, y: step.drag.y2 })}`;
   if ('press' in step) return `按 ${step.press}`;
-  if ('wait' in step) return `等 ${describeCondition(step.wait)}`;
+  if ('scroll' in step) return `往 ${step.scroll.direction} 滚${at(step.scroll)}`;
+  if ('wait' in step) return 'seconds' in step.wait && !('text' in step.wait || 'url' in step.wait || 'anchor' in step.wait) ? `等 ${step.wait.seconds} 秒` : `等 ${describeCondition(step.wait as Condition)}`;
   if ('check' in step) return `确认 ${describeCondition(step.check)}`;
   if ('extract' in step) return `提取 ${describeAnchor(step.extract.list)}`;
   return '页面脚本';
@@ -77,7 +83,12 @@ export function describeStep(step: Step): string {
  * Replays her steps without the model: the first one that fails stops the run and says where, never retried. Coming up
  * empty is failing too, unless the step allows it, so a broken tool is never read as "nothing new".
  */
-export async function runProcedure(procedure: Procedure, args: Args, driver: Driver, signal?: AbortSignal): Promise<RunResult> {
+export async function runProcedure(procedure: Procedure, args: Args, driver: Driver | Hands, signal?: AbortSignal): Promise<RunResult> {
+  if (procedure.where !== undefined) {
+    if (!('act' in driver)) throw new Error(`${procedurePath(procedure)} 是伙伴电脑上的操作，要在「她用电脑」里跑`);
+    return runDesktop(procedure, args, driver, signal);
+  }
+  if (!('open' in driver)) throw new Error(`${procedurePath(procedure)} 是网页上的操作，要在我的浏览器里跑`);
   let rows: Row[] = [], outwardDone = false;
   const values: Record<string, unknown> = {};
   for (const [index, step] of procedure.steps.entries()) {
@@ -114,12 +125,49 @@ export async function runProcedure(procedure: Procedure, args: Args, driver: Dri
   return { ok: true, rows, values };
 }
 
+function desktopInput(step: Exclude<DesktopStep, { wait: unknown }>, args: Args): DesktopInput {
+  if ('open' in step) return { action: 'open', app: substitute(step.open, args) };
+  if ('click' in step) return { action: 'click', ...step.click };
+  if ('drag' in step) return { action: 'drag', ...step.drag };
+  if ('type' in step) return { action: 'type', ...step.type, text: substitute(step.type.text, args) };
+  if ('press' in step) return { action: 'press', key: step.press, ...(step.hold === undefined ? {} : { hold: step.hold }) };
+  return { action: 'scroll', ...step.scroll };
+}
+const sleep = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve, reject) => {
+  const timer = setTimeout(resolve, ms);
+  signal?.addEventListener('abort', () => { clearTimeout(timer); reject(signal.reason); }, { once: true });
+});
+
+/**
+ * Her desktop steps through her own hands. Each step answers with a picture, which the caller keeps through `driver`,
+ * so she sees where it ended; positions are pixels of the picture, so they follow the window's size, not its place.
+ */
+async function runDesktop(procedure: DesktopProcedure, args: Args, hands: Hands, signal?: AbortSignal): Promise<RunResult> {
+  let outwardDone = false;
+  // On the whole screen her positions are pixels of a picture of it: one is taken first, so they are measured on this screen.
+  if (procedure.where === 'screen') await hands.act({ action: 'shot' });
+  for (const [index, step] of procedure.steps.entries()) {
+    signal?.throwIfAborted();
+    const outward = 'outward' in step && step.outward === true;
+    try {
+      if ('wait' in step) await sleep(step.wait.seconds * 1000, signal);
+      else await hands.act(desktopInput(step, args));
+      if (outward) outwardDone = true;
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      const early = isOpenTooSoon(procedure.steps, index) ? '（回放时步与步之间不停，可能是窗口还没出来；在这一步前面加 wait）' : '';
+      return { ok: false, step: index + 1, action: describeStep(step), error: errorText(error) + early, outwardDone: outwardDone || outward, page: '（最后一张截图附在下一条消息里）' };
+    }
+  }
+  return { ok: true, rows: [], values: {} };
+}
+
 /**
  * Runs her newest version; when it fails before anything went out, her kept versions newest first, since a site may
  * serve its old and new page side by side and a repair for one must not lose the other. The newest's failure is the
  * one reported when none works. A kept version whose parameters no longer fit the call is skipped.
  */
-export async function runVersions(newest: Procedure, kept: KeptVersion[], input: Record<string, unknown>, driver: Driver, signal?: AbortSignal): Promise<VersionedRun> {
+export async function runVersions(newest: Procedure, kept: KeptVersion[], input: Record<string, unknown>, driver: Driver | Hands, signal?: AbortSignal): Promise<VersionedRun> {
   const result = await runProcedure(newest, checkArgs(newest, input), driver, signal);
   if (result.ok || result.outwardDone) return { result, ran: newest };
   for (const { procedure, version } of kept.slice(0, MAX_FALLBACK)) {
@@ -136,9 +184,12 @@ export async function runVersions(newest: Procedure, kept: KeptVersion[], input:
 export const fallbackText = ({ version, newest }: NonNullable<VersionedRun['fallback']>) =>
   `最新版第 ${newest.step} 步（${newest.action}）没跑通：${cut(newest.error, 80)}；这次退回第 ${version} 版跑通了。`;
 
+/** Said at the moment it breaks, when the task is still in front of her: doing it by hand is how the new version gets made. */
+export const REPAIR_NOW = '现在就修：先用 page_* 或 desktop 把这件事做完，再把走通的步骤用原来的名字 procedure_save 成新版（不另起一个新的），存完跑一次确认。';
+
 export function failureText(path: string, result: Failure): string {
   return `${path} 没跑通：第 ${result.step} 步（${result.action}）${result.error}。`
-    + (result.outwardDone ? '这一步或之前有向外的动作，可能已经发出，先看页面确认，不要直接重跑。' : '还没有任何向外的动作，修好可以再跑。')
+    + (result.outwardDone ? `这一步或之前有向外的动作，可能已经发出，先看页面确认，不要直接重跑；确认之后再把它修好存成新版。` : `还没有任何向外的动作。${REPAIR_NOW}`)
     + `\n当前页面：\n${result.page}`;
 }
 

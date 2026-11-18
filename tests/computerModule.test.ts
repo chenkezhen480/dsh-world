@@ -21,6 +21,7 @@ test('the module offers her tools, keeps its tool list as she learns, and report
   assert.deepEqual(module.status(), {
     browser: { state: 'stopped', binary: 'msedge.exe' }, dir: join(worldDir, 'procedures'),
     categories: [{ name: 'web', guide: false, operations: [{ name: '看看', description: '看看', onAlarm: false, last: null }] }],
+    desktop: null, inbox: null,
   });
 });
 
@@ -42,5 +43,60 @@ test('stopping clears the browser fault and the faults of her broken tool files'
   faults.set('computer', '她的浏览器没能打开：x');
   assert.ok(faults.list().some(line => line.includes('broken.json')));
   module.stop();
+  assert.deepEqual(faults.list(), []);
+});
+
+test('her desktop switch adds and removes the desktop tool; on another system it is a fault, not a tool', async t => {
+  const worldDir = mkdtempSync(join(tmpdir(), 'computer-module-')); t.after(() => rmSync(worldDir, { recursive: true, force: true }));
+  const browser = { run: async () => '', scratch: async () => '', show: async () => {}, status: () => ({ state: 'stopped' as const, binary: null }), stop() {} };
+  let stopped = 0;
+  const driver = { call: async () => ({}), running: () => false, stop: () => { stopped++; } };
+  const faults = new Faults();
+  const make = (platform: NodeJS.Platform) => createComputerModule({ worldDir, worldId: 'w', faults, store: { commitRecords: async () => {}, hasRecord: () => false }, archived: () => true, attachments: () => undefined, browser: browser as never, platform, desktopDriver: () => driver });
+  const agent = { id: 'home-1' } as unknown as Agent;
+  const module = make('win32');
+  const before = module.revision();
+  assert.equal(module.tools(agent).some(tool => tool.name === 'desktop'), false, 'off by default');
+  module.setDesktop(true);
+  assert.notEqual(module.revision(), before, 'the tool list changes, so the registry re-registers');
+  assert.equal(module.tools(agent).filter(tool => tool.name === 'desktop').length, 1);
+  assert.deepEqual(module.status().desktop, { running: false, foreground: false, recent: [] });
+  module.setDesktop(false);
+  assert.equal(stopped, 1);
+  assert.equal(module.revision(), before);
+  assert.equal(module.status().desktop, null);
+  const elsewhere = make('linux');
+  elsewhere.setDesktop(true);
+  assert.equal(elsewhere.tools(agent).some(tool => tool.name === 'desktop'), false);
+  assert.deepEqual(faults.list(), ['她用电脑目前只支持 Windows']);
+  elsewhere.stop();
+  assert.deepEqual(faults.list(), []);
+});
+
+test('her inbox goes on and off with her use of the computer, with a helper of its own, and only on Windows', async t => {
+  const worldDir = mkdtempSync(join(tmpdir(), 'computer-module-')); t.after(() => rmSync(worldDir, { recursive: true, force: true }));
+  const browser = { run: async () => '', scratch: async () => '', show: async () => {}, status: () => ({ state: 'stopped' as const, binary: null }), stop() {} };
+  const faults = new Faults(), calls: string[] = [];
+  let helpers = 0, stopped = 0;
+  const helper = { call: async (op: string) => { calls.push(op); return op === 'flashes' ? { flashes: [] } : { notifications: [] }; }, running: () => false, stop: () => { stopped++; } };
+  const make = (platform: NodeJS.Platform) => createComputerModule({ worldDir, worldId: 'w', faults, store: { commitRecords: async () => {}, hasRecord: () => false }, archived: () => true, attachments: () => undefined, browser: browser as never, platform,
+    desktopDriver: () => ({ call: async () => ({}), running: () => false, stop() {} }),
+    inbox: { timeZone: 'Asia/Shanghai', tell: async () => true, ignore: () => [], helper: () => { helpers++; return helper; }, pollMs: 10 } });
+  const module = make('win32');
+  assert.equal(module.status().inbox, null, 'her computer is off: nothing is watched');
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.deepEqual([helpers, calls.length], [0, 0]);
+  module.setDesktop(true);
+  assert.deepEqual(module.status().inbox, { waiting: [] });
+  await new Promise(resolve => setTimeout(resolve, 60));
+  assert.deepEqual([calls.includes('notifications'), calls.includes('flashes')], [true, true]);
+  module.setDesktop(false);
+  assert.deepEqual([module.status().inbox, stopped], [null, 1], 'turning her computer off stops the inbox and its helper');
+  module.setDesktop(true); module.stop();
+  assert.deepEqual([helpers, stopped], [2, 2]);
+  const elsewhere = make('linux');
+  elsewhere.setDesktop(true);
+  assert.deepEqual([elsewhere.status().inbox, faults.list()], [null, ['她用电脑目前只支持 Windows']]);
+  elsewhere.stop();
   assert.deepEqual(faults.list(), []);
 });

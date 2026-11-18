@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import type { AttachmentStore } from '@deepseek-ai/dsh-attachment';
 import type { Context } from '@deepseek-ai/cordis';
 import type { Agent } from '@deepseek-ai/dsh-agent';
 import { createSystemMessage, createUserMessage, isAgentLoopRequest, type MessageId, type StreamChunk, type UserMessage } from '@deepseek-ai/dsh-llm';
@@ -205,7 +206,7 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
   const service = world?.memory;
   const sessionNews = world?.elsewhere ? createSessionNews({ store, isHome: id => !!world.isHome(id), partner: () => world.names?.().partner ?? world.prompt.names.partner }) : undefined;
   const worldTools = (inside: () => boolean, agent: Agent) => [
-    ...service ? memoryTools(service, inside, sourceId => sessionNews?.looked(agent.session, sourceId.slice('chat:'.length))) : [],
+    ...service ? memoryTools(service, inside, sourceId => sessionNews?.looked(agent.session, sourceId.slice('chat:'.length)), () => ctx.get('attachments') as AttachmentStore | undefined) : [],
     ...config.moodFile ? moodTools(config.moodFile, inside) : [],
   ];
   const tools = service || config.moodFile ? createWorldToolRegistry({ tools: worldTools, inWorld: agent => !stopped && included(agent.session), faults, logger: ctx.logger }) : undefined;

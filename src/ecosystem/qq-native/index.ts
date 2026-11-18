@@ -7,7 +7,7 @@ import { speakerIdentity, conversationKey, type SpeakerIdentity } from '../share
 import type { ChannelContextMessage } from '../shared/context.ts';
 import { createBridge } from './snowluma.ts';
 import { createQqHome } from './home.ts';
-import { admitQqImages, MAX_BATCH_IMAGES, type QqImageSegment } from './images.ts';
+import { admitQqImages, MAX_KEPT_IMAGES, type QqImageSegment } from './images.ts';
 import { createBatcher } from './batch.ts';
 import { createOutbox } from './outbox.ts';
 import { planReply, stripHostNoise, type QqPart } from './replies.ts';
@@ -330,7 +330,7 @@ export function createQqNativeModule(deps: {
       return;
     }
     const images = (message.segments ?? []).filter(segment => segment?.type === 'image')
-      .slice(0, MAX_BATCH_IMAGES + 1).map(segment => ({ file: segment.data?.file, url: segment.data?.url }));
+      .slice(0, MAX_KEPT_IMAGES + 1).map(segment => ({ file: segment.data?.file, url: segment.data?.url }));
     batches.add(key, { text, identity, who: speakerName, images });
   }
 

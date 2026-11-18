@@ -8,8 +8,9 @@ import { validClockTime } from '../life/alarm.ts';
 import { MemoryError, type MemoryContent, type MemoryErrorCode, type MemoryPage } from '../memory.ts';
 import { errorText } from '../faults.ts';
 
-/** A write must carry this header; a page on another site cannot add it without a CORS preflight, which is never answered. */
-export const WRITE_HEADER = 'x-dsh-world';
+import { WRITE_HEADER } from '../worldRoutes.ts';
+
+export { WRITE_HEADER };
 const MAX_BODY_BYTES = 64 * 1024;
 export interface ConsoleSources {
   snapshot(): Promise<unknown>;
@@ -45,8 +46,11 @@ export interface ConsoleActions {
   /** Local HH:MM of the evening look back and the morning wake; a field left out stays, null goes back to its default. */
   setSchedule(schedule: { review?: string | null; wake?: string | null }): void;
   /** A field left out stays as it is; null goes back to its default. */
-  /** Turns the WeChat, QQ and computer modules on or off now (their tools and routes come and go with the switch). Returns why it cannot, or nothing. */
-  setModules(modules: { wechat?: boolean; qq?: boolean; computer?: boolean }): Promise<string | { restartRequired: true; message: string } | undefined>;
+  /**
+   * Turns the WeChat, QQ, computer and desktop modules on or off now (their tools and routes come and go with the switch),
+   * and foreground mode, which is never kept: on asks the partner for administrator rights. Returns why it cannot, or nothing.
+   */
+  setModules(modules: { wechat?: boolean; qq?: boolean; computer?: boolean; desktop?: boolean; foreground?: boolean }): Promise<string | { restartRequired: true; message: string } | undefined>;
   /** Brings her browser window forward (for scanning a login code); returns why it cannot, or nothing. */
   showComputer(): Promise<string | undefined>;
   /** Restarts the adapter the plugin manages; false when it does not manage one. */
@@ -114,10 +118,10 @@ async function write(actions: ConsoleActions, path: string, body: Record<string,
       actions.setWechatSettings({ ...(context === undefined ? {} : { context }), ...(bufferSeconds === undefined ? {} : { bufferSeconds }) }); return ok();
     }
     case '/console/modules': {
-      const wechat = body?.wechat, qq = body?.qq, computer = body?.computer;
-      if (!optionalFlag(wechat) || !optionalFlag(qq) || !optionalFlag(computer)) return bad('wechat、qq 和 computer 必须是 true 或 false');
-      if (wechat === undefined && qq === undefined && computer === undefined) return bad('nothing to change');
-      const refused = await actions.setModules({ ...(wechat === undefined ? {} : { wechat }), ...(qq === undefined ? {} : { qq }), ...(computer === undefined ? {} : { computer }) });
+      const wechat = body?.wechat, qq = body?.qq, computer = body?.computer, desktop = body?.desktop, foreground = body?.foreground;
+      if (!optionalFlag(wechat) || !optionalFlag(qq) || !optionalFlag(computer) || !optionalFlag(desktop) || !optionalFlag(foreground)) return bad('wechat、qq、computer、desktop 和 foreground 必须是 true 或 false');
+      if ([wechat, qq, computer, desktop, foreground].every(flag => flag === undefined)) return bad('nothing to change');
+      const refused = await actions.setModules({ ...(wechat === undefined ? {} : { wechat }), ...(qq === undefined ? {} : { qq }), ...(computer === undefined ? {} : { computer }), ...(desktop === undefined ? {} : { desktop }), ...(foreground === undefined ? {} : { foreground }) });
       return typeof refused === 'string' ? bad(refused) : ok({ ok: true, ...refused });
     }
     case '/console/computer/open': { const refused = await actions.showComputer(); return refused ? bad(refused) : ok(); }

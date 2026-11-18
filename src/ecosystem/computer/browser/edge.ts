@@ -44,7 +44,11 @@ export async function runningPort(profileDir: string, fetchImpl: typeof fetch = 
 export const launchArgs = (profileDir: string) => [
   `--user-data-dir=${profileDir}`, '--remote-debugging-port=0', '--no-first-run', '--no-default-browser-check',
   '--disable-background-timer-throttling', '--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding',
-  '--hide-crash-restore-bubble', '--lang=zh-CN', 'about:blank',
+  '--hide-crash-restore-bubble', '--lang=zh-CN',
+  // Edge may sign a new profile in with the Windows account and sync the partner's extensions and data into it; those
+  // extensions open welcome windows on every start and inject into the pages she reads.
+  '--disable-extensions', '--disable-sync',
+  'about:blank',
 ];
 
 /** Starts the browser detached (it outlives a plugin reload and is adopted again) and waits for its debugging port; callers adopt a running one via `runningPort` first. */

@@ -44,13 +44,13 @@ test('a failure stops at its step, says whether anything outward already happene
   assert.equal(before.ok, false);
   if (before.ok) return;
   assert.equal(before.step, 3); assert.equal(before.outwardDone, false);
-  assert.match(failureText('bili_dm_send', before), /第 3 步.*找不到 textbox[\s\S]*还没有任何向外的动作[\s\S]*\[1\] button 发送/);
+  assert.match(failureText('bili_dm_send', before), /第 3 步.*找不到 textbox[\s\S]*还没有任何向外的动作。现在就修：先用 page_\* 或 desktop 把这件事做完，再把走通的步骤用原来的名字 procedure_save 成新版（不另起一个新的），存完跑一次确认。[\s\S]*\[1\] button 发送/);
   const after = await runProcedure(send, { uid: '42', text: '在吗' }, fakeDriver({ has: async condition => !condition.text }).driver);
   assert.equal(after.ok, false);
   if (after.ok) return;
   assert.equal(after.step, 5); assert.equal(after.outwardDone, true);
   assert.match(after.error, /等了 3 秒，页面上还是没有文字「在吗」/);
-  assert.match(failureText('bili_dm_send', after), /可能已经发出.*不要直接重跑/);
+  assert.match(failureText('bili_dm_send', after), /可能已经发出.*不要直接重跑；确认之后再把它修好存成新版。/);
 });
 
 test('arguments are checked against what the tool declared', () => {

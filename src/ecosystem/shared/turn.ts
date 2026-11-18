@@ -58,7 +58,7 @@ export function createChannelQueue(name: string, options: { limit: number; timeo
  * A door that sees her answer arrive another way (`answered`, such as a message she sent there herself) stops
  * waiting at it: whatever she goes on to do in that turn is her own, and waiting for it only ran the door out of time.
  */
-export async function askTurn(ctx: Context, agent: Agent, words: UserMessage, options: { name: string; inWorld?: InWorld | undefined; context?: UserMessage | undefined; cancelled?: Promise<never> | undefined; answered?: ((source: UserMessage['source']) => boolean) | undefined }): Promise<string> {
+export async function askTurn(ctx: Context, agent: Agent, words: UserMessage, options: { name: string; inWorld?: InWorld | undefined; context?: UserMessage | undefined; cancelled?: Promise<never> | undefined; answered?: ((source: UserMessage['source']) => boolean) | undefined; steer?: boolean | undefined; untilTaken?: boolean | undefined }): Promise<string> {
   const cancelled = options.cancelled ?? new Promise<never>(() => {});
   let admitted = false, failed = false, cut = false, answered = false, reply = '';
   // Enough to tell, when it fails, which way it went.
@@ -70,7 +70,11 @@ export async function askTurn(ctx: Context, agent: Agent, words: UserMessage, op
     seen += 1;
     if (event.type === 'turn/end') last = `end/${event.data.reason.kind}`;
     if (event.type === 'user/message') {
-      if (event.data.id === words.id) admitted = true;
+      if (event.data.id === words.id) {
+        admitted = true;
+        // The door only needed her to have the words; her answer leaves by its own tool, whenever she gives it.
+        if (options.untilTaken) { finish(); return; }
+      }
       else {
         last = `inject/${event.data.source.kind}`;
         if (admitted && event.data.source.kind === 'user') { cut = true; finish(); return; }
@@ -92,7 +96,8 @@ export async function askTurn(ctx: Context, agent: Agent, words: UserMessage, op
   try {
     admit(options.inWorld, agent);
     if (options.context) agent.inject(options.context);
-    agent.followup(words);
+    // Steered words are taken in at her next step, in the turn under way, as the partner's words in DSH are.
+    if (options.steer) agent.steer(words); else agent.followup(words);
     await Promise.race([finished, cancelled]).catch((error: Error) => { throw new Error(`${error.message}（${trace()}）`, { cause: error }); });
     if (!admitted || failed || (cut && !reply.trim())) throw new Error(`${options.name} home request did not finish（${trace()}）`);
   } finally { dispose(); }

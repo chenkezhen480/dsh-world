@@ -245,7 +245,7 @@ test('home apply submits only the explicit action and shows backend progress and
   const render = () => { at = 0; tree = expand(component({ snap, refresh: () => { refreshed++; } })); };
   const button = () => tree.find(el => el.type === 'button')!;
   render(); assert.equal(requests.length, 0); assert.equal(button().props!.disabled, false);
-  assert.match(text(tree), /保存的提示词会在下一轮对话生效/);
+  assert.match(text(tree), /压缩一次，换上保存的内容/);
   button().props!.onClick(); render(); assert.equal(button().props!.disabled, true);
   await new Promise(setImmediate); render();
   assert.equal(refreshed, 1); assert.equal(requests.length, 1);
@@ -285,7 +285,7 @@ test('the compact-after-review switch saves at once, says what it does and shows
   const render = () => { at = 0; tree = expand(component({ on, onSaved: () => { refreshed++; } })); };
   const box = () => tree.find(el => el.type === 'input')!;
   render();
-  assert.equal(box().props!.checked, false); assert.match(text(tree), /自动压缩一次家会话[\s\S]*我是谁.*下一轮对话生效/); assert.match(text(tree), /已关闭/);
+  assert.equal(box().props!.checked, false); assert.match(text(tree), /自动压缩一次家会话，换上她刚改写的“我是谁”/); assert.match(text(tree), /已关闭/);
   box().props!.onChange({ target: { checked: true } }); render(); assert.equal(box().props!.disabled, true, 'busy while saving');
   await new Promise(setImmediate); render();
   assert.equal(requests.length, 1); assert.equal(requests[0].url, '/dsh-world/worlds/fish/console/compact-after-review');
@@ -418,6 +418,40 @@ test('album shows metadata first, loads one selected image and paginates with th
   assert.match(calls.at(-1)!, /offset=12/); assert.equal(tree.some(el => el.type === 'img'), false);
 });
 
+test('today\'s spend lists three conversations a page, newest first', async () => {
+  type El = { type: unknown; props: Record<string, any> | null; children: unknown[] };
+  const states: unknown[] = []; let at = 0;
+  const react = {
+    createElement: (type: unknown, props: unknown, ...children: unknown[]) => ({ type, props, children }),
+    useState(init: unknown) { const index = at++; if (!(index in states)) states[index] = init; return [states[index], (value: unknown) => { states[index] = value; }]; },
+  };
+  let loaded: { factory: (require: (name: string) => unknown) => { __test: (worldId: string) => { Budget: (props: unknown) => unknown } } } | undefined;
+  runInNewContext(await readFile('client/index.js', 'utf8'), { window: { __ModuleLoader__: { load: (entry: typeof loaded) => { loaded = entry; } } } });
+  const component = loaded!.factory(() => react).__test('fish').Budget;
+  const expand = (value: unknown): El[] => {
+    if (Array.isArray(value)) return value.flatMap(expand);
+    if (!value || typeof value !== 'object') return [];
+    const el = value as El;
+    return typeof el.type === 'function' ? expand(el.type({ ...el.props, children: el.children })) : [el, ...el.children.flatMap(expand)];
+  };
+  const text = (value: unknown): string => Array.isArray(value) ? value.map(text).join('') : value && typeof value === 'object' ? text((value as El).children) : value == null || typeof value === 'boolean' ? '' : String(value);
+  const turns = Array.from({ length: 8 }, (_, n) => ({ at: `2026-11-18T0${n}:00:00Z`, trigger: `第${n + 1}次`, steps: 1, yuan: 0.1, hit: 0, miss: 0, out: 0, tools: {}, ended: true }));
+  let tree: El[] = [];
+  const render = (list = turns) => { at = 0; tree = expand(component({ zone: 'UTC', budget: { daily: null, today: { yuan: 0.8, turns: list } } })); };
+  const shown = () => tree.filter(el => el.props?.className === 'dw-turn-what').map(text);
+  const button = (label: string) => tree.find(el => el.type === 'button' && text(el) === label)!;
+  render();
+  assert.deepEqual(shown(), ['第8次', '第7次', '第6次']);
+  assert.match(text(tree), /最近 8 次对话[^]*第 1 \/ 3 页/);
+  assert.equal(button('上一页').props!.disabled, true);
+  button('下一页').props!.onClick(); render(); button('下一页').props!.onClick(); render();
+  assert.deepEqual(shown(), ['第2次', '第1次']);
+  assert.equal(button('下一页').props!.disabled, true);
+  render(turns.slice(0, 2));
+  assert.deepEqual(shown(), ['第2次', '第1次'], 'a shorter list (a new day) stays on a page that exists');
+  assert.equal(tree.some(el => el.type === 'button' && text(el) === '下一页'), false, 'one page needs no pager');
+});
+
 test('the module switches say what is on, what is off and what the config does not provide', async () => {
   const source = await readFile('client/index.js', 'utf8');
   let loaded: { factory: (require: (name: string) => unknown) => { __test: (worldId: string) => { Modules: unknown } } } | undefined;
@@ -437,10 +471,46 @@ test('the module switches say what is on, what is off and what the config does n
   const on = render({ wechat: { available: true, enabled: true, running: true }, qq: { available: false, enabled: true, running: false } });
   assert.doesNotMatch(render({ wechat: { available: true, enabled: true, running: true }, qq: { available: false, enabled: true, running: false }, computer: { available: false, enabled: false, running: false } }), /她的浏览器/);
   assert.match(render({ wechat: { available: false, enabled: false, running: false }, qq: { available: false, enabled: false, running: false }, computer: { available: true, enabled: true, running: true } }), /她的浏览器 · 运行中/);
+  assert.doesNotMatch(render({ wechat: { available: false, enabled: false, running: false }, qq: { available: false, enabled: false, running: false }, computer: { available: true, enabled: true, running: true }, desktop: { available: false, enabled: false, running: false } }), /她用电脑/);
+  const desktop = (d: object, f: object = { available: false, enabled: false, running: false }) => render({ wechat: { available: false, enabled: false, running: false }, qq: { available: false, enabled: false, running: false }, computer: { available: true, enabled: true, running: true }, desktop: d, foreground: f });
+  // One row for her use of the computer: off, background or foreground, and what the mode on means.
+  assert.match(desktop({ available: true, enabled: false, running: false }), /她用电脑 · 已关闭关闭后台前台她用不了你的电脑。$/);
+  assert.match(desktop({ available: true, enabled: true, running: true }), /她用电脑 · 后台模式关闭后台前台后台模式：她每次只看一个窗口的截图[^]*连按两下 Esc/);
+  assert.match(desktop({ available: true, enabled: true, running: true }, { available: true, enabled: true, running: true }), /她用电脑 · 前台模式[^]*前台模式：你把电脑交给她[^]*确认一次管理员权限/);
+  assert.doesNotMatch(desktop({ available: true, enabled: true, running: true }, { available: true, enabled: true, running: true }), /前台模式 · /, 'no second row for it');
   assert.match(on, /微信 · 运行中/); assert.match(on, /wechat_send/); assert.match(on, /QQ · 未配置/);
   const off = render({ wechat: { available: true, enabled: false, running: false }, qq: { available: true, enabled: false, running: false } });
   assert.match(off, /微信 · 已关闭/); assert.match(off, /QQ · 已关闭/); assert.match(off, /工具未注册/);
   assert.match(render({ wechat: { available: true, enabled: true, running: false }, qq: { available: true, enabled: true, running: false } }, false), /已开启，世界启动后生效/);
+});
+
+test('her browser card lists what she learned by category, with her note and each last run', async () => {
+  const source = await readFile('client/index.js', 'utf8');
+  let loaded: { factory: (require: (name: string) => unknown) => { __test: (worldId: string) => { Computer: unknown } } } | undefined;
+  const react = { createElement: (type: unknown, props: unknown, ...children: unknown[]) => ({ type, props, children }), useState: (value: unknown) => [value, () => {}], useEffect: () => {}, useRef: (current: unknown) => ({ current }) };
+  runInNewContext(source, { fetch: () => Promise.reject(new Error('no fetch')), window: { __ModuleLoader__: { load: (entry: typeof loaded) => { loaded = entry; } } } });
+  const { Computer } = loaded!.factory(() => react).__test('fish');
+  type El = { type: unknown; props: Record<string, unknown> | null; children: unknown[] };
+  const text = (node: unknown): string => {
+    if (node == null || typeof node === 'boolean') return '';
+    if (Array.isArray(node)) return node.map(text).join('');
+    if (typeof node !== 'object') return String(node);
+    const el = node as El;
+    if (typeof el.type === 'function') return text((el.type as (p: unknown) => unknown)({ ...el.props, children: el.children }));
+    return text(el.children);
+  };
+  const render = (categories: unknown, desktop: unknown = null) => text(react.createElement(Computer, { zone: 'Asia/Shanghai', computer: { browser: { state: 'stopped', binary: null }, dir: 'D:/w/procedures', categories, desktop } }));
+  assert.match(render([]), /她还没有学会的操作/);
+  const shown = render([
+    { name: 'bilibili', guide: true, operations: [{ name: '看私信', description: '读 B站 私信', onAlarm: true, last: { at: 'x', ok: false, detail: '第 2 步找不到' } }] },
+    { name: 'wechat', guide: false, operations: [] },
+  ]);
+  assert.match(shown, /bilibili · 她写了说明看私信 · 读 B站 私信（闹钟前） · 最近失败：第 2 步找不到/);
+  assert.match(shown, /wechat · 还没写说明这一类还没有操作/);
+  assert.doesNotMatch(shown, /my_/);
+  assert.doesNotMatch(shown, /她用电脑/, 'nothing about the desktop while its switch is off');
+  const desktop = render([], { running: true, recent: [{ at: '2026-11-15T12:30:00Z', action: 'click', app: '微信', ok: false }, { at: '2026-11-15T12:29:00Z', action: 'open', app: '微信', ok: true }] });
+  assert.match(desktop, /她用电脑 · 驱动运行中20:30 click · 微信 · 没做成20:29 open · 微信/);
 });
 
 test('the archive tab builds its query in the configured zone, drops a late answer to an old query and keeps the error code', async () => {

@@ -22,7 +22,7 @@ const summaryInstruction = [
 const leadEcho = /^以下是此前交流的摘要[^：:]{0,40}[：:]\s*/;
 const checkpointLead ='以下是此前交流的摘要，工具调用过程已省略；请把它当作已知背景，直接接着当前对话继续：';
 // Re-injected after every successful compaction by the memory runtime; replayed only as cacheable prefix.
-const injectedSources = new Set(['time-context', 'dsh-world-history', 'dsh-world-mood', 'dsh-world-elsewhere']);
+export const injectedSources: ReadonlySet<string> = new Set(['time-context', 'dsh-world-history', 'dsh-world-mood', 'dsh-world-elsewhere']);
 
 interface SummaryAudit { policyVersion: 2; provider: string; model: string; maxTokens: number; instruction: string; timeContext: string; replayedMessageIds: string[] }
 declare module '@deepseek-ai/dsh-session/types' {

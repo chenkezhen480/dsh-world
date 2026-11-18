@@ -13,7 +13,7 @@ function storeCtx() {
     imageLimits: { maxImageBytes: 1024, maxImagesPerMessage: 4, maxMessageImageBytes: 4096, mediaTypes: ['image/png', 'image/gif'] },
     saveImages: async (inputs: readonly SaveImageAttachment[]) => {
       saved.push(...inputs);
-      return inputs.map((_, i) => ({ attachmentId: AttachmentId(String(saved.length + i).padStart(64, '0')), mediaType: 'image/gif', bytes: gif.length, width: 1, height: 1 }));
+      return inputs.map((_, i) => ({ attachmentId: AttachmentId(`sha256:${String(saved.length + i).padStart(64, '0')}`), mediaType: 'image/gif', bytes: gif.length, width: 1, height: 1 }));
     },
   };
   return { ctx: { get: (name: string) => name === 'attachments' ? store : undefined } as never, saved };

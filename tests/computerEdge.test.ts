@@ -21,6 +21,8 @@ test('her browser runs on its own profile, with no origin allowed to the debuggi
   assert.ok(args.includes('--remote-debugging-port=0'));
   assert.ok(!args.some(arg => arg.startsWith('--remote-allow-origins')));
   assert.ok(!args.some(arg => arg.startsWith('--headless')));
+  assert.ok(args.includes('--disable-extensions'), 'an extension synced in from the partner opens its own windows and edits her pages');
+  assert.ok(args.includes('--disable-sync'), 'the partner\'s bookmarks, autofill and extensions stay out of her browser');
 });
 
 test('a port file is trusted only while the browser answers on it', async t => {

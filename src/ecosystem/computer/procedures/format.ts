@@ -1,5 +1,6 @@
 // src/ecosystem/computer/procedures/format.ts
 import { PAGE_KEYS } from '../browser/page.ts';
+import { desktopKey, holdMs } from '../desktop/desktop.ts';
 
 /** Finds an element by what a person sees: its role and name, text it shows, or a CSS selector; `nth` picks among several. */
 export interface Anchor { role?: string; name?: string; text?: string; css?: string; nth?: number }
@@ -23,7 +24,24 @@ export interface MessageMap {
   /** Evaluates to `true` for her own messages. */
   outgoing?: string;
 }
-export interface Procedure { name: string; category: string; description: string; params: Record<string, Param>; steps: Step[]; onAlarm?: boolean; summary?: string; messages?: MessageMap }
+/** A pixel on the screenshot `desktop` gives of the current window (long edge about 1280), so it follows the window's size. */
+export interface Point { x: number; y: number }
+export type Direction = 'up' | 'down' | 'left' | 'right';
+/** Steps on the partner's computer, the `desktop` actions written down: nothing to read there, only pictures. */
+export type DesktopStep =
+  | { open: string }
+  | { click: Point & { double?: boolean; right?: boolean; hold?: number }; outward?: boolean }
+  | { drag: Point & { x2: number; y2: number; right?: boolean; hold?: number }; outward?: boolean }
+  | { type: { text: string } & Partial<Point>; outward?: boolean }
+  | { press: string; hold?: number; outward?: boolean }
+  | { scroll: { direction: Direction } & Partial<Point> }
+  | { wait: { seconds: number } };
+interface Common { name: string; category: string; description: string; params: Record<string, Param> }
+export interface PageProcedure extends Common { where?: undefined; steps: Step[]; onAlarm?: boolean; summary?: string; messages?: MessageMap }
+/** `desktop` is replayed in background mode (one window), `screen` in foreground mode (the whole screen, real input). */
+export type Computer = 'desktop' | 'screen';
+export interface DesktopProcedure extends Common { where: Computer; steps: DesktopStep[]; onAlarm?: undefined; summary?: undefined; messages?: undefined }
+export type Procedure = PageProcedure | DesktopProcedure;
 
 export class ProcedureError extends Error { override name = 'ProcedureError'; }
 const fail = (path: string, why: string): never => { throw new ProcedureError(`${path}：${why}`); };
@@ -141,6 +159,68 @@ function step(value: unknown, path: string, known: ReadonlySet<string>, taken: S
     }
   }
 }
+const DESKTOP_ACTIONS = ['open', 'click', 'drag', 'type', 'press', 'scroll', 'wait'] as const;
+const DIRECTIONS: Direction[] = ['up', 'down', 'left', 'right'];
+function coordinate(value: unknown, path: string): number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 4000 ? value : fail(path, '应该是截图上的像素（0 到 4000 的数）');
+}
+/** Seconds held, checked as her `desktop` checks them; absent for a plain press. */
+function held(value: unknown, path: string): { hold?: number } {
+  if (value === undefined) return {};
+  try { holdMs(value as number); } catch (error) { fail(path, error instanceof Error ? error.message : String(error)); }
+  return { hold: value as number };
+}
+/** Both x and y or neither: half a point would land somewhere she never chose. */
+function optionalPoint(input: Record<string, unknown>, path: string): Partial<Point> {
+  if (input.x === undefined && input.y === undefined) return {};
+  return { x: coordinate(input.x, `${path}.x`), y: coordinate(input.y, `${path}.y`) };
+}
+function desktopStep(value: unknown, path: string, known: ReadonlySet<string>): DesktopStep {
+  const input = record(value, path);
+  const actions = DESKTOP_ACTIONS.filter(action => action in input);
+  if (actions.length !== 1) return fail(path, `每一步只能有一个动作（${DESKTOP_ACTIONS.join('、')}）`);
+  const action = actions[0]!;
+  const canGoOut = action === 'click' || action === 'drag' || action === 'type' || action === 'press';
+  for (const key of Object.keys(input)) if (key !== action && !(canGoOut && key === 'outward') && !(action === 'press' && key === 'hold')) fail(path, `${action} 这一步不认识 ${key}`);
+  const outward = flag(input.outward, `${path}.outward`), extra = outward === undefined ? {} : { outward };
+  switch (action) {
+    case 'open': return { open: text(input.open, `${path}.open`, 200, known) };
+    case 'click': {
+      const body = record(input.click, `${path}.click`);
+      only(body, ['x', 'y', 'double', 'right', 'hold'], `${path}.click`);
+      const double = flag(body.double, `${path}.click.double`), right = flag(body.right, `${path}.click.right`);
+      return { click: { x: coordinate(body.x, `${path}.click.x`), y: coordinate(body.y, `${path}.click.y`), ...(double ? { double } : {}), ...(right ? { right } : {}), ...held(body.hold, `${path}.click.hold`) }, ...extra };
+    }
+    case 'drag': {
+      const body = record(input.drag, `${path}.drag`);
+      only(body, ['x', 'y', 'x2', 'y2', 'right', 'hold'], `${path}.drag`);
+      const right = flag(body.right, `${path}.drag.right`);
+      return { drag: { x: coordinate(body.x, `${path}.drag.x`), y: coordinate(body.y, `${path}.drag.y`), x2: coordinate(body.x2, `${path}.drag.x2`), y2: coordinate(body.y2, `${path}.drag.y2`), ...(right ? { right } : {}), ...held(body.hold, `${path}.drag.hold`) }, ...extra };
+    }
+    case 'type': {
+      const body = record(input.type, `${path}.type`);
+      only(body, ['text', 'x', 'y'], `${path}.type`);
+      return { type: { text: text(body.text, `${path}.type.text`, 2000, known), ...optionalPoint(body, `${path}.type`) }, ...extra };
+    }
+    case 'press': {
+      const key = text(input.press, `${path}.press`, 40);
+      try { desktopKey(key); } catch (error) { fail(`${path}.press`, error instanceof Error ? error.message : String(error)); }
+      return { press: key, ...held(input.hold, `${path}.hold`), ...extra };
+    }
+    case 'scroll': {
+      const body = record(input.scroll, `${path}.scroll`);
+      only(body, ['direction', 'x', 'y'], `${path}.scroll`);
+      if (!DIRECTIONS.includes(body.direction as Direction)) fail(`${path}.scroll.direction`, `应该是 ${DIRECTIONS.join('、')}`);
+      return { scroll: { direction: body.direction as Direction, ...optionalPoint(body, `${path}.scroll`) } };
+    }
+    case 'wait': {
+      const body = record(input.wait, `${path}.wait`);
+      only(body, ['seconds'], `${path}.wait`);
+      if (typeof body.seconds !== 'number' || !Number.isFinite(body.seconds) || body.seconds <= 0 || body.seconds > 60) fail(`${path}.wait.seconds`, '桌面上只能等几秒：大于 0、不超过 60');
+      return { wait: { seconds: body.seconds as number } };
+    }
+  }
+}
 function params(value: unknown): Record<string, Param> {
   const input = record(value ?? {}, 'params');
   const out: Record<string, Param> = {};
@@ -171,6 +251,20 @@ function messages(value: unknown, known: ReadonlySet<string>): MessageMap {
 }
 
 export const procedurePath = (procedure: Pick<Procedure, 'category' | 'name'>) => `${procedure.category}/${procedure.name}`;
+
+/** A desktop step right after input that opens the window it needs: by hand there was time between them, in a replay none. */
+export const isOpenTooSoon = (steps: DesktopStep[], index: number) => index > 0 && 'open' in steps[index]! && !('wait' in steps[index - 1]!) && !('open' in steps[index - 1]!);
+/**
+ * What a saved desktop operation is likely to trip on, said when she saves it rather than refused: she may know
+ * better, and she learns it either way. A page operation has its own waits and checks.
+ */
+export function desktopAdvice(procedure: Procedure): string[] {
+  if (procedure.where === undefined) return [];
+  const advice = procedure.steps.flatMap((step, index) => isOpenTooSoon(procedure.steps, index) && 'open' in step
+    ? [`第 ${index + 1} 步 open「${step.open}」紧跟在上一步后面，回放时中间不停；手动做时这个窗口是过一会儿才出来的，要的话在中间加 {"wait":{"seconds":1}}。`] : []);
+  if (!procedure.steps.some(step => 'outward' in step && step.outward)) advice.push('没有一步标 outward：会把东西发出去的那一步（发送、发表）要标 "outward": true，没跑通时才知道可能已经发出去了。');
+  return advice;
+}
 export function entryName(value: unknown, path: string): string {
   if (typeof value !== 'string' || !ENTRY_NAME.test(value) || value === GUIDE_NAME) return fail(path, `只能用文字、数字、下划线和连字符，1 到 40 个字，不能是「${GUIDE_NAME}」`);
   return value;
@@ -182,12 +276,19 @@ export function entryName(value: unknown, path: string): string {
  */
 export function parseProcedure(value: unknown, category = UNSORTED): Procedure {
   const input = record(value, '工具');
-  only(input, ['name', 'category', 'description', 'params', 'steps', 'onAlarm', 'summary', 'messages'], '工具');
+  only(input, ['name', 'category', 'description', 'params', 'where', 'steps', 'onAlarm', 'summary', 'messages'], '工具');
   const name = entryName(input.name, 'name');
   const own = input.category === undefined ? category : entryName(input.category, 'category');
   const declared = params(input.params);
   const known = new Set(Object.keys(declared));
   if (!Array.isArray(input.steps) || !input.steps.length || input.steps.length > MAX_STEPS) fail('steps', `要有 1 到 ${MAX_STEPS} 步`);
+  if (input.where !== undefined && input.where !== 'desktop' && input.where !== 'screen') fail('where', '只能是 desktop（后台模式走通的）或 screen（前台模式走通的）；网页上的不写');
+  if (input.where === 'desktop' || input.where === 'screen') {
+    // Nothing on the desktop can be read back, and nothing there may run unseen before an alarm.
+    for (const key of ['onAlarm', 'summary', 'messages']) if (input[key] !== undefined) fail(key, '桌面上的操作不能用');
+    const steps = (input.steps as unknown[]).map((item, index) => desktopStep(item, `steps[${index}]`, known));
+    return { name, category: own, description: text(input.description, 'description'), params: declared, where: input.where, steps };
+  }
   const taken = new Set([...known, 'count']);
   const steps = (input.steps as unknown[]).map((item, index) => step(item, `steps[${index}]`, known, taken));
   const onAlarm = flag(input.onAlarm, 'onAlarm');
