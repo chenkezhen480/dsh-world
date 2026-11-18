@@ -183,9 +183,9 @@ export function segmentsToText(message: Loose) {
       case 'video': out.push('[视频]'); break;
       case 'file': out.push(`[文件${d.name ?? ''}]`); break;
       case 'reply':
-        // 引用/回复段：本层无法取被引用消息原文（需要历史查询），给占位；
-        // 原始引用 id 保留在 msg.segments[0].data.id，供上层解析。
-        out.push('[引用消息]');
+        // 引用/回复段：本层不查历史，只把 id 带出去，由上层用 get_msg 换原文；
+        // 拿不到 id 时退回占位（宁可少信息，也不能编）。
+        out.push(d.id != null ? `[引用消息 id=${String(d.id)}]` : '[引用消息]');
         break;
       case 'json': out.push('[卡片消息]'); break;
       // markdown：SnowLuma 1.14.9 的线上段是 {type:'markdown',data:{content}}；
@@ -576,6 +576,25 @@ export function createBridge(options: Loose) {
       const id = Number(userId);
       if (!Number.isFinite(id)) throw new Error(`sendPrivate: 无效的 QQ 号 ${JSON.stringify(userId ?? null)}`);
       return enqueueSend('private', id, parts);
+    },
+
+    /**
+     * 取一条消息的原文（引用/回复用）：OneBot `get_msg`。
+     * 只取这一条的文本，不顺着引用链往回翻；取不到就让调用方降级成「取不到原文」，不编。
+     */
+    async getMessage(messageId: string): Promise<{ text: string; userId: string }> {
+      if (!client) throw new Error('QQ 桥未启动或已停止，无法取被引用的消息');
+      const raw = await withTimeout(client.request('get_msg', { message_id: Number(messageId) }), SEND_TIMEOUT_MS, '取被引用的消息');
+      const data = raw?.data ?? raw ?? {};
+      const message = data.message ?? data.raw_message ?? '';
+      return { text: segmentsToText(message).replace(/\s+/g, ' ').trim(), userId: String(data.user_id ?? '') };
+    },
+
+    /** 语音转写：OneBot `get_record_text`（QQ 侧识别，不引入本地 ASR）。转不出来返回空串。 */
+    async getRecordText(messageId: string): Promise<string> {
+      if (!client) throw new Error('QQ 桥未启动或已停止，无法取语音转写');
+      const raw = await withTimeout(client.request('get_record_text', { message_id: Number(messageId) }), SEND_TIMEOUT_MS, '取语音转写');
+      return String(raw?.data?.text ?? raw?.text ?? '').trim();
     },
 
     async getImage(file: string): Promise<string> {

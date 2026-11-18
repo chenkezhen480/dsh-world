@@ -139,6 +139,10 @@ export interface QqTransport {
   sendGroup(groupId: string, parts: string | QqPart[]): Promise<{ messageId: string }>;
   sendPrivate(userId: string, parts: string | QqPart[]): Promise<{ messageId: string }>;
   getImage?(file: string): Promise<string>;
+  /** 取一条消息的原文（引用/回复用）；测试替身可以不实现，取不到就标「取不到原文」。 */
+  getMessage?(messageId: string): Promise<{ text: string; userId: string }>;
+  /** 语音转写（QQ 侧）；测试替身可以不实现，转不出就标「未识别」。 */
+  getRecordText?(messageId: string): Promise<string>;
   /** 发账号收藏表情（不是消息段，单发一条）；测试替身可以不实现。 */
   sendCustomFace?(emojiId: string, target: { groupId?: string; userId?: string }): Promise<{ messageId: string }>;
   /** 发一条 QQ 空间说说；测试替身可以不实现。 */
@@ -158,7 +162,7 @@ export interface QqTransportOptions {
 /** One message to send, kept as it was so a retry sends exactly the same. */
 interface Outgoing { kind: 'group' | 'private'; target: string; parts: string | QqPart[] }
 /** What one conversation said while its words were gathering. */
-interface Gathered { text: string; identity: SpeakerIdentity; who: string; images: QqImageSegment[] }
+interface Gathered { text: string; identity: SpeakerIdentity; who: string; images: QqImageSegment[]; messageId?: string }
 
 /**
  * QQ as another way into the same home, without a bridge process in between.
@@ -331,13 +335,55 @@ export function createQqNativeModule(deps: {
     }
     const images = (message.segments ?? []).filter(segment => segment?.type === 'image')
       .slice(0, MAX_BATCH_IMAGES + 1).map(segment => ({ file: segment.data?.file, url: segment.data?.url }));
-    batches.add(key, { text, identity, who: speakerName, images });
+    batches.add(key, { text, identity, who: speakerName, images, messageId });
+  }
+
+  /**
+   * 语音：把这一批里的 `[语音 file=…]` 换成 QQ 侧转写的文字。
+   * 转不出来就如实标「未识别」——她可以不知道对方说了什么，但不能装作听过。
+   * 只用 OneBot 的 `get_record_text`，不引入本地 ASR 依赖。
+   */
+  async function transcribeVoices(items: Gathered[]): Promise<void> {
+    for (const item of items) {
+      const text = item?.text ?? '';
+      if (!text.includes('[语音')) continue;
+      let said = '';
+      if (item.messageId) {
+        try { said = (await client?.getRecordText?.(item.messageId)) ?? ''; }
+        catch (error) { deps.logger.warn(`QQ 语音转写失败: ${errorText(error)}`); }
+      }
+      item.text = text.replace(/\[语音(?: file=[^\]]*)?\]/g, said ? `[语音：${said}]` : '[语音（未识别）]');
+    }
+  }
+
+  /**
+   * 引用：把 `[引用消息 id=…]` 换成被引用那条的原文（截 300 字）。
+   * 只换一次、不顺着引用链往回翻；取不到就写「取不到原文」，让模型知道这里少了一块。
+   */
+  async function resolveQuotes(items: Gathered[]): Promise<void> {
+    for (const item of items) {
+      const text = item?.text ?? '';
+      const marks = [...text.matchAll(/\[引用消息 id=(\d+)\]/g)];
+      if (!marks.length) continue;
+      let next = text;
+      for (const mark of marks) {
+        let said = '';
+        try { said = (await client?.getMessage?.(mark[1]!))?.text ?? ''; }
+        catch (error) { deps.logger.warn(`QQ 取被引用消息失败: ${errorText(error)}`); }
+        const body = said ? said.slice(0, 300) : '（取不到原文）';
+        next = next.replace(mark[0], `[引用消息「${body}」]`);
+      }
+      item.text = next;
+    }
   }
 
   async function answer(key: string, gathered: Gathered[]): Promise<void> {
     const config = settings();
     // 攒着的这几秒里开关可能被关掉，或者开始静默：那就别问了。
     if (stopped || !config.autoReply || mutedUntil(config)) return;
+    // 语音和引用都先换成可读的原文再拼文本：这一批里可能好几条都要查，串行就够（一次最多几条）。
+    await transcribeVoices(gathered);
+    await resolveQuotes(gathered);
     // The first speaker's identity carries the turn; a group's lines keep their names in the text.
     const { identity } = gathered[0]!;
     const isGroup = identity.conversationType === 'group';

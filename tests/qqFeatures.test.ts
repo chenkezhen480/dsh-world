@@ -1,4 +1,4 @@
-// What PR #11 added to the QQ channel: reply marks, gathering close messages, the retry queue, quiet hours,
+﻿// What PR #11 added to the QQ channel: reply marks, gathering close messages, the retry queue, quiet hours,
 // the panel's whitelist, @全体, her own words reaching the owner, and the SnowLuma watchdog.
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -29,7 +29,7 @@ const configOf = (over: Partial<QqNativeConfig> = {}): QqNativeConfig => ({
 const incoming = (over: Record<string, unknown> = {}) => ({ kind: 'private', groupId: null, userId: '100', messageId: String(Math.random()), selfId: '9', text: '在吗', ...over });
 
 /** A transport that records what went out; `failures` makes the next sends throw. */
-function wire(failures = 0) {
+function wire(failures = 0, extra: Partial<QqTransport> = {}) {
   const sent: { to: string; parts: string | QqPart[] }[] = [], stickers: string[] = [], posts: string[] = [];
   let options: QqTransportOptions | undefined;
   const send = async (to: string, parts: string | QqPart[]) => {
@@ -42,12 +42,13 @@ function wire(failures = 0) {
       async start() {}, async stop() {}, getState: () => 'online', sendGroup: send, sendPrivate: send,
       async sendCustomFace(emojiId) { stickers.push(emojiId); return { messageId: 's' }; },
       async publishQzone(content) { posts.push(content); return { tid: 't' }; },
+      ...extra,
     };
   };
   return { factory, sent, stickers, posts, private: (message: unknown) => options?.onPrivateMessage?.(message), group: (message: unknown) => options?.onGroupMessage?.(message) };
 }
 
-async function channel(t: test.TestContext, reply: string | ((text: string) => string), over: Partial<QqNativeConfig> = {}, failures = 0) {
+async function channel(t: test.TestContext, reply: string | ((text: string) => string), over: Partial<QqNativeConfig> = {}, failures = 0, extra: Partial<QqTransport> = {}) {
   const asked: string[] = [];
   const { ctx, cleanup } = await hostFixture(t, request => {
     const words = request.messages.filter(message => message.role === 'user' && ['user', 'dsh-world-life'].includes(message.source?.kind ?? '')).at(-1);
@@ -56,7 +57,7 @@ async function channel(t: test.TestContext, reply: string | ((text: string) => s
     return textResponse(typeof reply === 'string' ? reply : reply(last));
   });
   const agent = (await ctx.agents.create({ sessionId: SessionId('qq-home'), agentOptions: { provider: 'test', model: 'test' } })).agent;
-  const transport = wire(failures);
+  const transport = wire(failures, extra);
   let config = configOf(over);
   const module = createQqNativeModule({ ctx, home: async () => agent, config: () => config, logger: quiet, transport: transport.factory, isHome: id => id === agent.id });
   module.start(); cleanup.push(module.stop);
@@ -202,4 +203,22 @@ test('the watchdog starts SnowLuma when its port is closed and says why when it 
   const lost = createSnowlumaSupervisor({ homeDir: '', host: '127.0.0.1', port: 3003, probe: async () => false, log: () => {} });
   lost.start(); await settle(10); lost.stop();
   assert.match(lost.status().lastError!, /snowlumaHome/);
+});
+
+test('引用和语音先换成原文再问她：带 id 的引用取 get_msg，语音取 get_record_text', async t => {
+  const says: Record<string, string> = { '501': '我们去看海吧', '502': '' };
+  const qq = await channel(t, '嗯', {}, 0, {
+    async getMessage(id: string) { return { text: says[id] ?? '', userId: '7' }; },
+    async getRecordText(id: string) { return id === '502' ? '今天有点累' : ''; },
+  });
+  qq.transport.private(incoming({ userId: '100', messageId: '501', text: '[引用消息 id=501] 你看这个' }));
+  await settle(600);
+  assert.equal(qq.asked.length, 1);
+  assert.match(qq.asked[0]!, /\[引用消息「我们去看海吧」\] 你看这个/, '引用换成原文');
+  qq.transport.private(incoming({ userId: '100', messageId: '502', text: '[语音 file=abc.silk]' }));
+  await settle(600);
+  assert.match(qq.asked.at(-1)!, /\[语音：今天有点累\]/, '语音换成转写');
+  qq.transport.private(incoming({ userId: '100', messageId: '999', text: '[语音 file=none.silk]' }));
+  await settle(600);
+  assert.match(qq.asked.at(-1)!, /\[语音（未识别）\]/, '转不出来就说未识别，不装作听过');
 });

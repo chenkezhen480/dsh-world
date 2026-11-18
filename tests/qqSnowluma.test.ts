@@ -60,7 +60,7 @@ test('混合段：未知段不丢、reply id 在 segments 里、mface 有可读�
   assert.equal(msg.sender.role, 'admin');
   assert.match(msg.text, /帮我看下这段/);
   assert.match(msg.text, /\[动画表情\]|\[mface/, 'mface 段必须可读或落到 default 分支留占位');
-  assert.match(msg.text, /^\[引用消息\]/, 'reply 段转成引用占位');
+  assert.match(msg.text, /^\[引用消息 id=2000000001\]/, 'reply 段带上 id，由上层换原文');
   assert.match(msg.text, /@1000000001/);
   assert.match(msg.text, /\[图片\]/);
   assert.equal(msg.segments.find((segment: Loose) => segment.type === 'image').data.file, 'ab12cd34.image');
