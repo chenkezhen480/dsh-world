@@ -10,11 +10,14 @@ const renameAttempts = 10;
 const transientRename = new Set(['EPERM', 'EBUSY', 'EACCES']);
 function sleepSync(ms: number): void { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
 
-/** Exported for tests only (injectable rename). On Windows a reader, indexer or antivirus can briefly lock the target, so a rename that fails with EPERM/EBUSY/EACCES is retried with a short backoff. */
-export function durableWrite(file: string, text: string, rename: (from: string, to: string) => void = renameSync): void {
+/**
+ * Exported for tests only (injectable rename). On Windows a reader, indexer or antivirus can briefly lock the target, so a rename that fails with EPERM/EBUSY/EACCES is retried with a short backoff.
+ * `mode` 只对放密语的文件用（0o600）。要在创建的那一刻就给上：先按默认权限建出来再 chmod，中间那一瞬别的用户读得到。
+ */
+export function durableWrite(file: string, text: string, rename: (from: string, to: string) => void = renameSync, mode = 0o666): void {
   const temporary = `${file}.${process.pid}.tmp`;
   try {
-    const fd = openSync(temporary, 'w');
+    const fd = openSync(temporary, 'w', mode);
     try { writeFileSync(fd, text); fsyncSync(fd); } finally { closeSync(fd); }
     for (let attempt = 1; ; attempt++) {
       try { rename(temporary, file); break; } catch (error) {

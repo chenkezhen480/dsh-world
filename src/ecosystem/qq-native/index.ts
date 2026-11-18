@@ -58,6 +58,8 @@ interface QqIncoming {
   messageId: string;
   selfId: string;
   text: string;
+  /** 秒级时间戳。没有消息 id 的事件要靠它拼指纹去重。 */
+  time?: number | undefined;
   sender?: { nickname?: string; card?: string | null } | undefined;
   /** 原始段数组（OneBot 的 message），用于识别群里有没有叫她，以及接收图片。 */
   segments?: Array<{ type?: string; data?: Record<string, unknown> }> | undefined;
@@ -113,6 +115,12 @@ export interface QqNativeStatus {
   lastError: string | null;
   sent: number;
   failed: number;
+  /** 排队排满、连问都没问上的次数。和 failed 分开：一个是没排上，一个是排上了没跑成。 */
+  rejected: number;
+  /** 话生成了、但没递出去的条数（队里等太久，或者通道关掉了）。 */
+  dropped: number;
+  /** 上一次放弃是因为什么：ttl 等太久，stop 通道关掉。 */
+  lastDroppedReason: 'ttl' | 'stop' | null;
   /** 发不出去、在队里等重试的条数。 */
   outbox: number;
   /** 阳台那条线现在什么样（没开就是 null）。 */
@@ -190,13 +198,20 @@ export function createQqNativeModule(deps: {
   const sentIds = recentIds(SEEN_LIMIT);
   const contexts = new Map<string, ChannelContextMessage[]>();
   const answering = new Set<string>();
+  /** 上一个会话正在回话时又到的几句，等那一轮结束再排（不能并进正在跑的那轮，也不能丢）。 */
+  const deferred = new Map<string, Gathered[]>();
   let client: QqTransport | undefined;
   let nativeBridge: NativeBridge | undefined;
   let stopped = false;
   const disposers: (() => void)[] = [];
   // 面板要的那几个数自己记：传输层只交出一个 getState()，不带计数。
-  const stats: { sent: number; failed: number; blocked: number; lastEventAt: string | null; lastBlockedAt: string | null; lastError: string | null } = {
-    sent: 0, failed: 0, blocked: 0, lastEventAt: null, lastBlockedAt: null, lastError: null,
+  const stats: {
+    sent: number; failed: number; rejected: number; dropped: number; blocked: number;
+    lastEventAt: string | null; lastBlockedAt: string | null; lastError: string | null;
+    lastDroppedReason: 'ttl' | 'stop' | null;
+  } = {
+    sent: 0, failed: 0, rejected: 0, dropped: 0, blocked: 0,
+    lastEventAt: null, lastBlockedAt: null, lastError: null, lastDroppedReason: null,
   };
 
   // 拨过的开关写在 stateFile 里，重载不丢；配置里那个是出厂默认。
@@ -228,8 +243,13 @@ export function createQqNativeModule(deps: {
     return until && Date.now() < Date.parse(until) ? until : null;
   };
 
+  // 端口和家目录都给函数：面板上改过 wsUrl 或 snowlumaHome 之后，下一轮探活用的是新的那份。
+  // 写成固定值的话，改完端口看门狗还一直敲旧端口，报「不通」然后一遍遍去拉起一个根本用不上的 SnowLuma。
+  const supervisorPort = (): number => {
+    try { return Number(new URL(settings().wsUrl).port || 3003); } catch { return 3003; }
+  };
   const supervisor = createSnowlumaSupervisor({
-    homeDir: deps.config().snowlumaHome, host: '127.0.0.1', port: Number(new URL(deps.config().wsUrl).port || 3003),
+    homeDir: () => settings().snowlumaHome, host: '127.0.0.1', port: supervisorPort,
     log: message => deps.logger.info(message),
   });
 
@@ -239,7 +259,16 @@ export function createQqNativeModule(deps: {
     if (sent?.messageId) sentIds.add(String(sent.messageId));
     stats.sent += 1;
   }
-  const outbox = createOutbox<Outgoing>({ send: sendNow, dropped: () => { stats.failed += 1; stats.lastError = '排在队里太久，放弃了'; } });
+  // 放弃一条不是「发失败」：前者是话已经生成、只是没递出去，后者是这一轮本身没跑成。
+  // 混在一个数里，面板上只看到失败往上走，分不清是排队排爆了还是模型炸了。
+  const outbox = createOutbox<Outgoing>({
+    send: sendNow,
+    dropped: (_item, reason) => {
+      stats.dropped += 1;
+      stats.lastDroppedReason = reason === 'stop' ? 'stop' : 'ttl';
+      stats.lastError = reason === 'stop' ? 'QQ 通道关掉时还有话没发出去' : '排在队里太久，放弃了';
+    },
+  });
 
   /** Sends one of her answers: its paragraphs a pause apart (queued if they fail), then stickers and posts. */
   async function say(kind: 'group' | 'private', target: string, text: string): Promise<void> {
@@ -306,13 +335,15 @@ export function createQqNativeModule(deps: {
     const config = settings();
     if (!config.enabled) return;
     const messageId = message.messageId;
-    if (messageId && !seen.add(messageId)) return;
     const selfId = message.selfId;
     const userId = message.userId;
     // Her own words come back through the same socket; answering them would be talking to herself.
     if (!userId || userId === selfId) return;
     const text = message.text.trim().slice(0, MAX_INCOMING);
     if (!text) return;
+    // 去重：有 id 就按 id，没 id 就按「谁、什么时候、说了什么」拼一个指纹。原来只认 id，
+    // 没 id 的事件整段跳过去重，同一条会被处理两遍，她会连着答两次。
+    if (!seen.add(messageId ? `id:${messageId}` : `fp:${userId}|${message.time ?? 0}|${text}`)) return;
     const isGroup = message.kind === 'group';
     const conversationId = isGroup ? message.groupId ?? '' : userId;
     if (!conversationId) return;
@@ -357,6 +388,15 @@ export function createQqNativeModule(deps: {
     const { identity } = gathered[0]!;
     const isGroup = identity.conversationType === 'group';
     const text = gathered.length === 1 ? gathered[0]!.text : gathered.map(item => isGroup && item.who ? `${item.who}: ${item.text}` : item.text).join('\n');
+    // 同一个会话还在回上一轮的话：这几句先存着，等那一轮说完再排。硬并进去的话，
+    // 两轮会同时对着同一段上下文写，她要么重复自己，要么答到一半被人插话。
+    if (answering.has(key)) {
+      const waiting = deferred.get(key) ?? [];
+      waiting.push(...gathered);
+      deferred.set(key, waiting);
+      deps.logger.info(`QQ ${key} 上一轮还没回完，这 ${gathered.length} 句等它说完`);
+      return;
+    }
     answering.add(key);
     try {
       const images = gathered.flatMap(item => item.images.map(image => ({ ...image, identity: item.identity })));
@@ -381,10 +421,20 @@ export function createQqNativeModule(deps: {
       pushContext(key, { id: reply.id, occurredAt: new Date().toISOString(), text: words, identity: herIdentity }, config.contextMessages);
       await say(isGroup ? 'group' : 'private', identity.conversationId, words);
     } catch (error) {
-      stats.failed += 1;
-      stats.lastError = errorText(error);
+      const message = errorText(error);
+      // 排队排满被拒是「这一轮根本没跑起来」，不是「跑了但没成」：分开记，面板上才分得清该等一会儿还是该看模型。
+      if (message.includes('request queue is full')) stats.rejected += 1; else stats.failed += 1;
+      stats.lastError = message;
       deps.logger.warn(`QQ 回复 ${key} 失败: ${stats.lastError}`);
-    } finally { answering.delete(key); }
+    } finally {
+      answering.delete(key);
+      // 先放开这个会话，再把等的几句排回去：反过来的话，重排出去的那一轮会在门口被自己挡下。
+      const waiting = deferred.get(key);
+      if (waiting) {
+        deferred.delete(key);
+        for (const item of waiting) batches.add(key, item);
+      }
+    }
   }
 
   /**
@@ -462,6 +512,9 @@ export function createQqNativeModule(deps: {
       lastError: stats.lastError,
       sent: stats.sent,
       failed: stats.failed,
+      rejected: stats.rejected,
+      dropped: stats.dropped,
+      lastDroppedReason: stats.lastDroppedReason,
       outbox: outbox.size,
       mutedUntil: mutedUntil(config),
       batchQuietMs: config.batchQuietMs,
@@ -478,8 +531,8 @@ export function createQqNativeModule(deps: {
     update(patch: NativePatch): QqNativeStatus {
       if (patch.autoReply !== undefined) overrides.autoReply = patch.autoReply;
       if (patch.mutedUntil !== undefined) overrides.mutedUntil = patch.mutedUntil;
-      if (patch.allowPrivate) overrides.allowPrivate = patch.allowPrivate;
-      if (patch.allowGroups) overrides.allowGroups = patch.allowGroups;
+      if (patch.allowPrivate !== undefined) overrides.allowPrivate = patch.allowPrivate;
+      if (patch.allowGroups !== undefined) overrides.allowGroups = patch.allowGroups;
       if (patch.bridge) overrides.bridge = { port: patch.bridge.port };
       if (patch.batchQuietMs !== undefined) overrides.batchQuietMs = patch.batchQuietMs;
       // 整组换掉，不是逐个合：面板那边是把每个群的下拉一起交上来的，合进去的话，某个群被删掉的行会一直留着。
@@ -538,6 +591,7 @@ export function createQqNativeModule(deps: {
       client = undefined;
       contexts.clear();
       seen.clear(); sentIds.clear();
+      deferred.clear();
     },
   };
 }

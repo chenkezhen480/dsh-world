@@ -37,8 +37,11 @@
 //     { type:'reply', id:'消息id' }          ← 一条消息里最多一次，SDK 会抛错
 //     { type:'image', file:'https://… 或 本地路径' }
 //     { type:'face',  id:'14' }
+//     { type:'record', file:'本地语音路径' }
+//     { type:'video',  file:'本地视频路径' }
+//     { type:'file',   path:'本地文件路径' }   ← 不是消息段，单独上传成群文件 / 私聊文件
 //   也允许直接传字符串，等价于 [{ type:'text', text:那个字符串 }]。
-//   五种之外的部分类型会以明确的 Error 拒绝（宁可大声失败，不悄悄丢段）。
+//   上面几种之外的部分类型会以明确的 Error 拒绝（宁可大声失败，不悄悄丢段）。
 //
 //   注意：文本要自己转义 `[CQ:`（见《范例切片》第 6 节 escapeCqText），
 //         否则模型输出的 `[CQ:at,qq=all]` 会被当真实段执行。
@@ -106,6 +109,8 @@ import {
   chain,
   parseSegments,
 } from '@snowluma/sdk';
+// 文件/语音/视频要先把本地路径开成流；这是 node 子入口，不跟主入口一起加载（主入口要能进浏览器）。
+import { localFile } from '@snowluma/sdk/node';
 import WebSocket from 'ws';
 
 class SnowlumaSocket extends WebSocket {
@@ -332,8 +337,17 @@ export function buildSegments(parts: Loose) {
       case 'face':
         c = c.face(String(requireField(part, 'id', 'face')));
         break;
+      case 'record':
+        c = c.record(String(requireField(part, 'file', 'record')));
+        break;
+      case 'video':
+        c = c.video(String(requireField(part, 'file', 'video')));
+        break;
+      case 'file':
+        // 文件不是消息段：QQ 那边要走单独的上传接口，混在段里只会整条发不出去。
+        throw new Error('parts 里的 file 段要先摘出来单独上传（enqueueSend 会自动处理），不能混进消息段');
       default:
-        throw new Error(`不支持的 parts 段类型「${part?.type ?? '(空)'}」，支持 text / at / reply / image / face`);
+        throw new Error(`不支持的 parts 段类型「${part?.type ?? '(空)'}」，支持 text / at / reply / image / face / record / video / file`);
     }
   }
   const segments = c.build();
@@ -449,11 +463,31 @@ export function createBridge(options: Loose) {
     return task;
   }
 
+  /** 把 file 段摘出来：它不走消息段，得单独上传。剩下的照旧组段。 */
+  function splitFiles(parts: Loose): { rest: Loose; files: Loose[] } {
+    if (!Array.isArray(parts)) return { rest: parts, files: [] };
+    const files = parts.filter(part => part && typeof part === 'object' && part.type === 'file');
+    if (!files.length) return { rest: parts, files };
+    return { rest: parts.filter(part => !files.includes(part)), files };
+  }
+
   function enqueueSend(kind: Loose, targetId: Loose, parts: Loose) {
     return serial(`发送（${kind}:${targetId}）`, async bot => {
-      const segments = buildSegments(parts);
-      const result = await (kind === 'group' ? bot.sendGroupMessage(targetId, segments) : bot.sendPrivateMessage(targetId, segments));
-      return { messageId: String(result?.message_id ?? '') };
+      const { rest, files } = splitFiles(parts);
+      let messageId = '';
+      // 先发正文，再逐个传文件：文件传得慢，压在正文前面会让她那句话迟迟不出现。
+      const hasText = Array.isArray(rest) ? rest.length > 0 : Boolean(rest);
+      if (hasText) {
+        const segments = buildSegments(rest);
+        const result = await (kind === 'group' ? bot.sendGroupMessage(targetId, segments) : bot.sendPrivateMessage(targetId, segments));
+        messageId = String(result?.message_id ?? '');
+      }
+      for (const file of files) {
+        const path = String(requireField(file, 'path', 'file'));
+        if (kind === 'group') await bot.sendGroupFile(targetId, await localFile(path));
+        else await bot.sendPrivateFile(targetId, await localFile(path));
+      }
+      return { messageId };
     });
   }
 

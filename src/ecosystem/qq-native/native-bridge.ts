@@ -39,6 +39,8 @@ export const QUIET_AFTER_SILENCE_MS = 30 * 60_000;
 const MAX_TEXT = 4_000;
 /** 每条线最多记几条旧话当上下文。 */
 const MAX_CONTEXT = 12;
+/** 最多同时开几条线。本机任何程序都能来敲门，没上限光靠开新连接就能把口令试到底。 */
+const MAX_LINES = 32;
 
 export interface BridgeConfig {
   port: number;
@@ -64,6 +66,10 @@ export interface BridgeStatus {
   dropped: number;
   lastAt: string | null;
   lastError: string | null;
+  /** 线满被挡回去的次数。 */
+  refused: number;
+  /** 上限本身，面板上拿它解释「为什么被挡」。 */
+  maxLines: number;
   quiet: { threadId: string; until: string }[];
 }
 
@@ -99,6 +105,8 @@ export function createNativeBridge(deps: {
   let dropped = 0;
   let lastAt: string | null = null;
   let lastError: string | null = null;
+  /** 线满被挡回去的次数（含坏 JSON 那类根本没法处理的敲门）。 */
+  let refused = 0;
 
   /** 口令落在世界目录里，重启 DSH 对面那份配置就不用改。 */
   function readToken(): string {
@@ -109,7 +117,7 @@ export function createNativeBridge(deps: {
     } catch { /* 没这个文件、或者坏了：下面重新生成一条 */ }
     const fresh = randomUUID().replace(/-/g, '') + randomUUID().replace(/-/g, '');
     try {
-      writeFileSync(file, `${JSON.stringify({ token: fresh }, null, 2)}\n`, 'utf8');
+      writeFileSync(file, `${JSON.stringify({ token: fresh }, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
     } catch (error) {
       deps.log(`阳台的口令没能存下来（每次启动都会换一条）：${String(error)}`);
     }
@@ -119,7 +127,11 @@ export function createNativeBridge(deps: {
   function sameToken(given: string): boolean {
     const a = Buffer.from(given);
     const b = Buffer.from(token);
-    return a.length === b.length && timingSafeEqual(a, b);
+    // 长短不一样就直接 false，但比较本身还是走满一整轮：不然「长度对不对」会比「口令对不对」先泄露出去，
+    // 逐个字节试的时候能先靠长度筛掉一大半。长度不同就拿等长的空缓冲去比，再与长度判断合起来。
+    const same = a.length === b.length;
+    const left = same ? a : Buffer.alloc(b.length);
+    return timingSafeEqual(left, b) && same;
   }
 
   function identityOf(threadId: string, speaker?: string): SpeakerIdentity {
@@ -246,6 +258,13 @@ export function createNativeBridge(deps: {
         server!.once('error', error => reject(error));
       });
       server.on('connection', (ws, request) => {
+        // 本机任何程序都能来敲门，没上限的话光靠不停地开新连接就能把口令试到底。
+        if (lines.size >= MAX_LINES) {
+          refused += 1;
+          send(ws, { kind: 'error', message: `线太多了（${MAX_LINES} 条），等一下再来` });
+          ws.close();
+          return;
+        }
         const url = new URL(request.url ?? '/', 'http://127.0.0.1');
         const given = url.searchParams.get('token') ?? '';
         let authorised = given ? sameToken(given) : false;
@@ -255,7 +274,7 @@ export function createNativeBridge(deps: {
         ws.on('message', data => {
           let frame: Frame;
           try { frame = JSON.parse(String(data)) as Frame; }
-          catch { send(ws, { kind: 'error', message: '一行一条 JSON' }); return; }
+          catch { refused += 1; send(ws, { kind: 'error', message: '一行一条 JSON' }); return; }
           // 口令写在 URL 里时 greeted 一上来就是 true，对面（qq-line.js 就是）还会再发一条 hello ——
           // 那条不该落进 handle() 被当成空句子，而该照握手回一句 ready。
           if (greeted && authorised && frame.kind === 'hello') {
@@ -302,6 +321,7 @@ export function createNativeBridge(deps: {
         lines: lines.size,
         threads: [...contexts.keys()],
         received, relayed, spoken, dropped, lastAt, lastError,
+        refused, maxLines: MAX_LINES,
         quiet: [...quietUntil].map(([threadId, until]) => ({ threadId, until: new Date(until).toISOString() })),
       };
     },

@@ -28,8 +28,8 @@ function probePort(host: string, port: number, timeoutMs: number): Promise<boole
 }
 
 export function createSnowlumaSupervisor(options: {
-  /** SnowLuma 的家目录；空字符串表示不知道。 */
-  homeDir: string; host: string; port: number;
+  /** SnowLuma 的家目录；空字符串表示不知道。给函数就每轮现读，面板上改过之后下一轮探的就是新的那个。 */
+  homeDir: string | (() => string); host: string; port: number | (() => number);
   intervalMs?: number; probeTimeoutMs?: number;
   /** 测试替身。 */
   probe?: (host: string, port: number, timeoutMs: number) => Promise<boolean>;
@@ -37,7 +37,11 @@ export function createSnowlumaSupervisor(options: {
   log(message: string): void;
 }) {
   const probe = options.probe ?? probePort;
-  const launch = options.launch ?? (() => startSnowluma(options.homeDir));
+  // homeDir / port 可以给函数：面板上改过之后再探，要用改过的那份；写成固定值的话，
+  // 改完端口看门狗还在敲旧端口，报「不通」然后一遍遍拉起一个根本不需要拉的 SnowLuma。
+  const homeDir = () => typeof options.homeDir === 'function' ? options.homeDir() : options.homeDir;
+  const port = () => typeof options.port === 'function' ? options.port() : options.port;
+  const launch = options.launch ?? (() => startSnowluma(homeDir()));
   const state: SnowlumaStatus = { watching: false, alive: false, lastCheckAt: null, restarts: 0, lastRestartAt: null, lastError: null };
   let timer: ReturnType<typeof setInterval> | undefined;
   let busy = false;
@@ -46,15 +50,15 @@ export function createSnowlumaSupervisor(options: {
     if (busy) return;
     busy = true;
     try {
-      state.alive = await probe(options.host, options.port, options.probeTimeoutMs ?? 3_000);
+      state.alive = await probe(options.host, port(), options.probeTimeoutMs ?? 3_000);
       if (!state.watching) return;
       state.lastCheckAt = new Date().toISOString();
       if (state.alive) { state.lastError = null; return; }
-      if (!options.homeDir) { state.lastError = '没配 qqNative.snowlumaHome，不知道 SnowLuma 装在哪'; return; }
+      if (!homeDir()) { state.lastError = '没配 qqNative.snowlumaHome，不知道 SnowLuma 装在哪'; return; }
       const result = launch();
       state.lastError = result.error ?? (result.alreadyRunning ? 'SnowLuma 已在运行或启动中，等待 OneBot 端口就绪' : result.started ? null : '拉不起来，原因不明');
       if (result.started) { state.restarts += 1; state.lastRestartAt = new Date().toISOString(); }
-      options.log(`看门狗：${options.port} 不通，${result.started ? `已拉起 SnowLuma（${result.how}）` : result.alreadyRunning ? '不重复拉起' : 'SnowLuma 没起来'}${state.lastError ? `：${state.lastError}` : ''}`);
+      options.log(`看门狗：${port()} 不通，${result.started ? `已拉起 SnowLuma（${result.how}）` : result.alreadyRunning ? '不重复拉起' : 'SnowLuma 没起来'}${state.lastError ? `：${state.lastError}` : ''}`);
     } catch (error) {
       state.lastError = error instanceof Error ? error.message : String(error);
     } finally { busy = false; }

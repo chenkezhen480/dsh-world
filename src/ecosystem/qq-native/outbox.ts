@@ -4,8 +4,8 @@
  */
 export function createOutbox<T>(options: {
   send(item: T): Promise<void>;
-  /** Called once for an item given up on. */
-  dropped(item: T): void;
+  /** Called once for an item given up on: `ttl` for too long in the queue, `stop` for the channel going away. */
+  dropped(item: T, reason?: 'ttl' | 'stop'): void;
   intervalMs?: number; ttlMs?: number; maxTries?: number;
 }) {
   const ttlMs = options.ttlMs ?? 5 * 60_000, maxTries = options.maxTries ?? 40;
@@ -18,7 +18,7 @@ export function createOutbox<T>(options: {
     try {
       for (const entry of [...waiting]) {
         const remove = () => waiting.splice(waiting.indexOf(entry), 1);
-        if (Date.now() - entry.since > ttlMs || entry.tries >= maxTries) { remove(); options.dropped(entry.item); continue; }
+        if (Date.now() - entry.since > ttlMs || entry.tries >= maxTries) { remove(); options.dropped(entry.item, 'ttl'); continue; }
         try { await options.send(entry.item); remove(); } catch { entry.tries += 1; }
       }
     } finally { flushing = false; }
@@ -35,6 +35,10 @@ export function createOutbox<T>(options: {
       timer = setInterval(() => { void flush(); }, options.intervalMs ?? 3_000);
       timer.unref?.();
     },
-    stop(): void { if (timer) { clearInterval(timer); timer = undefined; } waiting.length = 0; },
+    /** Stopping drops what is still waiting (the channel is going away), but never silently: each one is reported. */
+    stop(): void {
+      if (timer) { clearInterval(timer); timer = undefined; }
+      for (const entry of waiting.splice(0)) options.dropped(entry.item, 'stop');
+    },
   };
 }
