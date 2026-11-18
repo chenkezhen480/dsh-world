@@ -80,6 +80,8 @@ export interface QqNativeConfig {
   batchQuietMs: number;
   /** 群里什么时候接话：mention 只接被叫到的（被 @ / 被引用她的消息 / 命中关键词），all 每句都接。 */
   groupTrigger: 'mention' | 'all';
+  /** 每个群自己的规矩，键是群号；没写的群照 groupTrigger 走。 */
+  groupTriggers: Readonly<Record<string, 'mention' | 'all'>>;
   /** 群里命中这些词也算在叫她。 */
   groupKeywords: readonly string[];
   /** 只停嘴不停耳：这个时间（ISO）之前照收、照记上下文，但不回；到点自己醒。空着就是没静默。 */
@@ -122,6 +124,8 @@ export interface QqNativeStatus {
   bindHomeSession: 'owner' | 'all' | 'none' | '';
   /** 群里接话的规矩。 */
   groupTrigger: 'mention' | 'all';
+  /** 每个群自己的规矩（只有写过的群在里面）。 */
+  groupTriggers: Record<string, 'mention' | 'all'>;
   /** 静默到什么时候；没在静默就是 null。 */
   mutedUntil: string | null;
   /** 同一个人连发几句合成一次问的窗口（毫秒）。 */
@@ -196,7 +200,7 @@ export function createQqNativeModule(deps: {
   };
 
   // 拨过的开关写在 stateFile 里，重载不丢；配置里那个是出厂默认。
-  type Overrides = { autoReply?: boolean; bridge?: { port?: number }; mutedUntil?: string | null; allowPrivate?: string[]; allowGroups?: string[]; batchQuietMs?: number };
+  type Overrides = { autoReply?: boolean; bridge?: { port?: number }; mutedUntil?: string | null; allowPrivate?: string[]; allowGroups?: string[]; batchQuietMs?: number; groupTriggers?: Record<string, 'mention' | 'all'> };
   const overrides = ((): Overrides => {
     try { return deps.stateFile ? JSON.parse(readFileSync(deps.stateFile, 'utf8')) : {}; } catch { return {}; }
   })();
@@ -215,6 +219,7 @@ export function createQqNativeModule(deps: {
       ...(overrides.allowPrivate === undefined ? {} : { allowPrivate: overrides.allowPrivate }),
       ...(overrides.allowGroups === undefined ? {} : { allowGroups: overrides.allowGroups }),
       ...(overrides.batchQuietMs === undefined ? {} : { batchQuietMs: overrides.batchQuietMs }),
+      ...(overrides.groupTriggers === undefined ? {} : { groupTriggers: overrides.groupTriggers }),
       bridge: overrides.bridge?.port === undefined ? base.bridge : { ...base.bridge, port: overrides.bridge.port },
     };
   };
@@ -260,8 +265,18 @@ export function createQqNativeModule(deps: {
    * 写的是「这句不接」，钱和噪声都已经花了。所以只有被 @ 到（@全体 是群公告，不算）、有人引用过她的话、
    * 或者命中配的关键词，才把话递到她跟前；其余只记进那个群的上下文，等她真被叫到时知道刚才在说什么。
    */
+  /**
+   * 这个群自己那条规矩，没写（或者写得认不出）就照全局那个走。
+   * 一个填错的群号不该让那个群从此不开口，所以只认 mention / all，别的一律当没写。
+   */
+  function triggerForGroup(groupId: string, config: QqNativeConfig): 'mention' | 'all' {
+    const own = config.groupTriggers?.[groupId];
+    if (own === 'all' || own === 'mention') return own;
+    return config.groupTrigger === 'all' ? 'all' : 'mention';
+  }
+
   function directedAtHer(message: QqIncoming, config: QqNativeConfig): boolean {
-    if (config.groupTrigger === 'all') return true;
+    if (triggerForGroup(message.groupId ?? '', config) === 'all') return true;
     for (const segment of message.segments ?? []) {
       const data = segment?.data ?? {};
       if (segment?.type === 'at' && String(data.qq ?? '') === message.selfId) return true;
@@ -438,6 +453,7 @@ export function createQqNativeModule(deps: {
       bindHomeSession: config.bindHomeSession,
       bridge: nativeBridge?.status() ?? null,
       groupTrigger: config.groupTrigger,
+      groupTriggers: { ...(config.groupTriggers ?? {}) },
       conversations: contexts.size,
       answering: answering.size + batches.size,
       lastEventAt: stats.lastEventAt,
@@ -466,6 +482,9 @@ export function createQqNativeModule(deps: {
       if (patch.allowGroups) overrides.allowGroups = patch.allowGroups;
       if (patch.bridge) overrides.bridge = { port: patch.bridge.port };
       if (patch.batchQuietMs !== undefined) overrides.batchQuietMs = patch.batchQuietMs;
+      // 整组换掉，不是逐个合：面板那边是把每个群的下拉一起交上来的，合进去的话，某个群被删掉的行会一直留着。
+      // 给空对象就是全部回到全局默认。
+      if (patch.groupTriggers !== undefined) overrides.groupTriggers = patch.groupTriggers;
       writeOverrides();
       if (patch.bridge) { nativeBridge?.stop(); nativeBridge = undefined; startBridge(settings()); }
       return { ...status(), ...(patch.startSnowluma ? { launch: startSnowluma(settings().snowlumaHome) } : {}) };

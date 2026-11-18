@@ -66,6 +66,7 @@ const configOf = (over: Partial<QqNativeConfig> = {}): QqNativeConfig => ({
   supervise: false,
   bindHomeSession: 'none',
   groupTrigger: 'mention',
+  groupTriggers: {},
   groupKeywords: [],
   // 阳台默认关着（端口 0）：绝大多数用例不该顺手起一个服务器。
   bridge: { port: 0, token: '', title: '阳台', contextMessages: 6 },
@@ -424,6 +425,44 @@ test('groupTrigger 拨成 all：群里每句都接（逃生口）', async t => {
   wire.emitGroup(incoming({ kind: 'group', groupId: '681528723', userId: '3997750133', messageId: '9401', text: '随便说一句' }));
   await settle(600);
   assert.equal(turns, 1, 'all 就是老的「句句都接」');
+});
+
+test('每个群自己定：一个群写 all 就它自己句句都接，别的群照全局 mention 走', async t => {
+  let turns = 0;
+  const { ctx, cleanup } = await hostFixture(t, () => { turns += 1; return textResponse('在'); });
+  const agent = (await ctx.agents.create({ sessionId: SessionId('home'), agentOptions: { provider: 'test', model: 'test' } })).agent;
+  const wire = fakeTransport();
+  const channel = createQqNativeModule({
+    ctx, home: async () => agent, logger: quiet, transport: wire.factory,
+    // 全局是 mention，但这个群自己写了 all —— 面板上每个群一行就是这件事。
+    config: () => configOf({ groupTrigger: 'mention', groupTriggers: { '681528723': 'all' }, allowGroups: ['681528723', '700700700'] }),
+  });
+  channel.start(); cleanup.push(channel.stop);
+
+  wire.emitGroup(incoming({ kind: 'group', groupId: '681528723', userId: '3997750133', messageId: '9501', text: '没叫她' }));
+  await settle(600);
+  assert.equal(turns, 1, '写了 all 的群，没被叫到也接');
+
+  wire.emitGroup(incoming({ kind: 'group', groupId: '700700700', userId: '3997750133', messageId: '9502', text: '也没叫她' }));
+  await settle(600);
+  assert.equal(turns, 1, '没写规矩的群照全局 mention 走：没叫就不接');
+  assert.equal(channel.status().groupTriggers['681528723'], 'all');
+});
+
+test('群的规矩写得认不出：当没写，照全局走（一个填错的群号不该让那个群从此不开口）', async t => {
+  let turns = 0;
+  const { ctx, cleanup } = await hostFixture(t, () => { turns += 1; return textResponse('在'); });
+  const agent = (await ctx.agents.create({ sessionId: SessionId('home'), agentOptions: { provider: 'test', model: 'test' } })).agent;
+  const wire = fakeTransport();
+  const channel = createQqNativeModule({
+    ctx, home: async () => agent, logger: quiet, transport: wire.factory,
+    config: () => configOf({ groupTrigger: 'all', groupTriggers: { '681528723': 'bogus' as never } }),
+  });
+  channel.start(); cleanup.push(channel.stop);
+
+  wire.emitGroup(incoming({ kind: 'group', groupId: '681528723', userId: '3997750133', messageId: '9601', text: '没叫她' }));
+  await settle(600);
+  assert.equal(turns, 1, '认不出的值当没写 → 退回全局 all');
 });
 
 test('不在白名单的消息：到过、被挡下，状态里分得出来', async t => {

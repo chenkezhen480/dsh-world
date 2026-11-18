@@ -591,6 +591,47 @@
         if (wrong) { setMsg('请填 QQ 号：「' + wrong + '」不是号码'); return }
         change({ allowPrivate: people, allowGroups: groups }, function () { return people.length || groups.length ? '名单存好了：私聊 ' + people.length + ' 个、群 ' + groups.length + ' 个' : '名单存好了：现在谁的话都不收' })
       }
+      // 每个群自己的接话规矩。map 里没有这个群 = 跟着全局 groupTrigger 走；
+      // 只交 mention/all 上去，选「跟着默认」就把这个键从 map 里删掉。
+      var groups = (function (n) {
+        var list = []
+        if (!n) return list
+        ;(n.allowGroupsIds || []).forEach(function (id) { if (list.indexOf(id) < 0) list.push(id) })
+        Object.keys(n.groupTriggers || {}).forEach(function (id) { if (list.indexOf(id) < 0) list.push(id) })
+        return list
+      })(props.native)
+      var savedTriggers = (props.native && props.native.groupTriggers) || {}
+      var triggersFrom = groups.join('|') + '|' + JSON.stringify(savedTriggers)
+      var triggerState = useState({ from: '', map: {} }), triggerMap = triggerState[0].map, setTrigger = triggerState[1]
+      useEffect(function () {
+        setTrigger(function (current) {
+          if (current.from === triggersFrom) return current
+          var map = {}
+          Object.keys(savedTriggers).forEach(function (id) { map[id] = savedTriggers[id] })
+          return { from: triggersFrom, map: map }
+        })
+      }, [triggersFrom])
+      function pickTrigger(id, value) {
+        setTrigger(function (current) {
+          var map = {}
+          Object.keys(current.map).forEach(function (key) { map[key] = current.map[key] })
+          if (value === 'mention' || value === 'all') map[id] = value
+          else delete map[id]
+          return { from: current.from, map: map }
+        })
+      }
+      function saveTriggers() {
+        var map = {}, wrong = ''
+        Object.keys(triggerMap).forEach(function (id) {
+          if (!/^[0-9]+$/.test(id)) { if (!wrong) wrong = id; return }
+          if (triggerMap[id] === 'mention' || triggerMap[id] === 'all') map[id] = triggerMap[id]
+        })
+        if (wrong) { setMsg('群号只能是数字：「' + wrong + '」不是号码'); return }
+        change({ groupTriggers: map }, function () {
+          var count = Object.keys(map).length
+          return count ? '存好了：' + count + ' 个群有自己的规矩，其余跟着默认' : '存好了：现在每个群都跟着默认走'
+        })
+      }
       function startSnowluma() {
         change({ startSnowluma: true }, function (state) {
           var r = state && state.launch
@@ -644,6 +685,26 @@
           h('input', { key: 'g', type: 'text', 'aria-label': '群白名单', placeholder: '群号', disabled: busy, value: allow.groups, onChange: function (e) { setAllow({ from: allow.from, people: allow.people, groups: e.target.value }) } }),
           h('button', { key: 'b', className: 'dw-btn', disabled: busy, onClick: saveAllow }, '存名单'),
           h('div', { key: 'h', className: 'dw-muted', style: { width: '100%' } }, '多个用逗号隔开；留空就是谁的话都不收。改完不用重启。'),
+        ]) : null,
+        // 每个群单独一行：谁在列表里就都有自己的一格，选「跟着默认」就不写进 groupTriggers。
+        // 群号来源 = 群白名单 + 已经存过规矩的群（后者可能已经不在白名单里，也要能改回来）。
+        groups.length ? h('div', { key: 'triggers', className: 'dw-setting', style: { flexWrap: 'wrap' } }, [
+          h('div', { key: 'h', className: 'dw-muted', style: { width: '100%' } },
+            '每个群自己定：默认是' + ((props.native && props.native.groupTrigger) === 'all' ? '每句都接' : '只接被叫到的') + '。改完不用重启。'),
+          groups.map(function (id) {
+            return h('div', { key: 'g' + id, className: 'dw-setting', style: { width: '100%', gap: 8 } }, [
+              h('span', { key: 'i', style: { minWidth: 110, fontVariantNumeric: 'tabular-nums' } }, id),
+              h('select', {
+                key: 's', 'aria-label': '群 ' + id + ' 的接话规矩', disabled: busy, value: triggerMap[id] || '',
+                onChange: function (e) { pickTrigger(id, e.target.value) },
+              }, [
+                h('option', { key: 'd', value: '' }, '跟着默认'),
+                h('option', { key: 'm', value: 'mention' }, '只接被叫到的'),
+                h('option', { key: 'a', value: 'all' }, '每句都接'),
+              ]),
+            ])
+          }),
+          h('button', { key: 'b', className: 'dw-btn', disabled: busy, onClick: saveTriggers }, '存群的规矩'),
         ]) : null,
         (function (n) {
           if (!n) return null

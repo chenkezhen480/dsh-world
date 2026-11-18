@@ -23,7 +23,7 @@ async function until(check: () => boolean, what: string, timeoutMs = 10_000) {
 }
 const configOf = (over: Partial<QqNativeConfig> = {}): QqNativeConfig => ({
   enabled: true, wsUrl: 'ws://127.0.0.1:1', accessToken: '', allowPrivate: ['100'], ownerQQ: '', allowGroups: ['200'], autoReply: true,
-  contextMessages: 3, batchQuietMs: 0, groupTrigger: 'mention', groupKeywords: [], mutedUntil: '', snowlumaHome: '', supervise: false,
+  contextMessages: 3, batchQuietMs: 0, groupTrigger: 'mention', groupTriggers: {}, groupKeywords: [], mutedUntil: '', snowlumaHome: '', supervise: false,
   bindHomeSession: 'none', bridge: { port: 0, token: '', title: '阳台', contextMessages: 6 }, ...over,
 });
 const incoming = (over: Record<string, unknown> = {}) => ({ kind: 'private', groupId: null, userId: '100', messageId: String(Math.random()), selfId: '9', text: '在吗', ...over });
