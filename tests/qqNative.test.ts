@@ -694,6 +694,30 @@ test('面板拨的 forwardOwn 与备注存下来，重载后还在', async t => 
   assert.deepEqual(JSON.parse(readFileSync(stateFile, 'utf8')), { forwardOwn: false, aliases: { '2653935317': '鳐辰' } });
 });
 
+test('面板存的唤醒词落盘，重载后还在；mention 群里带词就算在叫她', async t => {
+  const { ctx, cleanup } = await hostFixture(t, () => textResponse('嗯，我在'));
+  cleanup.push(() => {}, );
+  const dir = mkdtempSync(join(tmpdir(), 'dw-qq-kw-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const stateFile = join(dir, 'qq-native.json');
+  const agent = (await ctx.agents.create({ sessionId: SessionId('home'), agentOptions: { provider: 'test', model: 'test' } })).agent;
+  const wire = fakeTransport();
+  const make = () => createQqNativeModule({ ctx, home: async () => agent, config: () => configOf({ allowGroups: ['700700700'], groupTrigger: 'mention' }), stateFile, logger: quiet, transport: wire.factory });
+  const qq = make();
+  qq.start();
+  // 先来一条既不 @ 也不带词的，不该接
+  wire.emitGroup(incoming({ kind: 'group', groupId: '700700700', userId: '300', messageId: 'kw-1', text: '今天天气不错' }));
+  await settle(800);
+  assert.deepEqual(wire.sent, [], '没叫她就不开口');
+  // 存下唤醒词，再带词来一条，就该接了
+  qq.update({ groupKeywords: ['大肥鱼'] });
+  assert.deepEqual(make().status().groupKeywords, ['大肥鱼']);
+  wire.emitGroup(incoming({ kind: 'group', groupId: '700700700', userId: '300', messageId: 'kw-2', text: '这条是给大肥鱼看的' }));
+  await settle(800);
+  assert.equal(wire.sent.length, 1, '命中唤醒词，开口');
+  assert.deepEqual(JSON.parse(readFileSync(stateFile, 'utf8')), { groupKeywords: ['大肥鱼'] });
+  qq.stop();
+});
+
 test('面板先改阳台端口，也不会丢掉之前存下的自动回复开关', async t => {
   const { ctx } = await hostFixture(t, () => textResponse('嗯'));
   const dir = mkdtempSync(join(tmpdir(), 'dw-qq-state-')); t.after(() => rmSync(dir, { recursive: true, force: true }));

@@ -639,6 +639,11 @@
       var savedTriggers = (props.native && props.native.groupTriggers) || {}
       var triggersFrom = groups.join('|') + '|' + JSON.stringify(savedTriggers)
       var triggerState = useState({ from: '', map: {} }), triggerMap = triggerState[0].map, setTrigger = triggerState[1]
+      var kwState = useState({ words: null, draft: '' }), kw = kwState[0], setKw = kwState[1]
+      var kwFrom = (props.native && JSON.stringify(props.native.groupKeywords || [])) || '[]'
+      useEffect(function () {
+        setKw(function (old) { return old.from === kwFrom ? old : { words: JSON.parse(kwFrom), draft: '' } })
+      }, [kwFrom])
       useEffect(function () {
         setTrigger(function (current) {
           if (current.from === triggersFrom) return current
@@ -667,6 +672,20 @@
           var count = Object.keys(map).length
           return count ? '存好了：' + count + ' 个群有自己的规矩，其余跟着默认' : '存好了：现在每个群都跟着默认走'
         })
+      }
+      function saveKeywords() {
+        var words = (kw.words || []).filter(function (w) { return w && w.trim() })
+        var draft = kw.draft.trim()
+        if (draft) words.push(draft)
+        var bad = words.find(function (w) { return w.length > 32 })
+        if (bad) { setMsg('唤醒词最长 32 个字：「' + bad.slice(0, 12) + '…」太长了'); return }
+        change({ groupKeywords: words }, function () {
+          return words.length ? '存好了：' + words.length + ' 个唤醒词，mention 的群里带其中一个就算在叫她' : '存好了：现在唤醒词清空，mention 只认 @ 和引用她的消息'
+        })
+        setKw({ words: words, draft: '' })
+      }
+      function dropKeyword(i) {
+        setKw(function (old) { var words = (old.words || []).slice(); words.splice(i, 1); return { words: words, draft: old.draft } })
       }
       function startSnowluma() {
         change({ startSnowluma: true }, function (state) {
@@ -773,6 +792,16 @@
             ])
           }),
           h('button', { key: 'b', className: 'dw-btn', disabled: busy, onClick: saveTriggers }, '存群的规矩'),
+        ]) : null,
+        kw.words ? h('div', { key: 'keywords', className: 'dw-setting', style: { flexWrap: 'wrap' } }, [
+          h('div', { key: 'note', style: { flexBasis: '100%' } }, '唤醒词（mention 的群里，消息带其中一个就算在叫她；清空后只认 @ 和引用）：'),
+          kw.words.length ? kw.words.map(function (w, i) {
+            return h('span', { key: w + '.' + i }, w,
+              h('button', { onClick: function () { dropKeyword(i) }, title: '删掉这个词', disabled: busy }, '×'))
+          }) : h('span', { key: 'none', className: 'dw-muted' }, '（还没有）'),
+          h('input', { key: 'add', value: kw.draft, placeholder: '加一个唤醒词',
+            onInput: function (e) { var v = e.target.value; setKw(function (old) { return { words: old.words, draft: v } }) } }),
+          h('button', { key: 'save', className: 'dw-btn', disabled: busy, onClick: saveKeywords }, '存唤醒词'),
         ]) : null,
         (function (n) {
           if (!n) return null

@@ -40,7 +40,7 @@ function allowed(req: IncomingMessage, allowedHosts: readonly string[]): boolean
  * What the panel may change about her own channel: replying, the balcony's port, staying quiet until a time
  * (`null` speaks again at once), who may talk to her, and starting SnowLuma once by hand.
  */
-export interface NativePatch { autoReply?: boolean; bridge?: { port: number }; mutedUntil?: string | null; allowPrivate?: string[]; allowGroups?: string[]; batchQuietMs?: number; groupTriggers?: Record<string, 'mention' | 'all'>; forwardOwn?: boolean; aliases?: Record<string, string>; startSnowluma?: true }
+export interface NativePatch { autoReply?: boolean; bridge?: { port: number }; mutedUntil?: string | null; allowPrivate?: string[]; allowGroups?: string[]; batchQuietMs?: number; groupTriggers?: Record<string, 'mention' | 'all'>; groupKeywords?: string[]; forwardOwn?: boolean; aliases?: Record<string, string>; startSnowluma?: true }
 type SetNative = (patch: NativePatch) => unknown;
 
 /** A whitelist from the panel: QQ numbers as strings or numbers, blanks dropped; an empty list lets nobody in. */
@@ -71,6 +71,20 @@ function groupTriggers(raw: unknown, key: string): Record<string, 'mention' | 'a
     map[id] = value;
   }
   return map;
+}
+
+// 群里的唤醒词：mention 模式下，消息里带其中一个词才算在叫她。空字符串一律不要。
+function groupKeywords(raw: unknown, key: string): string[] | string {
+  if (!Array.isArray(raw)) return `${key} 要是一个数组`;
+  const words: string[] = [];
+  for (const one of raw) {
+    if (typeof one !== 'string') return `${key} 里只能是词`;
+    const word = one.trim();
+    if (!word) continue;
+    if (word.length > 32) return `${key} 里有条超过 32 个字：${word.slice(0, 12)}…`;
+    words.push(word);
+  }
+  return words;
 }
 
 /**
@@ -117,6 +131,11 @@ async function write(doors: ConsoleDoors | undefined, path: string, body: Record
         if (typeof map === 'string') return bad(map);
         patch.groupTriggers = map;
       }
+      if (body?.groupKeywords !== undefined) {
+        const words = groupKeywords(body.groupKeywords, 'groupKeywords');
+        if (typeof words === 'string') return bad(words);
+        patch.groupKeywords = words;
+      }
       if (body?.forwardOwn !== undefined) {
         if (typeof body.forwardOwn !== 'boolean') return bad('forwardOwn 要是一个开关（true 推、false 不推）');
         patch.forwardOwn = body.forwardOwn;
@@ -136,7 +155,7 @@ async function write(doors: ConsoleDoors | undefined, path: string, body: Record
         if (typeof port !== 'number' || !Number.isInteger(port) || port < 0 || port > 65535) return bad('bridge.port 要是 0 到 65535 之间的整数');
         patch.bridge = { port };
       }
-      if (!Object.keys(patch).length) return bad('autoReply、bridge、mutedUntil、allowPrivate、allowGroups、batchQuietMs、groupTriggers、forwardOwn、aliases、startSnowluma 至少要给一个');
+      if (!Object.keys(patch).length) return bad('autoReply、bridge、mutedUntil、allowPrivate、allowGroups、batchQuietMs、groupTriggers、groupKeywords、forwardOwn、aliases、startSnowluma 至少要给一个');
       return ok(setNative(patch));
     }
     case '/open': {

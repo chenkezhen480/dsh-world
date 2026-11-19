@@ -101,6 +101,21 @@ test('每个群自己的接话规矩：只认纯数字群号 + mention/all，别
   ]);
 });
 
+test('唤醒词只收非空、去空格、≤32 字的词；空数组就是清空', async () => {
+  const patches: unknown[] = [];
+  const route = qqRoute('/dsh-world/worlds/fish', [], doors(), native, patch => { patches.push(patch); return { ok: true }; });
+  const post = (body: unknown) => call(route, request('POST', '/native', { headers: WRITE, body }));
+  assert.equal((await post({ groupKeywords: '大肥鱼' })).status, 400, '要是一个数组');
+  assert.match(String((await post({ groupKeywords: [42] })).body.error), /只能是词/);
+  assert.match(String((await post({ groupKeywords: ['x'.repeat(33)] })).body.error), /超过 32 个字/);
+  assert.equal((await post({ groupKeywords: ['  大肥鱼 ', '', 'D老师'] })).status, 200);
+  assert.equal((await post({ groupKeywords: [] })).status, 200, '空数组就是清空');
+  assert.deepEqual(patches, [
+    { groupKeywords: ['大肥鱼', 'D老师'] },
+    { groupKeywords: [] },
+  ]);
+});
+
 test('合批窗口只收 0 到 30 秒的整数毫秒：一批从第一句起最多等 30 秒，再长也没用', async () => {
   const patches: unknown[] = [];
   const route = qqRoute('/dsh-world/worlds/fish', [], doors(), native, patch => { patches.push(patch); return { ok: true }; });

@@ -142,6 +142,7 @@ export interface QqNativeStatus {
   groupTrigger: 'mention' | 'all';
   /** 每个群自己的规矩（只有写过的群在里面）。 */
   groupTriggers: Record<string, 'mention' | 'all'>;
+  groupKeywords: string[];
   /** 静默到什么时候；没在静默就是 null。 */
   mutedUntil: string | null;
   /** 同一个人连发几句合成一次问的窗口（毫秒）。 */
@@ -223,7 +224,7 @@ export function createQqNativeModule(deps: {
   };
 
   // 拨过的开关写在 stateFile 里，重载不丢；配置里那个是出厂默认。
-  type Overrides = { autoReply?: boolean; bridge?: { port?: number }; mutedUntil?: string | null; allowPrivate?: string[]; allowGroups?: string[]; batchQuietMs?: number; groupTriggers?: Record<string, 'mention' | 'all'>; forwardOwn?: boolean; aliases?: Record<string, string> };
+  type Overrides = { autoReply?: boolean; bridge?: { port?: number }; mutedUntil?: string | null; allowPrivate?: string[]; allowGroups?: string[]; batchQuietMs?: number; groupTriggers?: Record<string, 'mention' | 'all'>; groupKeywords?: string[]; forwardOwn?: boolean; aliases?: Record<string, string> };
   const overrides = ((): Overrides => {
     try { return deps.stateFile ? JSON.parse(readFileSync(deps.stateFile, 'utf8')) : {}; } catch { return {}; }
   })();
@@ -243,6 +244,7 @@ export function createQqNativeModule(deps: {
       ...(overrides.allowGroups === undefined ? {} : { allowGroups: overrides.allowGroups }),
       ...(overrides.batchQuietMs === undefined ? {} : { batchQuietMs: overrides.batchQuietMs }),
       ...(overrides.groupTriggers === undefined ? {} : { groupTriggers: overrides.groupTriggers }),
+      ...(overrides.groupKeywords === undefined ? {} : { groupKeywords: overrides.groupKeywords }),
       ...(overrides.forwardOwn === undefined ? {} : { forwardOwn: overrides.forwardOwn }),
       ...(overrides.aliases === undefined ? {} : { aliases: overrides.aliases }),
       bridge: overrides.bridge?.port === undefined ? base.bridge : { ...base.bridge, port: overrides.bridge.port },
@@ -517,6 +519,7 @@ export function createQqNativeModule(deps: {
       bridge: nativeBridge?.status() ?? null,
       groupTrigger: config.groupTrigger,
       groupTriggers: { ...(config.groupTriggers ?? {}) },
+      groupKeywords: [...(config.groupKeywords ?? [])],
       conversations: contexts.size,
       answering: answering.size + batches.size,
       lastEventAt: stats.lastEventAt,
@@ -551,6 +554,8 @@ export function createQqNativeModule(deps: {
       // 整组换掉，不是逐个合：面板那边是把每个群的下拉一起交上来的，合进去的话，某个群被删掉的行会一直留着。
       // 给空对象就是全部回到全局默认。
       if (patch.groupTriggers !== undefined) overrides.groupTriggers = patch.groupTriggers;
+      // 唤醒词整组换掉：面板一次交来全部词，空数组就是清空，回到只认 @ 和引用。
+      if (patch.groupKeywords !== undefined) overrides.groupKeywords = patch.groupKeywords;
       if (patch.forwardOwn !== undefined) overrides.forwardOwn = patch.forwardOwn;
       if (patch.aliases !== undefined) overrides.aliases = patch.aliases;
       writeOverrides();
