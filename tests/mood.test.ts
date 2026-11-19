@@ -10,6 +10,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools';
 import { hostFixture, textResponse } from './hostFixture.ts';
 import { MOOD_CLEARED, moodAge, moodText, parseMood, readMood } from '../src/mood.ts';
 import { moodTools } from '../src/moodTools.ts';
+import { readMoodLedger } from '../src/moodLedger.ts';
 import { createWorldRuntime } from '../src/runtime.ts';
 import { createArchiveStore } from '../src/store.ts';
 
@@ -172,7 +173,7 @@ test('set_mood replaces the whole mood file in one call, refuses a line it canno
   const file = join(root, 'mood.md'); let inside = true;
   const [setMood] = moodTools(file, () => inside);
   const run = (mood: unknown) => setMood!.execute({ mood } as never, { signal: new AbortController().signal } as never);
-  assert.equal(await run('开心 6\n累 7\n外面在下雨'), '已记下。');
+  assert.match(await run('开心 6\n累 7\n外面在下雨') as string, /^已记下（.+的那条被换掉了）。$/);
   assert.equal(await readFile(file, 'utf8'), '开心 6\n累 7\n外面在下雨\n');
   await assert.rejects(run('开心 11'), /有 1 行没读懂，这次没有改动/);
   await assert.rejects(run('  \n'), /没有写任何心情/);
@@ -181,6 +182,25 @@ test('set_mood replaces the whole mood file in one call, refuses a line it canno
   inside = false;
   await assert.rejects(run('开心 3'), /不在世界工作区内/);
   assert.equal(await readFile(file, 'utf8'), '开心 6\n累 7\n外面在下雨\n');
+});
+
+test('set_mood appends one ledger row per accepted change, and a refused change appends nothing', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-world-mood-ledger-')); t.after(() => rm(root, { recursive: true, force: true }));
+  const file = join(root, 'mood.md');
+  const [setMood] = moodTools(file, () => true);
+  const run = (mood: unknown) => setMood!.execute({ mood } as never, { signal: new AbortController().signal } as never);
+  await run('开心 6\n外面在下雨');
+  await run('平静 8\n累 3');
+  await assert.rejects(run('高兴 7'), /不在固定的心情里/);
+  await run('开心 9');
+  const rows = readMoodLedger(file).map((row: { values: Record<string, number>; trivia?: string[] }) => row.values);
+  assert.equal(rows.length, 3, 'one row per accepted change');
+  assert.deepEqual(rows, [{ 开心: 6 }, { 平静: 8, 累: 3 }, { 开心: 9 }]);
+  assert.deepEqual(readMoodLedger(file)[0]!.trivia, ['外面在下雨'], 'trivia beside the mood lands in the ledger too');
+  await run('开心 10\n想念 5\n他说想我了');
+  const last = readMoodLedger(file).at(-1)!;
+  assert.deepEqual(last.trivia, ['他说想我了']);
+  assert.match(await readFile(file, 'utf8'), /开心 10/);
 });
 
 test('her world sessions have set_mood, and what she records with it shows on the next step; sessions outside never get it', async t => {
