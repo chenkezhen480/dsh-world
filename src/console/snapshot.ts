@@ -60,6 +60,8 @@ export interface SnapshotDeps {
   update?(): unknown;
   /** Which modules the config allows, whether their console switch is on, and whether they are running now. */
   modules?(): unknown;
+  /** Whether her room page is installed, and whether that version fits this plugin. */
+  room?(): unknown;
   /** Her own browser and the tools she saved; absent while the module is off. */
   computer?(): unknown;
   /** The OneBot channel she runs herself; null while it is off. */
@@ -97,6 +99,7 @@ export function consoleSources(deps: SnapshotDeps): ConsoleSources & { invalidat
       native,
       update: deps.update?.() ?? null,
       modules: deps.modules?.() ?? null,
+      room: deps.room?.() ?? null,
       computer: deps.computer?.() ?? null,
     };
   }

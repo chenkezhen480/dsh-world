@@ -69,8 +69,16 @@ test('a prior active host package process is rejected before rollback files are 
   assert.equal(await readFile(file, 'utf8'), '{"changedByPreviousRun":true}'); assert.equal(sdk.needsRestart(), false);
 });
 
-test('without a profile to install into, the partner is told to install it by hand, and only a declared peer can be installed', async () => {
-  const host: HostInstaller = { withFileLock: async (_path, work) => work(), writeFileAtomic: async () => {}, runProfilePnpm: async () => ({ exitCode: 0, output: '' }) };
+test('the room page installs the same way, at the version range dsh-world asks for', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'room-package-')); t.after(() => rm(root, { recursive: true, force: true }));
+  await writeFile(join(root, 'package.json'), '{"private":true}');
+  const args: string[][] = [];
+  const host: HostInstaller = { withFileLock: async (_path, work) => work(), writeFileAtomic: async () => {}, runProfilePnpm: async (_profile, values) => { args.push(values); return { exitCode: 0, output: '' }; } };
+  const room = createPackageInstaller({ name: 'dsh-world-room', label: '小屋', available: () => false, profile: () => ({ dir: root, name: 'test', packageManager: { command: 'host-node' } }), loadHost: async () => host, signal: new AbortController().signal });
+  assert.equal(await room.ensure(), true);
+  assert.deepEqual(args[1]!.slice(0, 2), ['add', 'dsh-world-room@^0.1.0']);
+  const missing = createPackageInstaller({ name: 'dsh-world-room', label: '小屋', available: () => false, profile: () => undefined, loadHost: async () => host, signal: new AbortController().signal });
+  await assert.rejects(missing.ensure(), /请手动安装小屋（dsh-world-room）/, 'no space before a Chinese label');
   const sdk = createPackageInstaller({ ...SDK, available: () => false, profile: () => undefined, loadHost: async () => host, signal: new AbortController().signal });
   await assert.rejects(sdk.ensure(), /请手动安装 SnowLuma SDK（@snowluma\/sdk）/);
   assert.throws(() => createPackageInstaller({ name: 'left-pad', label: 'x', available: () => true, profile: () => undefined, signal: new AbortController().signal }), /not a peer dependency/);

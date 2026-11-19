@@ -9,6 +9,7 @@ import { MemoryError, type MemoryContent, type MemoryErrorCode, type MemoryPage 
 import { errorText } from '../faults.ts';
 
 import { WRITE_HEADER } from '../worldRoutes.ts';
+import { isWeather, WEATHERS, type Weather } from '../cottage/life.ts';
 
 export { WRITE_HEADER };
 const MAX_BODY_BYTES = 64 * 1024;
@@ -47,12 +48,16 @@ export interface ConsoleActions {
   setSchedule(schedule: { review?: string | null; wake?: string | null }): void;
   /** A field left out stays as it is; null goes back to its default. */
   /**
-   * Turns the WeChat, QQ, computer and desktop modules on or off now (their tools and routes come and go with the switch),
+   * Turns the WeChat, QQ, computer, desktop and cottage modules on or off now (their tools and routes come and go with the switch),
    * and foreground mode, which is never kept: on asks the partner for administrator rights. Returns why it cannot, or nothing.
    */
-  setModules(modules: { wechat?: boolean; qq?: boolean; computer?: boolean; desktop?: boolean; foreground?: boolean }): Promise<string | { restartRequired: true; message: string } | undefined>;
+  setModules(modules: { wechat?: boolean; qq?: boolean; computer?: boolean; desktop?: boolean; foreground?: boolean; cottage?: boolean }): Promise<string | { restartRequired: true; message: string } | undefined>;
   /** Brings her browser window forward (for scanning a login code); returns why it cannot, or nothing. */
   showComputer(): Promise<string | undefined>;
+  /** Installs her room page into the profile, or updates it to the version this plugin wants; returns why it could not, or nothing. */
+  installRoom(): Promise<string | undefined>;
+  /** Sets the weather at her cottage; returns why it cannot (she does not live there now), or nothing. */
+  setCottageWeather(weather: Weather): string | undefined;
   /** Restarts the adapter the plugin manages; false when it does not manage one. */
   restartWechatAdapter(): Promise<boolean>;
   setWechatSettings(settings: { context?: number | null; bufferSeconds?: number | null }): void;
@@ -125,13 +130,20 @@ async function write(actions: ConsoleActions, path: string, body: Record<string,
       actions.setInboxIgnore(names); return ok();
     }
     case '/console/modules': {
-      const wechat = body?.wechat, qq = body?.qq, computer = body?.computer, desktop = body?.desktop, foreground = body?.foreground;
-      if (!optionalFlag(wechat) || !optionalFlag(qq) || !optionalFlag(computer) || !optionalFlag(desktop) || !optionalFlag(foreground)) return bad('wechat、qq、computer、desktop 和 foreground 必须是 true 或 false');
-      if ([wechat, qq, computer, desktop, foreground].every(flag => flag === undefined)) return bad('nothing to change');
-      const refused = await actions.setModules({ ...(wechat === undefined ? {} : { wechat }), ...(qq === undefined ? {} : { qq }), ...(computer === undefined ? {} : { computer }), ...(desktop === undefined ? {} : { desktop }), ...(foreground === undefined ? {} : { foreground }) });
+      const wechat = body?.wechat, qq = body?.qq, computer = body?.computer, desktop = body?.desktop, foreground = body?.foreground, cottage = body?.cottage;
+      if (!optionalFlag(wechat) || !optionalFlag(qq) || !optionalFlag(computer) || !optionalFlag(desktop) || !optionalFlag(foreground) || !optionalFlag(cottage)) return bad('wechat、qq、computer、desktop、foreground 和 cottage 必须是 true 或 false');
+      if ([wechat, qq, computer, desktop, foreground, cottage].every(flag => flag === undefined)) return bad('nothing to change');
+      const refused = await actions.setModules({ ...(wechat === undefined ? {} : { wechat }), ...(qq === undefined ? {} : { qq }), ...(computer === undefined ? {} : { computer }), ...(desktop === undefined ? {} : { desktop }), ...(foreground === undefined ? {} : { foreground }), ...(cottage === undefined ? {} : { cottage }) });
       return typeof refused === 'string' ? bad(refused) : ok({ ok: true, ...refused });
     }
     case '/console/computer/open': { const refused = await actions.showComputer(); return refused ? bad(refused) : ok(); }
+    case '/console/room/install': { const refused = await actions.installRoom(); return refused ? bad(refused) : ok(); }
+    case '/console/cottage/weather': {
+      const weather = body?.weather;
+      if (!isWeather(weather)) return bad(`weather 只能是 ${Object.keys(WEATHERS).join('、')}`);
+      const refused = actions.setCottageWeather(weather);
+      return refused ? bad(refused) : ok();
+    }
     case '/console/wechat-adapter': return await actions.restartWechatAdapter() ? ok() : bad('适配器不是由插件管理的，请在配置里写 wechatAdapter');
     case '/console/archive-scope': {
       if (!validArchiveScope(body?.scope)) return bad('scope must be home or workspace');

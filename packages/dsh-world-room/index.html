@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>她的小屋</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #F7EEE2; overflow: hidden; }
+  canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+  #fault { position: fixed; inset: auto 0 0 0; margin: 0; padding: 10px 14px; background: #7A2E2E; color: #fff; font: 13px/1.5 system-ui, sans-serif; white-space: pre-wrap; }
+  #fault:empty { display: none; }
+  .bubble { position: fixed; left: 0; top: 0; padding: 4px 10px; border-radius: 14px; background: #FFFDF6; border: 2px solid #5B3A2C; color: #2D3364; font: 600 13px/1.4 system-ui, sans-serif; white-space: nowrap; pointer-events: none; will-change: transform; }
+  .bubble[hidden] { display: none; }
+  #home { position: fixed; left: 12px; top: 12px; padding: 6px 14px; border-radius: 16px; background: #FFFDF6; border: 2px solid #5B3A2C; color: #5B3A2C; font: 600 13px/1.4 system-ui, sans-serif; cursor: pointer; }
+  #home[hidden] { display: none; }
+</style>
+<script type="importmap">
+{ "imports": { "three": "./vendor/three/build/three.module.js", "three/addons/": "./vendor/three/examples/jsm/" } }
+</script>
+</head>
+<body>
+<canvas id="room"></canvas>
+<div id="alarm" class="bubble" hidden></div>
+<div id="lock" class="bubble" hidden>🔒 暂未开放</div>
+<div id="where" class="bubble" hidden></div>
+<button id="home" type="button" hidden>回到小屋</button>
+<pre id="fault"></pre>
+<script type="module" src="./js/main.js"></script>
+</body>
+</html>

@@ -82,6 +82,7 @@
   },
   "peerDependencies": {
     "@snowluma/sdk": "^2.2.1",
+    "dsh-world-room": "^0.1.0",
     "@deepseek-ai/dsh-plugin-manager": ">=0.2.1-rc.3 <0.3.0-0 || >=0.2.2-rc.1 <0.3.0-0",
     "@deepseek-ai/dsh-atomic-write": ">=0.2.1-rc.3 <0.3.0-0 || >=0.2.2-rc.1 <0.3.0-0",
     "@deepseek-ai/cordis": "~4.0.5 || ~4.1.0",
@@ -98,6 +99,9 @@
   },
   "peerDependenciesMeta": {
     "@snowluma/sdk": {
+      "optional": true
+    },
+    "dsh-world-room": {
       "optional": true
     },
     "@deepseek-ai/dsh-plugin-manager": {

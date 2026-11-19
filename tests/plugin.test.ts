@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test, { type TestContext } from 'node:test';
-import { existsSync } from 'node:fs';
+import { existsSync, symlinkSync } from 'node:fs';
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -8,6 +8,7 @@ import { Readable } from 'node:stream';
 import { setImmediate as nextImmediate } from 'node:timers/promises';
 import type { Context } from '@deepseek-ai/cordis';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createUserMessage, isAgentLoopRequest, LlmAdapter, LlmError, ToolCallId, type GenerateOptions } from '@deepseek-ai/dsh-llm';
 import { SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session';
 import { defineTool } from '@deepseek-ai/dsh-tools';
@@ -685,7 +686,7 @@ test('apply saved prompts waits for the home turn, compacts once and refreshes b
   await ctx.plugin(ToolFreeCompaction, { auto: false, headroomTokens: 0, maxTokens: 128 }).await();
   const { routes } = provideLifeHost(ctx);
   const plugin = ctx.plugin(worldPlugin, { ...config, life: true }); cleanup.push(() => plugin.dispose()); await plugin.await();
-  await until(async () => routes.length === 3, 'console');
+  await until(async () => routes.length === 4, 'console');
   await consolePost(routes, '/dsh-world/worlds/fish/console/persona', { 名字: '小鱼', 性格: 'OLD_PERSONA' });
   await consolePost(routes, '/dsh-world/worlds/fish/console/world-prompt', { text: 'OLD_WORLD {{name}} {{homeTitle}} {{self}}' });
   await consolePost(routes, '/dsh-world/worlds/fish/console/start');
@@ -764,7 +765,8 @@ test('two worlds in one profile keep their own routes and memory (#40)', async t
   }
   const fish = '/dsh-world/worlds/fish';
   const tata = '/dsh-world/worlds/tata';
-  await until(async () => routes.length === 5, 'the two consoles and world list');
+  await until(async () => routes.length === 7, 'the two consoles, their rooms and the world list');
+  assert.ok([fish, tata].every(prefix => routes.some(route => route.path === `${prefix}/room`)), 'each world has its own room page');
   const duplicate = ctx.plugin(worldPlugin, config);
   cleanup.push(() => duplicate.dispose());
   await assert.rejects(duplicate.await(), /worldId.*fish/);
@@ -1084,7 +1086,7 @@ test('her world waits for start in the console; start builds the home and greets
   const { routes, unregistered } = provideLifeHost(ctx);
   const logged = captureErrors(ctx);
   const plugin = ctx.plugin(worldPlugin, { ...config, life: true }); cleanup.push(() => plugin.dispose()); await plugin.await();
-  await until(async () => routes.length === 3, 'the console route');
+  await until(async () => routes.length === 4, 'the console route');
   assert.equal((await consoleGet(routes, '/dsh-world/worlds/fish/console/snapshot')).running, false);
   assert.equal(await life(), false, 'no home before start'); assert.equal(ctx.agents.list().length, 0);
 
@@ -1107,9 +1109,9 @@ test('her world waits for start in the console; start builds the home and greets
   assert.ok(!kinds(requests.at(-1)!).includes('dsh-world-history') && !textOf(requests.at(-1)!).includes('# 我的世界'));
 
   // The stop outlasts a reload; start again resumes the same home, and the words said while stopped stay out of memory.
-  await plugin.dispose(); assert.deepEqual(unregistered.sort(), ['/dsh-world/worlds', '/dsh-world/worlds/fish', '/dsh-world/worlds/fish/qq']);
+  await plugin.dispose(); assert.deepEqual(unregistered.sort(), ['/dsh-world/worlds', '/dsh-world/worlds/fish', '/dsh-world/worlds/fish/qq', '/dsh-world/worlds/fish/room']);
   const again = ctx.plugin(worldPlugin, { ...config, life: true }); cleanup.push(() => again.dispose()); await again.await();
-  await until(async () => routes.length === 3, 'the console route again');
+  await until(async () => routes.length === 4, 'the console route again');
   assert.equal((await consoleGet(routes, '/dsh-world/worlds/fish/console/snapshot')).running, false);
   await consolePost(routes, '/dsh-world/worlds/fish/console/start');
   await until(async () => (await consoleGet(routes, '/dsh-world/worlds/fish/console/snapshot')).life?.homeSessionId === homeSessionId, 'the same home');
@@ -1131,7 +1133,7 @@ test('a corrupt life.json leaves the life line off and keeps workspace filtering
   const { routes } = provideLifeHost(ctx);
   const plugin = ctx.plugin(worldPlugin, { ...config, life: true }); await plugin.await();
   await until(async () => routes.length > 0, 'the console route');
-  assert.deepEqual(routes.map(route => route.path).sort(), ['/dsh-world/worlds', '/dsh-world/worlds/fish', '/dsh-world/worlds/fish/qq'].sort());
+  assert.deepEqual(routes.map(route => route.path).sort(), ['/dsh-world/worlds', '/dsh-world/worlds/fish', '/dsh-world/worlds/fish/qq', '/dsh-world/worlds/fish/room'].sort());
   const snapshot = await consoleGet(routes, '/dsh-world/worlds/fish/console/snapshot');
   assert.equal(snapshot.worldId, 'fish'); assert.equal(snapshot.life, null);
   assert.equal(snapshot.health.length, 1); assert.match(snapshot.health[0], /^生活线没能启动：.*life\.json/);
@@ -1194,8 +1196,8 @@ test('with the bridge and an outlet, words from a local app enter the home and t
   const logged = captureErrors(ctx);
   const outlets = [{ name: '桌面桌宠', urlFile: runningFile, path: '/dsh-pet-7340/broadcast?pet=main&surface=any' }];
   const plugin = ctx.plugin(worldPlugin, { ...config, companionName: '小鱼', life: true, bridge: true, toast: false, outlets }); cleanup.push(() => plugin.dispose()); await plugin.await();
-  await until(async () => routes.length === 5, 'the bridge and console routes');
-  assert.deepEqual(routes.map(route => route.path).sort(), ['/dsh-world/worlds/fish/bridge/say', '/dsh-world/worlds/fish/bridge/compact', '/dsh-world/worlds/fish/qq', '/dsh-world/worlds/fish', '/dsh-world/worlds'].sort());
+  await until(async () => routes.length === 6, 'the bridge and console routes');
+  assert.deepEqual(routes.map(route => route.path).sort(), ['/dsh-world/worlds/fish/bridge/say', '/dsh-world/worlds/fish/bridge/compact', '/dsh-world/worlds/fish/qq', '/dsh-world/worlds/fish/room', '/dsh-world/worlds/fish', '/dsh-world/worlds'].sort());
   assert.equal((await routeCall(routes, '/dsh-world/worlds/fish/bridge/say', '/dsh-world/worlds/fish/bridge/say', { 'x-dsh-world-token': 'any' }, '{}')).status, 503, 'no bridge before start');
   await consolePost(routes, '/dsh-world/worlds/fish/console/start');
   const { homeSessionId } = await firstWakeDone(ctx, root);
@@ -1215,7 +1217,7 @@ test('with the bridge and an outlet, words from a local app enter the home and t
   await until(async () => ctx.agents.list().every(agent => agent.status === 'idle'), 'the second reply'); await home.whenIdle(); await new Promise(resolve => setTimeout(resolve, 20));
   assert.match((await consoleGet(routes, '/dsh-world/worlds/fish/console/snapshot')).health.join('|'), /桌面桌宠没收到小鱼的回复：.*baseUrl/);
   await plugin.dispose();
-  assert.ok(!existsSync(bridgeFile)); assert.deepEqual(unregistered.sort(), ['/dsh-world/worlds', '/dsh-world/worlds/fish', '/dsh-world/worlds/fish/bridge/compact', '/dsh-world/worlds/fish/bridge/say', '/dsh-world/worlds/fish/qq']);
+  assert.ok(!existsSync(bridgeFile)); assert.deepEqual(unregistered.sort(), ['/dsh-world/worlds', '/dsh-world/worlds/fish', '/dsh-world/worlds/fish/bridge/compact', '/dsh-world/worlds/fish/bridge/say', '/dsh-world/worlds/fish/qq', '/dsh-world/worlds/fish/room']);
   const archive = createArchiveStore({ ...config, root });
   const records = await archive.readPage({ limit: 20 }).then(page => page.records).finally(() => archive.close());
   assert.deepEqual(records.filter(r => r.role === 'user').map(r => r.content).sort(), ['桌宠上的话', '桌宠上的话，第二句'], 'her partner\'s own words, in memory');
@@ -1228,7 +1230,7 @@ test('the independent WeChat module follows the world start/stop lifecycle', asy
   const { routes, unregistered } = provideLifeHost(ctx);
   const plugin = ctx.plugin(worldPlugin, { ...config, life: true, wechat: true });
   cleanup.push(() => plugin.dispose()); await plugin.await();
-  await until(async () => routes.length === 3, 'console');
+  await until(async () => routes.length === 4, 'console');
   const file = join(root, 'worlds/fish/wechat.json');
   assert.equal(existsSync(file), false);
   await consolePost(routes, '/dsh-world/worlds/fish/console/start');
@@ -1247,7 +1249,7 @@ test('the console switch takes the WeChat module down and up again while the wor
   const { routes, unregistered } = provideLifeHost(ctx);
   const plugin = ctx.plugin(worldPlugin, { ...config, life: true, wechat: true });
   cleanup.push(() => plugin.dispose()); await plugin.await();
-  await until(async () => routes.length === 3, 'console');
+  await until(async () => routes.length === 4, 'console');
   const file = join(root, 'worlds/fish/wechat.json');
   await consolePost(routes, '/dsh-world/worlds/fish/console/start');
   await firstWakeDone(ctx, root);
@@ -1269,7 +1271,7 @@ test('a configured WeChat module stays off until the console switch is turned on
   const { routes } = provideLifeHost(ctx);
   const plugin = ctx.plugin(worldPlugin, { ...config, life: true, wechat: true });
   cleanup.push(() => plugin.dispose()); await plugin.await();
-  await until(async () => routes.length === 3, 'console');
+  await until(async () => routes.length === 4, 'console');
   const file = join(root, 'worlds/fish/wechat.json');
   await consolePost(routes, '/dsh-world/worlds/fish/console/start');
   await firstWakeDone(ctx, root);
@@ -1285,16 +1287,61 @@ test('a module the config does not provide cannot be switched on from the consol
   const { routes } = provideLifeHost(ctx);
   const plugin = ctx.plugin(worldPlugin, { ...config, life: true });
   cleanup.push(() => plugin.dispose()); await plugin.await();
-  await until(async () => routes.length === 3, 'console');
+  await until(async () => routes.length === 4, 'console');
   const result = await routeCall(routes, '/dsh-world/worlds/fish', '/dsh-world/worlds/fish/console/modules', { 'x-dsh-world': '1', 'content-type': 'application/json' }, JSON.stringify({ wechat: true }));
   assert.equal(result.status, 400);
   // Her browser and her use of the computer need nothing in the config: only the console's switches, and what this machine has.
   const limits = moduleLimits(), row = (why: string | undefined) => ({ available: !why, ...(why ? { reason: why } : {}), enabled: false, running: false });
-  assert.deepEqual((await consoleGet(routes, '/dsh-world/worlds/fish/console/snapshot')).modules, { wechat: { available: false, enabled: false, running: false }, qq: { available: false, enabled: false, running: false }, computer: row(limits.computer), desktop: { ...row(limits.desktop), inbox: { ignore: [...DEFAULT_INBOX_IGNORE], custom: false, told: [] } }, foreground: { available: false, enabled: false, running: false } });
+  assert.deepEqual((await consoleGet(routes, '/dsh-world/worlds/fish/console/snapshot')).modules, { wechat: { available: false, enabled: false, running: false }, qq: { available: false, enabled: false, running: false }, computer: row(limits.computer), desktop: { ...row(limits.desktop), inbox: { ignore: [...DEFAULT_INBOX_IGNORE], custom: false, told: [] } }, foreground: { available: false, enabled: false, running: false }, cottage: { available: false, enabled: false, running: false } });
   assert.equal((await routeCall(routes, '/dsh-world/worlds/fish', '/dsh-world/worlds/fish/console/modules', { 'x-dsh-world': '1', 'content-type': 'application/json' }, JSON.stringify({ qq: true }))).status, 400);
   const desktopAlone = await routeCall(routes, '/dsh-world/worlds/fish', '/dsh-world/worlds/fish/console/modules', { 'x-dsh-world': '1', 'content-type': 'application/json' }, JSON.stringify({ desktop: true }));
   assert.equal(desktopAlone.status, 400);
   assert.match(JSON.stringify(desktopAlone.body), process.platform === 'win32' ? /先打开「她的浏览器」/ : /只支持 Windows/, 'never left waiting with her browser off');
+  const cottage = await routeCall(routes, '/dsh-world/worlds/fish', '/dsh-world/worlds/fish/console/modules', { 'x-dsh-world': '1', 'content-type': 'application/json' }, JSON.stringify({ cottage: true }));
+  assert.equal(cottage.status, 400, 'no room package installed: her cottage cannot be switched on');
+  assert.match(JSON.stringify(cottage.body), /小屋还没装好/);
+});
+
+test('with the room installed in the profile, her cottage is switched on from the console: she gets one cottage tool and her room is kept', async t => {
+  const requests: GenerateOptions[] = [];
+  const { ctx, root, cleanup } = await hostFixture(t, request => { requests.push(request); return textResponse('reply'); });
+  isolateHome(t, root);
+  // Where the console's install leaves it: in the profile's own node_modules.
+  await mkdir(join(root, 'node_modules'), { recursive: true });
+  symlinkSync(fileURLToPath(new URL('../packages/dsh-world-room/', import.meta.url)), join(root, 'node_modules', 'dsh-world-room'), 'junction');
+  ctx.provide('profileContext', { dir: root });
+  const { routes } = provideLifeHost(ctx);
+  const plugin = ctx.plugin(worldPlugin, { ...config, life: true }); cleanup.push(() => plugin.dispose()); await plugin.await();
+  await until(async () => routes.length === 4, 'console');
+  const world = '/dsh-world/worlds/fish';
+  assert.deepEqual((await consoleGet(routes, world + '/console/snapshot')).modules.cottage, { available: true, enabled: false, running: false }, 'off until someone turns it on');
+  await consolePost(routes, world + '/console/start');
+  const { homeSessionId } = await firstWakeDone(ctx, root);
+  const toolNames = (request: GenerateOptions) => request.tools?.map(tool => tool.name) ?? [];
+  assert.ok(!toolNames(requests.at(-1)!).includes('cottage'));
+  assert.equal(existsSync(join(root, 'worlds/fish/cottage.json')), false, 'nothing is written while it is off');
+
+  await consolePost(routes, world + '/console/modules', { cottage: true });
+  const snapshot = await consoleGet(routes, world + '/console/snapshot');
+  assert.deepEqual(snapshot.modules.cottage, { available: true, enabled: true, running: true });
+  assert.equal(snapshot.room.life.at, 'room');
+  const kept = JSON.parse(await readFile(join(root, 'worlds/fish/cottage.json'), 'utf8'));
+  assert.equal(kept.seed, snapshot.room.life.seed, 'her own seed, shown to the page');
+  const home = ctx.agents.get(SessionId(homeSessionId!))!;
+  home.followup(user('去厨房看看')); await home.whenIdle();
+  assert.equal(toolNames(requests.at(-1)!).filter(name => name === 'cottage').length, 1, 'one tool, however much the cottage holds');
+  await consolePost(routes, world + '/console/cottage/weather', { weather: 'rain' });
+  assert.equal((await consoleGet(routes, world + '/console/snapshot')).room.life.weather.kind, 'rain');
+  assert.equal(JSON.parse(await readFile(join(root, 'worlds/fish/cottage.json'), 'utf8')).weather.kind, 'rain', 'the weather is kept with her cottage');
+
+  await consolePost(routes, world + '/console/modules', { cottage: false });
+  assert.deepEqual((await consoleGet(routes, world + '/console/snapshot')).modules.cottage, { available: true, enabled: false, running: false });
+  home.followup(user('还在吗')); await home.whenIdle();
+  assert.ok(!toolNames(requests.at(-1)!).includes('cottage'), 'switched off: the tool goes with it');
+  assert.ok(existsSync(join(root, 'worlds/fish/cottage.json')), 'her room is kept for the next time it is on');
+  const refused = await routeCall(routes, world, world + '/console/cottage/weather', { 'x-dsh-world': '1', 'content-type': 'application/json' }, JSON.stringify({ weather: 'sunny' }));
+  assert.equal(refused.status, 400);
+  assert.match(JSON.stringify(refused.body), /她还没住进小屋/);
 });
 
 test('QQ stays off until switched on; the off switch survives world restart and plugin reload, and re-enabling opens one connection', async t => {
@@ -1310,7 +1357,7 @@ test('QQ stays off until switched on; the off switch survives world restart and 
   // No watchdog here: it would go looking for a real SnowLuma on this machine.
   const options = { ...config, life: true, qqNative: { enabled: true, wsUrl: `ws://127.0.0.1:${port}`, supervise: false } };
   let plugin = ctx.plugin(worldPlugin, options); cleanup.push(() => plugin.dispose()); await plugin.await();
-  await until(async () => routes.length === 3, 'console');
+  await until(async () => routes.length === 4, 'console');
   await consolePost(routes, '/dsh-world/worlds/fish/console/start'); await firstWakeDone(ctx, root);
   assert.equal(connections, 0, 'the config only allows QQ; the console switches it on');
   await consolePost(routes, '/dsh-world/worlds/fish/console/modules', { qq: true });
@@ -1323,7 +1370,7 @@ test('QQ stays off until switched on; the off switch survives world restart and 
   assert.deepEqual((await consoleGet(routes, '/dsh-world/worlds/fish/console/snapshot')).modules.qq, off);
   await plugin.dispose();
   plugin = ctx.plugin(worldPlugin, options); await plugin.await();
-  await until(async () => routes.length === 3, 'reloaded console');
+  await until(async () => routes.length === 4, 'reloaded console');
   assert.deepEqual((await consoleGet(routes, '/dsh-world/worlds/fish/console/snapshot')).modules.qq, off);
   assert.equal(connections, 1, 'neither restart may silently reconnect a disabled channel');
   await consolePost(routes, '/dsh-world/worlds/fish/console/modules', { qq: true });

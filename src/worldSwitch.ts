@@ -4,7 +4,7 @@ import { durableWrite } from './life/lifeStore.ts';
 import { validArchiveScope, type MemoryArchiveScope } from './archiveSelection.ts';
 import { DEFAULT_REVIEW_TIME, validClockTime } from './life/alarm.ts';
 
-interface WorldSettings { running: boolean; dailyBudget?: number; memoryTurns?: number; coldHours?: number; archiveScope?: MemoryArchiveScope; workspacePermission?: string; wechatContext?: number; wechatBufferSeconds?: number; wechatEnabled?: boolean; qqEnabled?: boolean; computerEnabled?: boolean; desktopEnabled?: boolean; compactAfterReview?: boolean; compactionSwapped?: boolean; consoleSwitchesOnly?: boolean; reviewTime?: string; wakeTime?: string; inboxIgnore?: string[] }
+interface WorldSettings { running: boolean; dailyBudget?: number; memoryTurns?: number; coldHours?: number; archiveScope?: MemoryArchiveScope; workspacePermission?: string; wechatContext?: number; wechatBufferSeconds?: number; wechatEnabled?: boolean; cottageEnabled?: boolean; qqEnabled?: boolean; computerEnabled?: boolean; desktopEnabled?: boolean; compactAfterReview?: boolean; compactionSwapped?: boolean; consoleSwitchesOnly?: boolean; reviewTime?: string; wakeTime?: string; inboxIgnore?: string[] }
 /** How many of the newest turns the memory block carries when nothing else is set. */
 export const DEFAULT_MEMORY_TURNS = 200;
 /** Hours a session stays silent before its next turn re-reads her memory block and prompt (#36); see `runtime.ts`. */
@@ -45,6 +45,7 @@ export function createWorldSwitch(worldDir: string, configuredScope: MemoryArchi
     ...(typeof stored?.qqEnabled === 'boolean' ? { qqEnabled: stored.qqEnabled } : {}),
     ...(typeof stored?.computerEnabled === 'boolean' ? { computerEnabled: stored.computerEnabled } : {}),
     ...(typeof stored?.desktopEnabled === 'boolean' ? { desktopEnabled: stored.desktopEnabled } : {}),
+    ...(typeof stored?.cottageEnabled === 'boolean' ? { cottageEnabled: stored.cottageEnabled } : {}),
     ...(stored?.compactAfterReview === false ? { compactAfterReview: false } : {}),
     ...(stored?.compactionSwapped === true ? { compactionSwapped: true } : {}),
     ...(stored?.consoleSwitchesOnly === true ? { consoleSwitchesOnly: true } : {}),
@@ -113,7 +114,7 @@ export function createWorldSwitch(worldDir: string, configuredScope: MemoryArchi
       save(hours === undefined || hours === DEFAULT_COLD_HOURS ? rest : { ...rest, coldHours: hours });
     },
     /**
-     * The console's switches for the WeChat, QQ and computer modules; all are off until someone turns them on. QQ's SDK is an
+     * The console's switches for the WeChat, QQ, computer and cottage modules; all are off until someone turns them on. QQ's SDK is an
      * optional dependency, so its code is not even loaded before then. WeChat used to default to on, so a world that
      * never stored a choice but whose WeChat module has already run (it keeps its outbox) stays on after the upgrade.
      */
@@ -123,10 +124,12 @@ export function createWorldSwitch(worldDir: string, configuredScope: MemoryArchi
     computerEnabled: () => settings.computerEnabled === true,
     /** Her use of the partner's computer: off until someone turns it on. */
     desktopEnabled: () => settings.desktopEnabled === true,
-    setModules(next: { wechat?: boolean; qq?: boolean; computer?: boolean; desktop?: boolean }): void {
-      const { wechatEnabled, qqEnabled, computerEnabled, desktopEnabled, consoleSwitchesOnly: _settled, ...rest } = settings;
-      const wechat = next.wechat ?? wechatEnabled ?? existsSync(join(worldDir, 'wechat-outbox.sqlite')), qq = next.qq ?? qqEnabled === true, computer = next.computer ?? computerEnabled === true, desktop = next.desktop ?? desktopEnabled === true;
-      save({ ...rest, wechatEnabled: wechat, ...(qq ? { qqEnabled: true } : {}), ...(computer ? { computerEnabled: true } : {}), ...(desktop ? { desktopEnabled: true } : {}), ...(computer || desktop ? { consoleSwitchesOnly: true } : {}) });
+    /** Her life in the cottage (the cottage tool and its news): off until someone turns it on. */
+    cottageEnabled: () => settings.cottageEnabled === true,
+    setModules(next: { wechat?: boolean; qq?: boolean; computer?: boolean; desktop?: boolean; cottage?: boolean }): void {
+      const { wechatEnabled, qqEnabled, computerEnabled, desktopEnabled, cottageEnabled, consoleSwitchesOnly: _settled, ...rest } = settings;
+      const wechat = next.wechat ?? wechatEnabled ?? existsSync(join(worldDir, 'wechat-outbox.sqlite')), qq = next.qq ?? qqEnabled === true, computer = next.computer ?? computerEnabled === true, desktop = next.desktop ?? desktopEnabled === true, cottage = next.cottage ?? cottageEnabled === true;
+      save({ ...rest, wechatEnabled: wechat, ...(qq ? { qqEnabled: true } : {}), ...(computer ? { computerEnabled: true } : {}), ...(desktop ? { desktopEnabled: true } : {}), ...(cottage ? { cottageEnabled: true } : {}), ...(computer || desktop ? { consoleSwitchesOnly: true } : {}) });
     },
     /** Her evening look back and her morning wake when nothing is pending; the configured `fallbackWakeTime` is the morning's default. */
     reviewTime: () => settings.reviewTime ?? DEFAULT_REVIEW_TIME,

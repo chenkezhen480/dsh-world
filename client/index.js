@@ -109,6 +109,7 @@
       '.dw-tab:after{content:"";position:absolute;left:50%;right:50%;bottom:-1px;height:2px;background:var(--gold);transition:left .25s,right .25s}',
       '.dw-tab.on{color:var(--ink)}.dw-tab.on:after{left:12px;right:12px}',
       '.dw-pane{display:flex;flex-direction:column;gap:14px}',
+      '.dw-room{width:100%;aspect-ratio:3/2;border:1px solid var(--line);border-radius:10px;background:#F7EEE2}',
       '.dw-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}',
       '.dw-card{min-width:0;border:1px solid var(--line);border-radius:12px;padding:14px 16px;background:var(--paper);animation:dw-rise .45s both}',
       '@keyframes dw-rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}',
@@ -862,7 +863,7 @@
           h('button', { className: 'dw-btn', disabled: busy, onClick: signIn }, busy ? '……' : '登录并打开'),
           h('button', { className: 'dw-btn', style: { marginLeft: 10 }, onClick: function () { if (props.onClose) props.onClose() } }, '取消')))
     }
-    /** 接入：微信和 QQ 各一个开关，关闭即撤下通道，状态记在 world.json。 */
+    /** 接入：微信、QQ、她的浏览器、她用电脑、她住进小屋各一个开关，关闭即撤下，状态记在 world.json。 */
     function Modules(props) {
       var m = props.modules
       var msgState = useState(''), msg = msgState[0], setMsg = msgState[1]
@@ -963,6 +964,7 @@
         m.computer ? row('computer', '她的浏览器', m.computer, '她有一个自己的 Edge 浏览器，是单独的窗口，登录的是她自己的账号，不用你的鼠标键盘；她学会的操作也存在这里，可以直接再跑。只在她的家里能用。', '她没有自己的浏览器。开启后她下一步就能用；她用电脑也要先开这一项。') : null,
         m.desktop ? desktopRow() : null,
         m.desktop && m.desktop.enabled && m.desktop.inbox ? inboxRow() : null,
+        m.cottage && m.cottage.available ? row('cottage', '她住进小屋', m.cottage, '她有一个 cottage 工具：在小屋和院子里走动、做饭、晾衣服、种菜种花；锅里的好了、衣服干了、菜熟了或缺水了，她下一次醒着时会在「别处的动静」里看到（不会叫醒她）。她在哪、在忙什么，小屋里看得到。只在她的家里能用。', '小屋只是画面，她自己看不到也用不了。开启后她才住进去，她的小屋记在这个世界的 cottage.json 里，关掉也留着。') : null,
         msg ? h('div', { className: msg.indexOf('失败') >= 0 ? 'dw-bad' : 'dw-muted', role: 'status' }, msg) : null)
     }
     /** 她的浏览器：Edge 在不在、她按分类学会了哪些操作、各自最近一次结果；按钮把窗口拿到前面来扫码。 */
@@ -1065,7 +1067,7 @@
           snap.workspace ? h(WorkspacePermission, { workspace: snap.workspace, onSaved: props.refresh }) : null,
           typeof snap.compactAfterReview === 'boolean' ? h(CompactAfterReview, { on: snap.compactAfterReview, onSaved: props.refresh }) : null,
           snap.schedule ? h(Schedule, { schedule: snap.schedule, onSaved: props.refresh }) : null,
-          snap.modules && (snap.modules.wechat.available || snap.modules.qq.available || (snap.modules.computer && snap.modules.computer.available)) ? h(Modules, { modules: snap.modules, running: snap.running, onSaved: props.refresh }) : null))
+          snap.modules && (snap.modules.wechat.available || snap.modules.qq.available || (snap.modules.computer && snap.modules.computer.available) || (snap.modules.cottage && snap.modules.cottage.available)) ? h(Modules, { modules: snap.modules, running: snap.running, onSaved: props.refresh }) : null))
     }
     function Records(props) {
       var snap = props.snap, zone = snap.timeZone, life = snap.life, compactions = list(snap.compactions)
@@ -1183,7 +1185,59 @@
           result && result.nextCursor ? h('button', { className: 'dw-btn', disabled: busy, onClick: function () { run(form, result.nextCursor) } }, '更多') : null))
     }
 
-    var TABS = [['overview', '概览'], ['persona', '人设'], ['prompt', '世界提示词'], ['records', '记录'], ['archive', '档案'], ['photos', '相册'], ['qq', 'QQ'], ['wechat', '微信'], ['computer', '她的浏览器']]
+    /**
+     * 小屋的天气由你来定，她 look 时看得到，刚变的那几个小时会在「别处的动静」里说一次。下雨时菜圃不用浇，晾着的衣服
+     * 会淋湿，雨停了才开始干。
+     */
+    function Weather(props) {
+      var busyState = useState(false), busy = busyState[0], setBusy = busyState[1]
+      var msgState = useState(''), msg = msgState[0], setMsg = msgState[1]
+      var now = props.now || 'sunny'
+      function choose(next) {
+        if (next === now) return
+        setBusy(true); setMsg('')
+        post('cottage/weather', { weather: next }).then(function () { props.refresh() }, function (e) { setMsg(String(e.message || e)) }).then(function () { setBusy(false) })
+      }
+      return h('div', { className: 'dw-setting' },
+        h('span', null, h('b', null, '天气'), h('span', { className: 'dw-muted' }, ' · 你来定，她看得到')),
+        h('span', { className: 'dw-seg', role: 'group', 'aria-label': '小屋的天气' }, [['sunny', '晴'], ['cloudy', '阴'], ['rain', '雨']].map(function (option) {
+          return h('button', { key: option[0], className: now === option[0] ? 'on' : '', disabled: busy, 'aria-pressed': now === option[0], onClick: function () { choose(option[0]) } }, option[1])
+        })),
+        h('div', { className: 'dw-muted', style: { flexBasis: '100%' } }, '下雨时菜圃不用浇，晾着的衣服会淋湿，雨停了才开始干。'),
+        h(Status, { msg: msg }))
+    }
+    /**
+     * 她的小屋：另装的一个包（dsh-world-room），装进 profile 后在这个世界自己的前缀下打开，只读快照，可以全屏看。
+     * 没装、或装的版本和这一版插件对不上时，这里只给说明和安装按钮；room 为 null 是旧快照，按没装算。
+     */
+    function Room(props) {
+      var room = props.room
+      var frame = useRef(null)
+      var busyState = useState(false), busy = busyState[0], setBusy = busyState[1]
+      var msgState = useState(''), msg = msgState[0], setMsg = msgState[1]
+      function full() { var el = frame.current; if (el && el.requestFullscreen) el.requestFullscreen() }
+      function install() {
+        setBusy(true); setMsg('')
+        post('room/install', {}).then(function () { props.refresh() }, function (e) { setMsg(String(e.message || e)) }).then(function () { setBusy(false) })
+      }
+      if (!room || !room.current) {
+        var update = room && room.installed
+        return h('div', { className: 'dw-pane' },
+          h('div', null, update
+            ? '装着的小屋是 ' + room.version + '，这一版插件要 ' + room.wanted + '，更新后才能打开。'
+            : '小屋是另装的一部分：她的房间画成一间三渲二的小屋，她做事、休息、闲逛都在里面。约 10 MB，装进当前 profile，装一次所有世界都能用；不装也不影响别的功能。'),
+          room && room.error ? h('div', { className: 'dw-bad' }, room.error) : null,
+          h('div', null, h('button', { className: 'dw-btn primary', disabled: busy, onClick: install }, busy ? '正在安装…' : update ? '更新小屋' : '安装小屋')),
+          h(Status, { msg: msg }))
+      }
+      return h('div', { className: 'dw-pane' },
+        h('iframe', { ref: frame, className: 'dw-room', src: prefix + '/room/', title: (props.name || '她') + '的小屋', allow: 'fullscreen' }),
+        h('div', null, h('button', { className: 'dw-btn', onClick: full }, '全屏'), h('span', { className: 'dw-muted' }, ' 拖动转一转，滚轮缩放，点家具凑近看。')),
+        h('div', { className: 'dw-muted' }, room.life ? (props.name || '她') + '住在这里：她走到哪、锅里煮着什么、晾着的衣服和菜圃，都是她自己做的。' : '现在只是画面：在概览的「接入」里打开「她住进小屋」，她就会自己住进来。'),
+        room.life ? h(Weather, { now: room.life.weather && room.life.weather.kind, refresh: props.refresh }) : null)
+    }
+
+    var TABS = [['overview', '概览'], ['room', '小屋'], ['persona', '人设'], ['prompt', '世界提示词'], ['records', '记录'], ['archive', '档案'], ['photos', '相册'], ['qq', 'QQ'], ['wechat', '微信'], ['computer', '她的浏览器']]
     /** 一份快照的画面；life 为 null（停着，或生活线没能启动）或缺了哪一块都不会崩。 */
     function View(props) {
       var snap = props.snap, error = props.error
@@ -1234,6 +1288,7 @@
           h(HomeApply, { snap: snap, refresh: props.refresh }),
           tab === 'persona' ? h(PersonaEditor, { onSaved: props.refresh }) : h(PromptEditor)) : null,
         tab === 'overview' ? h(Overview, { snap: snap, refresh: props.refresh }) : null,
+        tab === 'room' ? h(Room, { name: name, room: snap.room, refresh: props.refresh }) : null,
         tab === 'records' ? h(Records, { snap: snap, tick: props.tick }) : null,
         tab === 'archive' ? h(MemorySearch, { zone: snap.timeZone }) : null,
         tab === 'photos' ? h(PhotoAlbum, { tick: props.tick, zone: snap.timeZone }) : null,
@@ -1283,8 +1338,7 @@
       return h(View, { snap: snap, error: error, tick: tick, refresh: function () { if (loadRef.current) loadRef.current() } })
     }
 
-    return { Console: Console, test: { UpdateNotice: UpdateNotice, Budget: Budget, Health: Health, Memory: Memory, MemorySearch: MemorySearch, latest: latest, searchMemory: searchMemory, memoryQuery: memoryQuery, dayStartIso: dayStartIso, WorkspacePermission: WorkspacePermission, CompactAfterReview: CompactAfterReview, Schedule: Schedule, Modules: Modules, Computer: Computer, HomeApply: HomeApply, PhotoAlbum: PhotoAlbum, Wechat: Wechat, Activity: Activity, Diary: Diary, Qq: Qq, Panel: Panel, View: View, Overview: Overview, PersonaEditor: PersonaEditor, PromptEditor: PromptEditor, loadSnapshot: loadSnapshot, renderPersona: renderPersona } }
-
+    return { Console: Console, test: { UpdateNotice: UpdateNotice, Room: Room, Budget: Budget, Health: Health, Memory: Memory, MemorySearch: MemorySearch, latest: latest, searchMemory: searchMemory, memoryQuery: memoryQuery, dayStartIso: dayStartIso, WorkspacePermission: WorkspacePermission, CompactAfterReview: CompactAfterReview, Schedule: Schedule, Modules: Modules, Computer: Computer, HomeApply: HomeApply, PhotoAlbum: PhotoAlbum, Wechat: Wechat, Activity: Activity, Diary: Diary, Qq: Qq, Panel: Panel, View: View, Overview: Overview, PersonaEditor: PersonaEditor, PromptEditor: PromptEditor, loadSnapshot: loadSnapshot, renderPersona: renderPersona } }
   }
 
   async function loadWorldIds() {

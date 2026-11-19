@@ -32,7 +32,9 @@ function fakeActions() {
     setCompactAfterReview: on => { calls.push(`compact-after-review:${on}`); },
     setSchedule: next => { calls.push(`schedule:${JSON.stringify(next)}`); },
     setModules: async modules => { calls.push(`modules:${JSON.stringify(modules)}`); return undefined; },
+    setCottageWeather: weather => { calls.push(`weather:${weather}`); return undefined; },
     showComputer: async () => { calls.push('show-computer'); return undefined; },
+    installRoom: async () => { calls.push('install-room'); return undefined; },
     restartWechatAdapter: async () => { calls.push('adapter-restart'); return true; },
     setWechatSettings: next => { calls.push(`wechat:${JSON.stringify(next)}`); },
     setInboxIgnore: names => { calls.push(`inbox-ignore:${JSON.stringify(names)}`); },
@@ -435,6 +437,32 @@ test('the computer switch and her browser window are reachable from the console'
   assert.equal((await post('modules', { computer: 'yes' })).status, 400);
   assert.equal((await post('computer/open')).status, 200);
   assert.deepEqual(calls.slice(-2), ['modules:{"computer":true}', 'show-computer']);
+});
+
+test('the room is installed only by a write from the console, and a failed install comes back in words', async () => {
+  const { actions, calls } = fakeActions();
+  const request = (method: string, write: boolean) => handleConsole('/dsh-world/worlds/fish', sources, actions, { method, url: '/dsh-world/worlds/fish/console/room/install', write, body: {} });
+  assert.equal((await request('POST', true)).status, 200);
+  assert.equal((await request('POST', false)).status, 403, 'not without the write header');
+  assert.equal((await request('GET', false)).status, 404, 'reading the console never installs anything');
+  assert.deepEqual(calls, ['install-room']);
+  actions.installRoom = async () => '小屋安装失败：网络不通';
+  const failed = await request('POST', true);
+  assert.equal(failed.status, 400);
+  assert.deepEqual(failed.body, { error: '小屋安装失败：网络不通' });
+});
+
+test('the cottage weather is set by a write from the console, only to a weather the cottage knows', async () => {
+  const { actions, calls } = fakeActions();
+  const request = (body: Record<string, unknown>, write = true) => handleConsole('/dsh-world/worlds/fish', sources, actions, { method: 'POST', url: '/dsh-world/worlds/fish/console/cottage/weather', write, body });
+  assert.equal((await request({ weather: 'rain' })).status, 200);
+  assert.equal((await request({ weather: 'rain' }, false)).status, 403, 'not without the write header');
+  assert.equal((await request({ weather: 'snow' })).status, 400);
+  assert.equal((await request({ weather: 'constructor' })).status, 400, 'in every object, but no weather');
+  assert.equal((await request({})).status, 400);
+  assert.deepEqual(calls, ['weather:rain']);
+  actions.setCottageWeather = () => '她还没住进小屋';
+  assert.deepEqual((await request({ weather: 'sunny' })).body, { error: '她还没住进小屋' });
 });
 
 test('the computer module is off until switched on and its choice is kept', t => {

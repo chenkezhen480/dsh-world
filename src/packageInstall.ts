@@ -57,11 +57,11 @@ export async function hostInstaller(manual: string): Promise<HostInstaller> {
  * Installs one optional peer package into the current profile, and only when the partner asks for it from the console:
  * startup and ordinary turns never install packages. A failed or cancelled install puts package.json and the lockfile back.
  * `label` names the package for the partner. `needsRestart()`: this process installed it, so code imported from it only
- * loads after a restart; files read from disk on each request do not wait for one.
+ * loads after a restart (files read from disk on each request, like the room page, do not wait for one).
  */
 export function createPackageInstaller(deps: { name: string; label: string; available(): boolean; profile(): ProfileContext | undefined; signal: AbortSignal; loadHost?: () => Promise<HostInstaller> }) {
   const range = peerRange(deps.name);
-  // A space only where the label meets Chinese with a Latin letter: 安装 SnowLuma SDK.
+  // A space only where the label meets Chinese with a Latin letter: 安装 SnowLuma SDK, 安装小屋.
   const lead = /^[A-Za-z]/.test(deps.label) ? ' ' : '', tail = /[A-Za-z]$/.test(deps.label) ? ' ' : '';
   const manual = `${lead}${deps.label}（${deps.name}）`;
   let installed = false, pending: Promise<boolean> | undefined;

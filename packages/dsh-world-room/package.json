@@ -1,0 +1,23 @@
+{
+  "name": "dsh-world-room",
+  "version": "0.1.0",
+  "description": "她的小屋：dsh-world 世界控制台里的三渲二小屋页面。由 dsh-world 在控制台里按需安装，不单独使用。",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chenkezhen480/dsh-world.git",
+    "directory": "packages/dsh-world-room"
+  },
+  "files": [
+    "index.html",
+    "js",
+    "her",
+    "vendor",
+    "README.md",
+    "LICENSE"
+  ],
+  "exports": {
+    "./package.json": "./package.json"
+  }
+}

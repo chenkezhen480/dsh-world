@@ -12,6 +12,8 @@ import { resolveDshHome } from '@deepseek-ai/dsh-home-paths';
 import { createBridge, type Bridge } from './ecosystem/bridge/bridge.ts';
 import { bridgeRoute, compactRoute } from './ecosystem/bridge/route.ts';
 import { consoleRoute, type ConsoleActions } from './console/routes.ts';
+import { installedRoom, ROOM_PACKAGE, roomRoute, roomStatus } from './console/room.ts';
+import { createCottageModule, loadLayout, type CottageModule } from './cottage/index.ts';
 import { consoleSources } from './console/snapshot.ts';
 import { compactionFor, createHomeApply } from './console/homeApply.ts';
 import { errorText, Faults } from './faults.ts';
@@ -277,6 +279,9 @@ export function apply(ctx: Context, config: Config): void {
     const sdkAvailable = () => { try { import.meta.resolve('@snowluma/sdk'); return true; } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ERR_MODULE_NOT_FOUND') return false; throw error; } };
     const profile = () => lifeCtx.get('profileContext') as ProfileContext | undefined;
     const qqSdk = createPackageInstaller({ name: '@snowluma/sdk', label: 'SnowLuma SDK', available: sdkAvailable, profile, signal: hostAbort.signal });
+    /** Her room page, where this profile has it installed. */
+    const room = () => roomStatus(() => installedRoom(profileDir()));
+    const roomPackage = createPackageInstaller({ name: ROOM_PACKAGE, label: '小屋', available: () => room().current, profile, signal: hostAbort.signal });
     let qqChange = 0;
     const homeApply = createHomeApply({
       ctx: lifeCtx,
@@ -329,6 +334,23 @@ export function apply(ctx: Context, config: Config): void {
         inbox: { ignore: power.inboxIgnore(), custom: power.inboxIgnoreCustom(), told: computer?.inbox()?.told ?? [] },
       },
     });
+    let cottage: CottageModule | undefined;
+    let unregisterCottageNews: (() => void) | undefined;
+    /** Her life in the cottage (cottage.json, the cottage tool) follows the life line and its console switch, and needs the room package installed. */
+    async function startCottage(): Promise<void> {
+      if (cottage || !power.cottageEnabled()) return;
+      const installed = room();
+      if (!installed.current) { faults.set('cottage-module', '她的小屋开着，但小屋没装好或版本不对，请在「小屋」标签里安装或更新'); return; }
+      try {
+        const layout = await loadLayout(installedRoom(profileDir())!.dir);
+        // The world may have stopped, or the switch gone off, while the room package was read.
+        if (cottage || !power.cottageEnabled() || !life) return;
+        cottage = createCottageModule({ worldDir, layout, timeZone: config.timeZone, partner: () => names().partner, isHome: id => isHome(id) });
+        unregisterCottageNews = elsewhere.register(cottage.elsewhere);
+        faults.clear('cottage-module');
+      } catch (error) { faults.set('cottage-module', `她的小屋没能打开：${errorText(error)}`); lifeCtx.logger.error(error); }
+    }
+    function stopCottage(): void { unregisterCottageNews?.(); unregisterCottageNews = undefined; cottage = undefined; faults.clear('cottage-module'); }
     let qqChannels: ReturnType<typeof createChannelSessions> | undefined;
     let adapter: AdapterSupervisor | undefined;
     let channels: ReturnType<typeof createChannelSessions> | undefined;
@@ -430,13 +452,14 @@ export function apply(ctx: Context, config: Config): void {
         const outlets = config.outlets.map(outlet => createOutlet(outlet, () => host.origin()));
         const notifier: Notifier = { ...(config.toast && toastSupported() ? { toast: windowsToast(config.toastAppId || undefined) } : {}), outlets };
         const runtime = createLifeRuntime({ ctx: lifeCtx, config: { ...config, companionName: names().companion }, options, store: lifeStore, host, notifier, dailyBudget: power.dailyBudget, inWorkspace, photos, alarmContext: now => alarmContext(now), reviewContext: () => memoryService.wiki.gaps(),
-          homeTools: { tools: agent => computer?.tools(agent) ?? [], revision: () => computer?.revision() ?? 'off' }, afterReview: () => { if (power.compactAfterReview()) homeApply.request(); }, partnerSpoke: () => computer?.partnerSpoke() });
+          homeTools: { tools: agent => [...computer?.tools(agent) ?? [], ...cottage?.tools() ?? []], revision: () => `${computer?.revision() ?? 'off'}|${cottage ? 'cottage' : 'off'}` }, afterReview: () => { if (power.compactAfterReview()) homeApply.request(); }, partnerSpoke: () => computer?.partnerSpoke() });
         life = current = runtime; isHome = runtime.isHome;
         if (config.bridge) { bridge = createBridge({ ctx: lifeCtx, prefix, home: () => runtime.home(), inWorld: inWorldSession, outlets, origin: () => host.origin(), file: join(worldDir, 'bridge.json'), name: names().companion }); bridge.start(); }
         if (config.wechat && power.wechatEnabled()) await startWechat(runtime);
         if (config.qqNative?.enabled && power.qqEnabled()) await startQqNative(runtime);
         if (disposed || hostAbort.signal.aborted) return;
         startComputer();
+        await startCottage();
         faults.clear('life');
         const started = runtime.start({ resumed });
         if (resumed) await started;
@@ -449,6 +472,7 @@ export function apply(ctx: Context, config: Config): void {
       const closingWechat = stopWechat();
       stopQqNative();
       stopComputer();
+      stopCottage();
       bridge = undefined; life = undefined;
       return lifeStop = Promise.all([lifeStop, closingWechat, homeApply.cancel()]).then(() => {});
     }
@@ -465,7 +489,7 @@ export function apply(ctx: Context, config: Config): void {
     const sources = consoleSources({ ctx: lifeCtx, config: memoryConfig, archive: store, moodFile, longTerm: memoryService, names, ...(lifeStore ? { lifeStore } : {}), life: () => life, homeApply: homeApply.snapshot, compactAfterReview: power.compactAfterReview, ...(config.life ? { schedule: () => ({ review: power.reviewTime(), wake: power.wakeTime(), defaults: { review: DEFAULT_REVIEW_TIME, wake: config.fallbackWakeTime } }) } : {}), photos, diaryDir: options.diaryDir, running: power.running, dailyBudget: power.dailyBudget, memoryTurns: power.memoryTurns, coldHours: power.coldHours, selectedArchiveScope: power.selectedArchiveScope, workspacePermissions: permissions.snapshot, wechat: () => wechat ? { ...wechat.status(), adapter: adapter?.status() ?? null } : undefined, archiveSession, native: () => qqNative?.status() ?? null,
       compactionPreset: () => configEditor ? compactionPresetOverride(configEditor, config.agentPreset, profileDir()) : null,
       update: () => updates?.status(upgradeTools(profile())),
-      modules: () => ({ ...computerRows(moduleLimits()), wechat: { available: config.wechat, enabled: power.wechatEnabled(), running: wechat !== undefined }, qq: { available: Boolean(config.qqNative?.enabled), enabled: power.qqEnabled(), running: qqNative !== undefined, ...(qqSdk.needsRestart() ? { restartRequired: true } : {}) }, foreground: { available: computer?.desktopOn() === true, enabled: computer?.foregroundOn() === true, running: computer?.foregroundOn() === true } }), computer: () => computer?.status(), faults: () => [...faults.list(), ...(adapter?.status().error ? [`微信适配器：${adapter.status().error}`] : []), ...(memory?.faults() ?? []), ...(bridge?.faults() ?? []), ...memoryHealth()] });
+      modules: () => ({ ...computerRows(moduleLimits()), wechat: { available: config.wechat, enabled: power.wechatEnabled(), running: wechat !== undefined }, qq: { available: Boolean(config.qqNative?.enabled), enabled: power.qqEnabled(), running: qqNative !== undefined, ...(qqSdk.needsRestart() ? { restartRequired: true } : {}) }, cottage: { available: room().current, enabled: power.cottageEnabled(), running: cottage !== undefined }, foreground: { available: computer?.desktopOn() === true, enabled: computer?.foregroundOn() === true, running: computer?.foregroundOn() === true } }), room: () => ({ ...room(), ...(cottage ? { life: cottage.view() } : {}) }), computer: () => computer?.status(), faults: () => [...faults.list(), ...(adapter?.status().error ? [`微信适配器：${adapter.status().error}`] : []), ...(memory?.faults() ?? []), ...(bridge?.faults() ?? []), ...memoryHealth()] });
     const actions: ConsoleActions = {
       start: () => changeWorld(async () => {
         if (disposed || power.running()) return;
@@ -503,6 +527,7 @@ export function apply(ctx: Context, config: Config): void {
         if (patch.desktop === true && limits.desktop) return limits.desktop;
         // Her use of the computer runs inside the browser module; switched on alone it would wait forever.
         if (patch.desktop === true && !(patch.computer ?? power.computerEnabled())) return '先打开「她的浏览器」：她用电脑和它在同一个模块里';
+        if (patch.cottage === true && !room().current) return '小屋还没装好，先在「小屋」标签里安装';
         const change = patch.qq === undefined ? qqChange : ++qqChange;
         let restartRequired = false;
         if (patch.qq === true) {
@@ -517,6 +542,9 @@ export function apply(ctx: Context, config: Config): void {
           if (patch.computer === false) stopComputer();
           if (patch.computer === true && life) startComputer();
           if (patch.computer === true && life && !computer) return '她的浏览器模块没能启动，请查看健康状态';
+          if (patch.cottage === false) stopCottage();
+          if (patch.cottage === true && life) await startCottage();
+          if (patch.cottage === true && life && !cottage) return '她的小屋没能打开，请查看健康状态';
           if (patch.desktop !== undefined) computer?.setDesktop(patch.desktop);
           if (patch.desktop === true && computer && !computer.desktopOn()) return '她用电脑没能打开，请查看健康状态';
           // Not kept in world.json: every time it is on, the partner has just approved it.
@@ -534,6 +562,15 @@ export function apply(ctx: Context, config: Config): void {
         if (restartRequired) return { restartRequired: true, message: 'SnowLuma SDK 已安装。请重启 DSH，QQ 会按已保存的开关启用。' };
         return undefined;
       },
+      installRoom: async () => {
+        try { await roomPackage.ensure(); faults.clear('room-install'); if (life) await startCottage(); return undefined; }
+        catch (error) { const message = `小屋安装失败：${errorText(error)}`; faults.set('room-install', message); return message; }
+        finally { sources.invalidate(); }
+      },
+      setCottageWeather: (weather) => {
+        if (!cottage) return '她还没住进小屋（在「接入」里打开「她住进小屋」，世界要在运行）';
+        try { cottage.setWeather(weather); return undefined; } finally { sources.invalidate(); }
+      },
       showComputer: async () => {
         if (!computer) return '她的浏览器模块没有运行';
         try { await computer.show(); return undefined; } catch (error) { return `打不开她的浏览器：${errorText(error)}`; }
@@ -545,6 +582,7 @@ export function apply(ctx: Context, config: Config): void {
       saveWorldPrompt: text => { if (text.trim()) durableWrite(worldPromptFile, text); else rmSync(worldPromptFile, { force: true }); },
     };
     lifeCtx.effect(() => webServer.register(consoleRoute(prefix, sources, actions, config.allowedHosts)), 'dsh-world console routes');
+    lifeCtx.effect(() => webServer.register(roomRoute(prefix, config.allowedHosts, () => installedRoom(profileDir())?.dir)), 'dsh-world room route');
     lifeCtx.effect(() => {
       // Profile-wide like the list itself, so it hangs on the root: the world that registered it may be the first to go.
       const addWorld = (id: string, companionName: string) => worlds.profileEdits = worlds.profileEdits.then(() => {}, () => {}).then(() => {
