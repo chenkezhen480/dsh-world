@@ -68,6 +68,24 @@ test('面板的白名单、静默和拉起 SnowLuma 校验后一起交给通道'
   ]);
 });
 
+test('她自己的话推不推、名单备注：只认真开关和号码键', async () => {
+  const patches: unknown[] = [];
+  const route = qqRoute('/dsh-world/worlds/fish', [], doors(), native, patch => { patches.push(patch); return { ok: true }; });
+  const post = (body: unknown) => call(route, request('POST', '/native', { headers: WRITE, body }));
+  assert.equal((await post({ forwardOwn: false })).status, 200, '关掉推送');
+  assert.equal((await post({ forwardOwn: 'no' })).status, 400, '只认真开关，别的不猜');
+  assert.match(String((await post({ aliases: '2653935317' })).body.error), /要是一个对象/);
+  assert.match(String((await post({ aliases: { abc: '鳐辰' } })).body.error), /不是号码：abc/);
+  assert.match(String((await post({ aliases: { '2653935317': 5 } })).body.error), /备注要是一段文字/);
+  assert.equal((await post({ aliases: { ' 2653935317 ': '  鳐辰  ', '700700700': '' } })).status, 200, 'trim、空备注不落');
+  assert.equal((await post({ aliases: {} })).status, 200, '空对象清掉全部备注');
+  assert.deepEqual(patches, [
+    { forwardOwn: false },
+    { aliases: { '2653935317': '鳐辰' } },
+    { aliases: {} },
+  ]);
+});
+
 test('每个群自己的接话规矩：只认纯数字群号 + mention/all，别的写法一律拒', async () => {
   const patches: unknown[] = [];
   const route = qqRoute('/dsh-world/worlds/fish', [], doors(), native, patch => { patches.push(patch); return { ok: true }; });

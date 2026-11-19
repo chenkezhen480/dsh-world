@@ -376,6 +376,8 @@ export function apply(ctx: Context, config: Config): void {
             groupTriggers: q.groupTriggers ?? {},
             groupKeywords: q.groupKeywords ?? [],
             mutedUntil: q.mutedUntil ?? '',
+            forwardOwn: q.forwardOwn ?? true,
+            aliases: q.aliases ?? {},
             snowlumaHome: discoverSnowlumaHome(q.snowlumaHome ?? ''),
             supervise: q.supervise ?? true,
             bridge: {

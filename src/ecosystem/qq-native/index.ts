@@ -88,6 +88,10 @@ export interface QqNativeConfig {
   groupKeywords: readonly string[];
   /** 只停嘴不停耳：这个时间（ISO）之前照收、照记上下文，但不回；到点自己醒。空着就是没静默。 */
   mutedUntil: string;
+  /** 她自己在「自己的时间」里开的那轮（闹钟、世界线），说完要不要把那段话推到 ownerQQ。默认推。 */
+  forwardOwn: boolean;
+  /** 白名单号码的备注，只影响面板显示，不参与任何判定。 */
+  aliases: Readonly<Record<string, string>>;
   /** SnowLuma 的家目录；看门狗和「拉起 SnowLuma」都靠它。 */
   snowlumaHome: string;
   /** 看门狗：通道开着时盯住 wsUrl 的端口，不通就拉起 SnowLuma。 */
@@ -109,6 +113,10 @@ export interface QqNativeStatus {
   allowPrivateIds: string[];
   allowGroupsIds: string[];
   autoReply: boolean;
+  /** 她自己时间说的话推不推（false = 她歇着时不吵你）。 */
+  forwardOwn: boolean;
+  /** 名单上每个人的备注，键是 QQ 号/群号；没备注的不在里头。 */
+  aliases: Record<string, string>;
   conversations: number;
   answering: number;
   lastEventAt: string | null;
@@ -215,7 +223,7 @@ export function createQqNativeModule(deps: {
   };
 
   // 拨过的开关写在 stateFile 里，重载不丢；配置里那个是出厂默认。
-  type Overrides = { autoReply?: boolean; bridge?: { port?: number }; mutedUntil?: string | null; allowPrivate?: string[]; allowGroups?: string[]; batchQuietMs?: number; groupTriggers?: Record<string, 'mention' | 'all'> };
+  type Overrides = { autoReply?: boolean; bridge?: { port?: number }; mutedUntil?: string | null; allowPrivate?: string[]; allowGroups?: string[]; batchQuietMs?: number; groupTriggers?: Record<string, 'mention' | 'all'>; forwardOwn?: boolean; aliases?: Record<string, string> };
   const overrides = ((): Overrides => {
     try { return deps.stateFile ? JSON.parse(readFileSync(deps.stateFile, 'utf8')) : {}; } catch { return {}; }
   })();
@@ -235,6 +243,8 @@ export function createQqNativeModule(deps: {
       ...(overrides.allowGroups === undefined ? {} : { allowGroups: overrides.allowGroups }),
       ...(overrides.batchQuietMs === undefined ? {} : { batchQuietMs: overrides.batchQuietMs }),
       ...(overrides.groupTriggers === undefined ? {} : { groupTriggers: overrides.groupTriggers }),
+      ...(overrides.forwardOwn === undefined ? {} : { forwardOwn: overrides.forwardOwn }),
+      ...(overrides.aliases === undefined ? {} : { aliases: overrides.aliases }),
       bridge: overrides.bridge?.port === undefined ? base.bridge : { ...base.bridge, port: overrides.bridge.port },
     };
   };
@@ -460,7 +470,8 @@ export function createQqNativeModule(deps: {
       turns.delete(session.id);
       const config = settings();
       const owner = config.ownerQQ || config.allowPrivate[0];
-      if (!turn.own || !turn.said || !owner || !client || mutedUntil(config)) return;
+      // 「歇着」「收工」这种也是话：面板上有开关，她歇着的时候可以不吵人。
+      if (!turn.own || !turn.said || !owner || !client || !config.forwardOwn || mutedUntil(config)) return;
       void say('private', owner, turn.said).catch(error => deps.logger.warn(`她自己的话没能推给主人：${errorText(error)}`));
     });
   }
@@ -500,6 +511,8 @@ export function createQqNativeModule(deps: {
       allowPrivateIds: [...config.allowPrivate],
       allowGroupsIds: [...config.allowGroups],
       autoReply: config.autoReply,
+      forwardOwn: config.forwardOwn,
+      aliases: { ...(config.aliases ?? {}) },
       bindHomeSession: config.bindHomeSession,
       bridge: nativeBridge?.status() ?? null,
       groupTrigger: config.groupTrigger,
@@ -538,6 +551,8 @@ export function createQqNativeModule(deps: {
       // 整组换掉，不是逐个合：面板那边是把每个群的下拉一起交上来的，合进去的话，某个群被删掉的行会一直留着。
       // 给空对象就是全部回到全局默认。
       if (patch.groupTriggers !== undefined) overrides.groupTriggers = patch.groupTriggers;
+      if (patch.forwardOwn !== undefined) overrides.forwardOwn = patch.forwardOwn;
+      if (patch.aliases !== undefined) overrides.aliases = patch.aliases;
       writeOverrides();
       if (patch.bridge) { nativeBridge?.stop(); nativeBridge = undefined; startBridge(settings()); }
       return { ...status(), ...(patch.startSnowluma ? { launch: startSnowluma(settings().snowlumaHome) } : {}) };

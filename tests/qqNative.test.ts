@@ -62,6 +62,8 @@ const configOf = (over: Partial<QqNativeConfig> = {}): QqNativeConfig => ({
   // 一条一问：合批有自己的用例。
   batchQuietMs: 0,
   mutedUntil: '',
+  forwardOwn: true,
+  aliases: {},
   snowlumaHome: '',
   supervise: false,
   bindHomeSession: 'none',
@@ -669,6 +671,27 @@ test('阳台：线走了以后她说的话记成 dropped，不再混进 spoken',
   assert.equal(status.relayed, 1);
   assert.equal(status.spoken, 0, '线都走了，不该算"说出去了"');
   assert.equal(status.dropped, 1, '没递到要单独记一笔');
+});
+
+test('forwardOwn 配置透传：默认推，面板可以关', async t => {
+  const { ctx } = await hostFixture(t, () => textResponse('嗯'));
+  const channel = createQqNativeModule({ ctx, home: async () => { throw new Error('unused'); }, config: () => configOf(), logger: quiet, transport: fakeTransport().factory });
+  assert.equal(channel.status().forwardOwn, true, '默认推');
+  channel.update({ forwardOwn: false });
+  assert.equal(channel.status().forwardOwn, false);
+  assert.equal(configOf({ forwardOwn: false }).forwardOwn, false);
+});
+
+test('面板拨的 forwardOwn 与备注存下来，重载后还在', async t => {
+  const { ctx } = await hostFixture(t, () => textResponse('嗯'));
+  const dir = mkdtempSync(join(tmpdir(), 'dw-qq-fwd-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const stateFile = join(dir, 'qq-native.json');
+  const make = () => createQqNativeModule({ ctx, home: async () => { throw new Error('unused'); }, config: () => configOf(), stateFile, logger: quiet, transport: fakeTransport().factory });
+  assert.equal(make().status().forwardOwn, true, '默认推');
+  make().update({ forwardOwn: false, aliases: { '2653935317': '鳐辰' } });
+  assert.equal(make().status().forwardOwn, false);
+  assert.deepEqual(make().status().aliases, { '2653935317': '鳐辰' });
+  assert.deepEqual(JSON.parse(readFileSync(stateFile, 'utf8')), { forwardOwn: false, aliases: { '2653935317': '鳐辰' } });
 });
 
 test('面板先改阳台端口，也不会丢掉之前存下的自动回复开关', async t => {

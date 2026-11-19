@@ -559,7 +559,6 @@
       }
       // 阳台：拨端口就是开关（0 是关）。
       function flipBridge(port) { change({ bridge: { port: port } }) }
-      function flipNative(autoReply) { change({ autoReply: autoReply }) }
       // 静默：给一个时间点，到点前只收不回，到点自己醒；null 立刻恢复。
       var muteState = useState(''), muteAt = muteState[0], setMuteAt = muteState[1]
       function muteUntil(local) {
@@ -578,18 +577,55 @@
         if (!isFinite(sec) || sec < 0 || sec > 30) { setMsg('填 0 到 30 之间的秒数（一批最多等 30 秒）'); return }
         change({ batchQuietMs: Math.round(sec * 1000) })
       }
-      // 白名单：谁的话能进来。打开时填上现有的名单，之后不覆盖正在改的字。
-      var ids = props.native ? [(props.native.allowPrivateIds || []).join(', '), (props.native.allowGroupsIds || []).join(', ')] : ['', '']
-      var allowState = useState({ from: '', people: '', groups: '' }), allow = allowState[0], setAllow = allowState[1]
+      // 白名单：谁的话能进来。行式：号 + 备注 + 启用，存的时候仍是 allowPrivate/allowGroups 数组。
+      // 备注走 aliases（只影响显示）；行内不勾 = 这个人暂时收不进来（号码留着，随时勾回来）。
+      var savedAliases = (props.native && props.native.aliases) || {}
+      var allowIds = props.native ? (props.native.allowPrivateIds || []).concat(props.native.allowGroupsIds || []) : []
+      var allowRowsFrom = allowIds.join('|') + '|' + JSON.stringify(savedAliases)
+      var allowRowsState = useState({ from: '', rows: [] }), allowRows = allowRowsState[0], setAllowRows = allowRowsState[1]
       useEffect(function () {
-        var from = ids.join('|')
-        setAllow(function (current) { return current.from === from ? current : { from: from, people: ids[0], groups: ids[1] } })
-      }, [ids[0], ids[1]])
+        setAllowRows(function (current) {
+          if (current.from === allowRowsFrom) return current
+          // 重排：私聊在前、群在后；已存的备注带上；没见过的号从旧草稿里搬，避免手抖丢行。
+          var byId = {}
+          current.rows.forEach(function (row) { byId[row.id] = row })
+          var rows = allowIds.map(function (id) {
+            var old = byId[id]
+            return { id: id, kind: old && old.kind ? old.kind : (props.native && (props.native.allowPrivateIds || []).indexOf(id) >= 0 ? 'private' : 'group'), on: old ? old.on : true, note: old ? old.note : (savedAliases[id] || '') }
+          })
+          return { from: allowRowsFrom, rows: rows }
+        })
+      }, [allowRowsFrom])
+      function patchRow(id, patch) {
+        setAllowRows(function (current) {
+          var rows = current.rows.map(function (row) { return row.id === id ? Object.assign({}, row, patch) : row })
+          return { from: current.from, rows: rows }
+        })
+      }
+      function addAllowRow() {
+        setAllowRows(function (current) {
+          var id = String(Math.floor(Math.random() * 9e8 + 1e8))
+          return { from: current.from, rows: current.rows.concat([{ id: id, kind: 'private', on: true, note: '' }]) }
+        })
+      }
+      function dropAllowRow(id) {
+        setAllowRows(function (current) {
+          var rows = current.rows.filter(function (row) { return row.id !== id })
+          return { from: current.from, rows: rows }
+        })
+      }
       function saveAllow() {
-        function split(text) { return String(text).split(/[\s,，、;；]+/).filter(Boolean) }
-        var people = split(allow.people), groups = split(allow.groups), wrong = people.concat(groups).find(function (id) { return !/^[0-9]+$/.test(id) })
+        var aliasesOut = {}, people = [], groups = [], wrong = ''
+        allowRows.rows.forEach(function (row) {
+          var id = String(row.id).trim()
+          if (!/^[0-9]+$/.test(id)) { if (!wrong) wrong = id || '(空)'; return }
+          if (row.note.trim()) aliasesOut[id] = row.note.trim().slice(0, 100)
+          if (row.on) (row.kind === 'group' ? groups : people).push(id)
+        })
         if (wrong) { setMsg('请填 QQ 号：「' + wrong + '」不是号码'); return }
-        change({ allowPrivate: people, allowGroups: groups }, function () { return people.length || groups.length ? '名单存好了：私聊 ' + people.length + ' 个、群 ' + groups.length + ' 个' : '名单存好了：现在谁的话都不收' })
+        change({ allowPrivate: people, allowGroups: groups, aliases: aliasesOut }, function () {
+          return people.length || groups.length ? '名单存好了：私聊 ' + people.length + ' 个、群 ' + groups.length + ' 个（不勾的号码留在表里，勾回来再存就恢复）' : '名单存好了：现在谁的话都不收'
+        })
       }
       // 每个群自己的接话规矩。map 里没有这个群 = 跟着全局 groupTrigger 走；
       // 只交 mention/all 上去，选「跟着默认」就把这个键从 map 里删掉。
@@ -656,12 +692,30 @@
         })(props.native) : h('div', { key: 'n', className: 'dw-muted' }, '她自己的通道：没开（配置里 qqNative.enabled）'),
         (function (n) {
           if (!n) return null
-          return h('label', { key: 'nt', className: 'dw-setting', style: { cursor: 'pointer' } }, [
-            h('input', { key: 'c', type: 'checkbox', checked: n.autoReply === true, disabled: busy,
-              onChange: function (e) { flipNative(e.target.checked) } }),
-            h('span', { key: 't' }, n.autoReply === true ? ' 会自己回话' : ' 只看不回'),
+          // 自动回复是个闸门，不是状态展示：文案固定，动作是明确的按钮。
+          // 关掉会让后来的人白说一顿（他们的话只记上下文、不回、不落会话），所以关之前问一次。
+          function closeGate() {
+            if (!window.confirm('关掉后，收到的消息只记上下文、不回也不落会话，对方不知道你关了。确定先不回话吗？')) return
+            change({ autoReply: false }, function () { return '自动回复已关：只收不回，需要时再开' })
+          }
+          function openGate() { change({ autoReply: true }, function () { return '自动回复已开：来话就回' }) }
+          return h('div', { key: 'nt', className: 'dw-setting' }, [
+            h('span', { key: 's', className: n.autoReply === true ? 'dw-ok' : 'dw-bad' }, n.autoReply === true ? '● 自动回复开着' : '○ 自动回复关着（只收不回）'),
+            n.autoReply === true
+              ? h('button', { key: 'x', className: 'dw-btn', disabled: busy, onClick: closeGate }, '先不回')
+              : h('button', { key: 'o', className: 'dw-btn', disabled: busy, onClick: openGate }, '开始回话'),
           ])
         })(props.native),
+        // 她自己在「自己的时间」里开的那轮（闹钟、世界线）说完，要不要把那段话推到你 QQ。
+        // 关掉之后她歇着、收工这种话就不吵你了；有事的轮次她自己会找你。
+        props.native ? (function (n) {
+          return h('div', { key: 'fo', className: 'dw-setting' }, [
+            h('span', { key: 's', className: 'dw-muted' }, n.forwardOwn === false ? '她自己时间说的话：不推到你 QQ' : '她自己时间说的话：也推到你 QQ'),
+            n.forwardOwn === false
+              ? h('button', { key: 'on', className: 'dw-btn', disabled: busy, onClick: function () { change({ forwardOwn: true }, function () { return '已开：她那段话说完会推给你' }) } }, '要推')
+              : h('button', { key: 'off', className: 'dw-btn', disabled: busy, onClick: function () { change({ forwardOwn: false }, function () { return '已关：她歇着、收工这类话不再吵你' }) } }, '不推'),
+          ])
+        })(props.native) : null,
         (function (n) {
           if (!n) return null
           var ms = typeof n.batchQuietMs === 'number' ? n.batchQuietMs : 10000
@@ -680,11 +734,25 @@
             n.mutedUntil ? h('button', { key: 'r', className: 'dw-btn', disabled: busy, onClick: function () { change({ mutedUntil: null }) } }, '立刻恢复') : null,
           ])
         })(props.native),
-        props.native ? h('div', { key: 'allow', className: 'dw-setting' }, [
-          h('input', { key: 'p', type: 'text', 'aria-label': '私聊白名单', placeholder: '私聊 QQ 号', disabled: busy, value: allow.people, onChange: function (e) { setAllow({ from: allow.from, people: e.target.value, groups: allow.groups }) } }),
-          h('input', { key: 'g', type: 'text', 'aria-label': '群白名单', placeholder: '群号', disabled: busy, value: allow.groups, onChange: function (e) { setAllow({ from: allow.from, people: allow.people, groups: e.target.value }) } }),
+        props.native ? h('div', { key: 'allow', className: 'dw-setting', style: { flexWrap: 'wrap' } }, [
+          h('div', { key: 'h', className: 'dw-muted', style: { width: '100%' } }, '谁的话能进来：一行一个人/一个群，不勾就是暂时不收（号码留在表里）。改完不用重启。'),
+          allowRows.rows.map(function (row, index) {
+            return h('div', { key: 'r' + row.id, className: 'dw-setting', style: { width: '100%', gap: 8 } }, [
+              h('select', { key: 'k', 'aria-label': '号码 ' + row.id + ' 是私聊还是群', disabled: busy, value: row.kind, onChange: function (e) { patchRow(row.id, { kind: e.target.value }) } }, [
+                h('option', { key: 'p', value: 'private' }, '私聊'),
+                h('option', { key: 'g', value: 'group' }, '群'),
+              ]),
+              h('input', { key: 'i', type: 'text', inputMode: 'numeric', 'aria-label': '第 ' + (index + 1) + ' 行的号码', placeholder: 'QQ 号', disabled: busy, value: row.id, style: { width: 140, fontVariantNumeric: 'tabular-nums' }, onChange: function (e) { patchRow(row.id, { id: e.target.value }) } }),
+              h('input', { key: 'n', type: 'text', 'aria-label': '号码 ' + row.id + ' 的备注', placeholder: '备注（只是给自己看）', disabled: busy, value: row.note, onChange: function (e) { patchRow(row.id, { note: e.target.value }) } }),
+              h('label', { key: 'e', style: { display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer' }, title: '不勾就是暂时不收' }, [
+                h('input', { key: 'c', type: 'checkbox', checked: row.on, disabled: busy, onChange: function (e) { patchRow(row.id, { on: e.target.checked }) } }),
+                h('span', { key: 't' }, '收'),
+              ]),
+              h('button', { key: 'x', className: 'dw-btn', disabled: busy, onClick: function () { dropAllowRow(row.id) }, title: '从表里删掉这一行（存了才会生效）' }, '删'),
+            ])
+          }),
+          h('button', { key: 'a', className: 'dw-btn', disabled: busy, onClick: addAllowRow }, '加一行'),
           h('button', { key: 'b', className: 'dw-btn', disabled: busy, onClick: saveAllow }, '存名单'),
-          h('div', { key: 'h', className: 'dw-muted', style: { width: '100%' } }, '多个用逗号隔开；留空就是谁的话都不收。改完不用重启。'),
         ]) : null,
         // 每个群单独一行：谁在列表里就都有自己的一格，选「跟着默认」就不写进 groupTriggers。
         // 群号来源 = 群白名单 + 已经存过规矩的群（后者可能已经不在白名单里，也要能改回来）。
