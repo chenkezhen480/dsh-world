@@ -188,6 +188,16 @@ test('what she says in a turn of her own at home also reaches the owner, and not
   assert.equal(qq.transport.sent.length, 2, 'only her home');
 });
 
+test('forwardOwn: false keeps her own home turns from reaching the owner', async t => {
+  const qq = await channel(t, text => text.includes('闹钟') ? '起来了\n\n今天先写日记' : '回你', { ownerQQ: '100', forwardOwn: false });
+  qq.agent.followup(createUserMessage({ source: { kind: 'dsh-world-life' }, content: [{ type: 'text', text: '【我的时间】闹钟响了' }] }));
+  await qq.agent.whenIdle(); await settle(900);
+  assert.deepEqual(qq.transport.sent, [], 'her own turn stays home');
+  qq.agent.followup(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: '在吗' }] }));
+  await qq.agent.whenIdle(); await settle();
+  assert.equal(qq.transport.sent.length, 0, 'config off: nothing forwarded, the answering path is unchanged');
+});
+
 test('the watchdog starts SnowLuma when its port is closed and says why when it cannot', async () => {
   let alive = false, launches = 0;
   const watchdog = createSnowlumaSupervisor({ homeDir: 'C:/SnowLuma', host: '127.0.0.1', port: 3003, intervalMs: 20, probe: async () => alive, launch: () => { launches++; return { started: true, how: 'spawn' }; }, log: () => {} });
