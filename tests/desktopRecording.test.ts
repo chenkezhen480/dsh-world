@@ -137,7 +137,7 @@ test('a long recording returns at once and is looked at when it is over; what ca
   const started = await s.desktop.act({ action: 'record', seconds: 300, every: 5 });
   assert.match(started.text, /^开始录 播放器 的窗口：共 300 秒，每 5 秒一帧，\d\d:\d\d:\d\d 录完。这段时间可以照常操作.*不想录了就 desktop stop，录到的照样能看。录完会替你按一下空格让它暂停。$/);
   assert.equal(started.image, undefined);
-  assert.equal(s.shots.length, 1, 'the first frame proves the window can be pictured');
+  assert.ok(s.shots.length >= 1 && s.shots.length < 61, `the first frame proves the window can be pictured (got ${s.shots.length}); frame 0 is taken before start returns, later ones may land whenever the machine is quick`);
   assert.equal((await s.desktop.act({ action: 'review' })).text.replace(/\d+/, 'N'), '还在录，还剩 N 秒。录完再 desktop review；现在就想看，先 desktop stop 停下。');
   // 300 "seconds" take at least 300ms; under a loaded machine longer, so wait for it to be over rather than for a time.
   let seen = await s.desktop.act({ action: 'review' });
