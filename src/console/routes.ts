@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { jsonObject, knownHost, readBody, sendJson, type JsonResult } from '../http.ts';
 import { PERSONA_LAYERS, type Persona } from '../persona.ts';
-import { validColdHours, validTurns, validWechatBuffer, MAX_COLD_HOURS, validWechatContext, validWorkspacePermission, MAX_WECHAT_BUFFER_SECONDS, MAX_WECHAT_CONTEXT } from '../worldSwitch.ts';
+import { validColdHours, validTurns, validWechatBuffer, MAX_COLD_HOURS, validWechatContext, validWorkspacePermission, MAX_WECHAT_BUFFER_SECONDS, MAX_WECHAT_CONTEXT, validInboxIgnore, MAX_INBOX_IGNORE, MAX_INBOX_NAME } from '../worldSwitch.ts';
 import { validArchiveScope, type MemoryArchiveScope } from '../archiveSelection.ts';
 import type { PhotoStore } from '../life/photos.ts';
 import { validClockTime } from '../life/alarm.ts';
@@ -56,6 +56,8 @@ export interface ConsoleActions {
   /** Restarts the adapter the plugin manages; false when it does not manage one. */
   restartWechatAdapter(): Promise<boolean>;
   setWechatSettings(settings: { context?: number | null; bufferSeconds?: number | null }): void;
+  /** Programs her inbox leaves out, matched by the name she is told or the executable; null goes back to Windows' own programs. */
+  setInboxIgnore(names: readonly string[] | null): void;
 }
 const optionalFlag = (value: unknown): value is boolean | undefined => value === undefined || typeof value === 'boolean';
 export interface ConsoleRequest { method: string; url: string; write: boolean; body?: Record<string, unknown> | undefined }
@@ -116,6 +118,11 @@ async function write(actions: ConsoleActions, path: string, body: Record<string,
       if (bufferSeconds !== undefined && bufferSeconds !== null && !validWechatBuffer(bufferSeconds)) return bad(`bufferSeconds must be a number from 0 to ${MAX_WECHAT_BUFFER_SECONDS}, or null`);
       if (context === undefined && bufferSeconds === undefined) return bad('nothing to change');
       actions.setWechatSettings({ ...(context === undefined ? {} : { context }), ...(bufferSeconds === undefined ? {} : { bufferSeconds }) }); return ok();
+    }
+    case '/console/inbox-ignore': {
+      const names = body?.names;
+      if (names !== null && !validInboxIgnore(names)) return bad(`names 必须是名字列表（最多 ${MAX_INBOX_IGNORE} 个，每个不超过 ${MAX_INBOX_NAME} 字），或 null 恢复默认`);
+      actions.setInboxIgnore(names); return ok();
     }
     case '/console/modules': {
       const wechat = body?.wechat, qq = body?.qq, computer = body?.computer, desktop = body?.desktop, foreground = body?.foreground;

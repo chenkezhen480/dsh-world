@@ -4,7 +4,7 @@ import { durableWrite } from './life/lifeStore.ts';
 import { validArchiveScope, type MemoryArchiveScope } from './archiveSelection.ts';
 import { DEFAULT_REVIEW_TIME, validClockTime } from './life/alarm.ts';
 
-interface WorldSettings { running: boolean; dailyBudget?: number; memoryTurns?: number; coldHours?: number; archiveScope?: MemoryArchiveScope; workspacePermission?: string; wechatContext?: number; wechatBufferSeconds?: number; wechatEnabled?: boolean; qqEnabled?: boolean; computerEnabled?: boolean; desktopEnabled?: boolean; compactAfterReview?: boolean; compactionSwapped?: boolean; consoleSwitchesOnly?: boolean; reviewTime?: string; wakeTime?: string }
+interface WorldSettings { running: boolean; dailyBudget?: number; memoryTurns?: number; coldHours?: number; archiveScope?: MemoryArchiveScope; workspacePermission?: string; wechatContext?: number; wechatBufferSeconds?: number; wechatEnabled?: boolean; qqEnabled?: boolean; computerEnabled?: boolean; desktopEnabled?: boolean; compactAfterReview?: boolean; compactionSwapped?: boolean; consoleSwitchesOnly?: boolean; reviewTime?: string; wakeTime?: string; inboxIgnore?: string[] }
 /** How many of the newest turns the memory block carries when nothing else is set. */
 export const DEFAULT_MEMORY_TURNS = 200;
 /** Hours a session stays silent before its next turn re-reads her memory block and prompt (#36); see `runtime.ts`. */
@@ -12,6 +12,14 @@ export const DEFAULT_COLD_HOURS = 24, MAX_COLD_HOURS = 720;
 /** WeChat group messages read before a mention, and seconds a private image waits for its companions. */
 export const DEFAULT_WECHAT_CONTEXT = 5, MAX_WECHAT_CONTEXT = 20;
 export const DEFAULT_WECHAT_BUFFER_SECONDS = 3, MAX_WECHAT_BUFFER_SECONDS = 30;
+/**
+ * Programs her inbox leaves out until the partner edits the list (#61): Windows' own, which never call her. When DSH
+ * starts, the console host and the remote-desktop client (WSLg runs on it) redraw their windows the way a flashing
+ * button does, and she spent a turn each time looking for a button that was not there; Windows' own notifications are
+ * about the machine. Named by executable or notification id, so they hold in every display language.
+ */
+export const DEFAULT_INBOX_IGNORE: readonly string[] = ['conhost', 'OpenConsole', 'msrdc', 'mstsc', 'explorer', 'Windows.SystemToast', 'Microsoft.Windows'];
+export const MAX_INBOX_IGNORE = 50, MAX_INBOX_NAME = 100;
 
 /**
  * Her world's own settings, changed from the world console and kept in `<world>/world.json` so they outlast a
@@ -42,6 +50,7 @@ export function createWorldSwitch(worldDir: string, configuredScope: MemoryArchi
     ...(stored?.consoleSwitchesOnly === true ? { consoleSwitchesOnly: true } : {}),
     ...(validClockTime(stored?.reviewTime) ? { reviewTime: stored.reviewTime } : {}),
     ...(validClockTime(stored?.wakeTime) ? { wakeTime: stored.wakeTime } : {}),
+    ...(validInboxIgnore(stored?.inboxIgnore) ? { inboxIgnore: inboxNames(stored.inboxIgnore) } : {}),
   };
   const activeScope = settings.archiveScope ?? configuredScope;
   function save(next: WorldSettings): void {
@@ -138,6 +147,15 @@ export function createWorldSwitch(worldDir: string, configuredScope: MemoryArchi
       const buffer = next.bufferSeconds === undefined ? oldBuffer : next.bufferSeconds ?? undefined;
       save({ ...rest, ...(context === undefined || context === DEFAULT_WECHAT_CONTEXT ? {} : { wechatContext: context }), ...(buffer === undefined || buffer === DEFAULT_WECHAT_BUFFER_SECONDS ? {} : { wechatBufferSeconds: buffer }) });
     },
+    /** Read at every look, so a change applies from the next one. */
+    inboxIgnore: () => settings.inboxIgnore ?? [...DEFAULT_INBOX_IGNORE],
+    inboxIgnoreCustom: () => settings.inboxIgnore !== undefined,
+    /** null, or the same names as the default in any order, goes back to the default; an empty list leaves nothing out. */
+    setInboxIgnore(names: readonly string[] | null): void {
+      const { inboxIgnore: _old, ...rest } = settings;
+      const kept = names === null ? undefined : inboxNames(names);
+      save(kept === undefined || sameNames(kept, DEFAULT_INBOX_IGNORE) ? rest : { ...rest, inboxIgnore: kept });
+    },
   };
 }
 export const validTurns = (value: unknown): value is number => typeof value === 'number' && Number.isInteger(value) && value >= 1;
@@ -146,3 +164,14 @@ export const validWorkspacePermission = (value: unknown): value is string => typ
 
 export const validWechatContext = (value: unknown): value is number => typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= MAX_WECHAT_CONTEXT;
 export const validWechatBuffer = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= MAX_WECHAT_BUFFER_SECONDS;
+export const validInboxIgnore = (value: unknown): value is string[] =>
+  Array.isArray(value) && value.length <= MAX_INBOX_IGNORE && value.every(name => typeof name === 'string' && name.trim().length <= MAX_INBOX_NAME);
+/** Trimmed, blanks dropped, and each name once: the inbox matches without regard to case. */
+function inboxNames(names: readonly string[]): string[] {
+  const kept = new Map<string, string>();
+  for (const name of names.map(each => each.trim())) if (name && !kept.has(name.toLowerCase())) kept.set(name.toLowerCase(), name);
+  return [...kept.values()];
+}
+/** Both lists hold each name once. */
+const sameNames = (a: readonly string[], b: readonly string[]) =>
+  a.length === b.length && b.every(name => a.some(each => each.toLowerCase() === name.toLowerCase()));

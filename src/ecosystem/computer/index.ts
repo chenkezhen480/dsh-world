@@ -131,6 +131,7 @@ export function createComputerModule(deps: {
       desktop: desktopUse ? { running: desktopUse.driver.running(), foreground: desktopUse.foreground !== undefined, recent: (desktopUse.foreground?.screen ?? desktopUse.desktop).recent().slice(0, 5) } : null,
       inbox: desktopUse?.inbox?.status() ?? null,
     }),
+    inbox: () => desktopUse?.inbox?.status(),
     show: () => browser.show(),
     stop: () => { browser.stop(); stopDesktop(); library.clearFaults(); deps.faults.clear('computer', 'desktop'); },
   };

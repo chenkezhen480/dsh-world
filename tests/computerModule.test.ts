@@ -93,7 +93,7 @@ test('her inbox goes on and off with her use of the computer, with a helper of i
   await new Promise(resolve => setTimeout(resolve, 30));
   assert.deepEqual([helpers, calls.length], [0, 0]);
   module.setDesktop(true);
-  assert.deepEqual(module.status().inbox, { waiting: [] });
+  assert.deepEqual(module.status().inbox, { waiting: [], told: [] });
   await new Promise(resolve => setTimeout(resolve, 60));
   assert.deepEqual([calls.includes('notifications'), calls.includes('flashes')], [true, true]);
   module.setDesktop(false);

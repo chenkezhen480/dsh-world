@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Faults } from '../src/faults.ts';
 import { createInbox, ELSEWHERE, senderName, UNNAMED } from '../src/ecosystem/computer/inbox/inbox.ts';
+import { DEFAULT_INBOX_IGNORE } from '../src/worldSwitch.ts';
 
 const posted = (id: number, app: string, texts: string[], at = '2026-11-16T10:20:00.000Z') => ({ id, app, appId: `${app}.App`, at, texts });
 const flash = (app: string, exe = app) => ({ app, exe, at: '2026-11-16T10:00:00.000Z' });
@@ -92,4 +93,50 @@ test('what it cannot see is a fault until it can again', async () => {
   await inbox.look();
   assert.deepEqual(faults.list(), []);
   inbox.stop();
+});
+
+test('by default Windows\' own programs are not news: what DSH starting redraws, and Windows\' own notifications (#61)', async () => {
+  const { inbox, told, state, pass } = world([...DEFAULT_INBOX_IGNORE]);
+  await inbox.look();
+  // What she was told each time DSH started, and spent a turn looking for.
+  state.flashes = [flash('控制台窗口主机', 'conhost'), flash('远程桌面', 'msrdc'), flash('Windows 资源管理器', 'explorer'), flash('Microsoft Edge', 'msedge')];
+  state.notifications = [
+    { id: 1, app: '安全和维护', appId: 'Windows.SystemToast.SecurityAndMaintenance', at: '2026-11-16T10:20:00.000Z', texts: ['请重启'] },
+    { id: 2, app: 'Windows 安全中心', appId: 'Microsoft.Windows.SecHealthUI_cw5n1h2txyewy!SecHealthUI', at: '2026-11-16T10:20:00.000Z', texts: ['已扫描'] },
+    { id: 3, app: '', appId: 'Microsoft.WindowsTerminal_8wekyb3d8bbwe!App', at: '2026-11-16T10:21:00.000Z', texts: ['完成'] },
+  ];
+  await inbox.look(); pass(10_000); await inbox.look();
+  assert.equal(told.length, 1);
+  assert.deepEqual(told[0]!.split('\n').filter(line => line.startsWith('- ')).map(line => line.slice(2, line.indexOf('：'))), ['Microsoft.WindowsTerminal', 'Microsoft Edge'], 'a program that only starts like a Windows one still counts');
+});
+
+test('the console is offered the names in the words she got, newest first, until it stops (#61)', async () => {
+  const { inbox, state, pass } = world();
+  await inbox.look();
+  state.flashes = [flash('远程桌面', 'msrdc')];
+  await inbox.look(); pass(10_000); await inbox.look();
+  state.flashes = [flash('Microsoft Edge', 'msedge')];
+  state.notifications = [{ id: 4, app: '', appId: 'Microsoft.WindowsTerminal_8wekyb3d8bbwe!App', at: '2026-11-16T10:21:00.000Z', texts: ['完成'] }];
+  state.free = false;
+  await inbox.look(); pass(10_000); await inbox.look();
+  assert.deepEqual(inbox.status(), { waiting: ['Microsoft.WindowsTerminal', 'Microsoft Edge'], told: ['远程桌面'] }, 'a word her home did not take is not offered yet');
+  state.free = true;
+  await inbox.look();
+  assert.deepEqual(inbox.status().told, ['Microsoft.WindowsTerminal', 'Microsoft Edge', '远程桌面']);
+  inbox.stop();
+  assert.deepEqual(inbox.status(), { waiting: [], told: [] });
+});
+
+test('DSH itself is never news, whatever the list says: told her own words, she would go on answering herself (#61)', async () => {
+  const { inbox, told, state, pass } = world();
+  await inbox.look();
+  state.flashes = [flash('DeepSeek Harness', 'DeepSeek Harness')];
+  state.notifications = [
+    { id: 1, app: 'DeepSeek Harness', appId: 'electron.app.DeepSeek Harness', at: '2026-11-16T10:20:00.000Z', texts: ['鲸鲸', '我把那页改好了'] },
+    // Without a name Windows shows, still known by its id.
+    { id: 2, app: '', appId: 'electron.app.DeepSeek Harness', at: '2026-11-16T10:20:01.000Z', texts: ['鲸鲸', '还有一件事'] },
+  ];
+  await inbox.look(); pass(10_000); await inbox.look();
+  assert.deepEqual(told, []);
+  assert.deepEqual(inbox.status(), { waiting: [], told: [] });
 });

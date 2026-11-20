@@ -7,7 +7,7 @@ import { PERSONA_LAYERS, type Persona } from '../src/persona.ts';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createWorldSwitch, DEFAULT_COLD_HOURS, DEFAULT_MEMORY_TURNS } from '../src/worldSwitch.ts';
+import { createWorldSwitch, DEFAULT_COLD_HOURS, DEFAULT_INBOX_IGNORE, DEFAULT_MEMORY_TURNS } from '../src/worldSwitch.ts';
 
 const sources: ConsoleSources = {
   snapshot: async () => ({ worldId: 'jingjing' }),
@@ -35,6 +35,7 @@ function fakeActions() {
     showComputer: async () => { calls.push('show-computer'); return undefined; },
     restartWechatAdapter: async () => { calls.push('adapter-restart'); return true; },
     setWechatSettings: next => { calls.push(`wechat:${JSON.stringify(next)}`); },
+    setInboxIgnore: names => { calls.push(`inbox-ignore:${JSON.stringify(names)}`); },
   };
   return { actions, calls };
 }
@@ -444,4 +445,34 @@ test('the computer module is off until switched on and its choice is kept', t =>
   assert.equal(createWorldSwitch(dir).computerEnabled(), true);
   power.setModules({ wechat: false });
   assert.equal(createWorldSwitch(dir).computerEnabled(), true, 'another switch leaves it alone');
+});
+
+test('the inbox list takes names or null and refuses anything else (#61)', async () => {
+  const { actions, calls } = fakeActions();
+  const post = (body: Record<string, unknown>) => handleConsole('/dsh-world/worlds/fish', sources, actions, { method: 'POST', url: '/dsh-world/worlds/fish/console/inbox-ignore', write: true, body });
+  assert.equal((await post({ names: ['远程桌面', 'Mem Reduct'] })).status, 200);
+  assert.equal((await post({ names: [] })).status, 200);
+  assert.equal((await post({ names: null })).status, 200);
+  for (const body of [{}, { names: '远程桌面' }, { names: [3] }, { names: ['x'.repeat(101)] }, { names: Array.from({ length: 51 }, (_, i) => `p${i}`) }]) assert.equal((await post(body)).status, 400, JSON.stringify(body).slice(0, 40));
+  assert.deepEqual(calls, ['inbox-ignore:["远程桌面","Mem Reduct"]', 'inbox-ignore:[]', 'inbox-ignore:null']);
+});
+test('her inbox leaves out Windows\' own programs until the partner edits the list, which survives a restart (#61)', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-world-inbox-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const stored = () => JSON.parse(readFileSync(join(dir, 'world.json'), 'utf8'));
+  const power = createWorldSwitch(dir);
+  assert.deepEqual(power.inboxIgnore(), DEFAULT_INBOX_IGNORE, 'a new world, or one from before the list, starts with the default');
+  assert.ok(power.inboxIgnore().includes('conhost') && power.inboxIgnore().includes('msrdc'), 'the two that called her each time DSH started');
+  assert.equal(power.inboxIgnoreCustom(), false);
+  power.setInboxIgnore([' 远程桌面 ', 'conhost', 'CONHOST', '', 'Mem Reduct']);
+  assert.deepEqual(createWorldSwitch(dir).inboxIgnore(), ['远程桌面', 'conhost', 'Mem Reduct'], 'trimmed, blanks dropped, each name once');
+  assert.equal(createWorldSwitch(dir).inboxIgnoreCustom(), true);
+  power.setInboxIgnore([]);
+  assert.deepEqual(createWorldSwitch(dir).inboxIgnore(), [], 'an empty list leaves nothing out');
+  power.setInboxIgnore([...DEFAULT_INBOX_IGNORE].reverse().map(name => name.toUpperCase()));
+  assert.equal('inboxIgnore' in stored(), false, 'the default in another order is the default, and is not written out');
+  power.setInboxIgnore(['Mem Reduct']);
+  power.setInboxIgnore(null);
+  assert.equal('inboxIgnore' in stored(), false);
+  writeFileSync(join(dir, 'world.json'), JSON.stringify({ running: true, inboxIgnore: 'conhost' }));
+  assert.deepEqual(createWorldSwitch(dir).inboxIgnore(), DEFAULT_INBOX_IGNORE, 'a list written wrong by hand is the default, not nothing');
 });

@@ -15,6 +15,7 @@ import { hostFixture, mountCompaction, textResponse } from './hostFixture.ts';
 import { createWorldRuntime } from '../src/index.ts';
 import * as worldPlugin from '../src/index.ts';
 import { moduleLimits } from '../src/ecosystem/computer/index.ts';
+import { DEFAULT_INBOX_IGNORE } from '../src/worldSwitch.ts';
 import { createArchiveStore } from '../src/store.ts';
 import { record } from './fixtures.ts';
 import TokenMeter from '@deepseek-ai/dsh-token-meter';
@@ -1289,7 +1290,7 @@ test('a module the config does not provide cannot be switched on from the consol
   assert.equal(result.status, 400);
   // Her browser and her use of the computer need nothing in the config: only the console's switches, and what this machine has.
   const limits = moduleLimits(), row = (why: string | undefined) => ({ available: !why, ...(why ? { reason: why } : {}), enabled: false, running: false });
-  assert.deepEqual((await consoleGet(routes, '/dsh-world/worlds/fish/console/snapshot')).modules, { wechat: { available: false, enabled: false, running: false }, qq: { available: false, enabled: false, running: false }, computer: row(limits.computer), desktop: row(limits.desktop), foreground: { available: false, enabled: false, running: false } });
+  assert.deepEqual((await consoleGet(routes, '/dsh-world/worlds/fish/console/snapshot')).modules, { wechat: { available: false, enabled: false, running: false }, qq: { available: false, enabled: false, running: false }, computer: row(limits.computer), desktop: { ...row(limits.desktop), inbox: { ignore: [...DEFAULT_INBOX_IGNORE], custom: false, told: [] } }, foreground: { available: false, enabled: false, running: false } });
   assert.equal((await routeCall(routes, '/dsh-world/worlds/fish', '/dsh-world/worlds/fish/console/modules', { 'x-dsh-world': '1', 'content-type': 'application/json' }, JSON.stringify({ qq: true }))).status, 400);
   const desktopAlone = await routeCall(routes, '/dsh-world/worlds/fish', '/dsh-world/worlds/fish/console/modules', { 'x-dsh-world': '1', 'content-type': 'application/json' }, JSON.stringify({ desktop: true }));
   assert.equal(desktopAlone.status, 400);

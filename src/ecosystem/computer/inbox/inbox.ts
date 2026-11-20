@@ -16,11 +16,19 @@ const POLL_MS = 2_000;
 /** Signals come in bursts: once this long has passed without a new one, what gathered goes to her in one word. */
 const QUIET_MS = 10_000;
 const PREVIEW = 60;
+/** Programs in the words she was told that the console offers to leave out, newest first. */
+const TOLD_KEPT = 8;
 const DENIED = /notification access denied/;
 /** Said after every word: the taskbar only shows programs calling; what does not call there is hers to go and look at. */
 export const ELSEWHERE = '任务栏上只看得到程序在叫你；网页、朋友圈这类任务栏上没有动静的地方，要你自己去看，看过的地方和怎么看可以记进自己的笔记。';
 
 const cut = (text: string) => { const flat = text.replace(/\s+/g, ' ').trim(); return flat.length > PREVIEW ? `${flat.slice(0, PREVIEW)}…` : flat; };
+/**
+ * DSH itself, where she lives, by its executable and the name Windows shows (`DeepSeek Harness`) and its notification id.
+ * What it shows is her: her own words in a notification, its button redrawn as she answers. Told to her as news, each
+ * answer would start the next turn, and she would go on answering herself. So it is never news, whatever the list says.
+ */
+export const HOME_PROGRAMS: readonly string[] = ['DeepSeek Harness', 'electron.app.DeepSeek Harness'];
 /** A notification posted under an id no installed program has comes with no sender at all. */
 export const UNNAMED = '没署名的程序';
 /**
@@ -33,25 +41,27 @@ export function senderName(app: string, appId: string): string {
 
 /**
  * Her inbox: the program watches the taskbar for her (a button that flashes, a system notification) and tells her in
- * one word when her home is free; whether to look or answer is hers. It knows no platform and opens nothing. Programs
- * with a channel of their own (`ignore`) are left out, so the same message never reaches her twice. Nothing is kept
+ * one word when her home is free; whether to look or answer is hers. It knows no platform and opens nothing. DSH itself
+ * is left out, and so are the programs the partner leaves out and those with a channel of their own (`ignore`), so the
+ * same message never reaches her twice. Nothing is kept
  * on disk; what was there before it started is the baseline, so a restart repeats nothing.
  */
 export function createInbox(deps: {
   faults: Faults; timeZone: string; helper: Pick<DesktopDriver, 'call'>;
   /** Her home takes the word only when it is not in a turn; false keeps it here for later. */
   tell(text: string): Promise<boolean>;
-  /** Names of programs that reach her through a channel of their own, matched against a program's name or executable. */
+  /** Names of programs left out besides DSH, matched against a program's name, executable or notification id. */
   ignore?(): string[];
   clock?: () => Date; timers?: LifeTimers; pollMs?: number; quietMs?: number;
 }) {
   const clock = deps.clock ?? (() => new Date()), timers = deps.timers ?? realTimers;
   const pollMs = deps.pollMs ?? POLL_MS, quietMs = deps.quietMs ?? QUIET_MS;
   const waiting = new Map<string, Waiting>();
+  let told: string[] = [];
   let seen: Set<number> | undefined, handle: unknown, stopped = true, latest = 0;
 
   const ignored = (...names: string[]) => {
-    const skip = (deps.ignore?.() ?? []).map(name => name.toLowerCase());
+    const skip = [...HOME_PROGRAMS, ...deps.ignore?.() ?? []].map(name => name.toLowerCase());
     return names.some(name => name && skip.some(each => name.toLowerCase() === each || name.toLowerCase().startsWith(`${each}.`)));
   };
   function note(app: string, signal: { notification?: { at: Date; text: string }; flash?: true }): void {
@@ -117,7 +127,8 @@ export function createInbox(deps: {
     const taken = new Map(waiting);
     waiting.clear();
     try {
-      if (!await deps.tell(word(taken))) putBack(taken);
+      if (await deps.tell(word(taken))) told = [...taken.keys(), ...told.filter(app => !taken.has(app))].slice(0, TOLD_KEPT);
+      else putBack(taken);
       deps.faults.clear('inbox-tell');
     } catch (error) { putBack(taken); deps.faults.set('inbox-tell', `信箱的话没送进家：${errorText(error)}`); }
   }
@@ -140,10 +151,11 @@ export function createInbox(deps: {
     stop(): void {
       stopped = true;
       if (handle !== undefined) { timers.clear(handle); handle = undefined; }
-      waiting.clear(); seen = undefined;
+      waiting.clear(); seen = undefined; told = [];
       deps.faults.clear('inbox-notifications', 'inbox-taskbar', 'inbox-tell');
     },
     look,
-    status: () => ({ waiting: [...waiting.keys()] }),
+    /** `told`: who was in the words she got since it started, by the name she was told, which leaving out also matches. */
+    status: () => ({ waiting: [...waiting.keys()], told: [...told] }),
   };
 }

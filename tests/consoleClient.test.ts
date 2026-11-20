@@ -551,3 +551,57 @@ test('the archive tab builds its query in the configured zone, drops a late answ
   replies[3]!.resolve(ok({ content: 'x' })); await stale;
   assert.ok(!seen.some(entry => entry.startsWith('read:')));
 });
+
+test('the inbox list under her use of the computer saves each change at once and offers the names she was told (#61)', async () => {
+  type El = { type: unknown; props: Record<string, any> | null; children: unknown[] };
+  const states: unknown[] = [];
+  let at = 0, refreshed = 0, error = '';
+  const requests: { url: string; body: unknown }[] = [];
+  const react = {
+    createElement: (type: unknown, props: unknown, ...children: unknown[]) => ({ type, props, children }),
+    useState(init: unknown) { const index = at++; if (!(index in states)) states[index] = init; return [states[index], (value: unknown) => { states[index] = typeof value === 'function' ? (value as (old: unknown) => unknown)(states[index]) : value; }]; },
+    useEffect: () => {}, useRef: (current: unknown) => ({ current }),
+  };
+  let loaded: { factory: (require: (name: string) => unknown) => { __test: (worldId: string) => { Modules: (props: unknown) => unknown } } } | undefined;
+  runInNewContext(await readFile('client/index.js', 'utf8'), {
+    window: { __ModuleLoader__: { load: (entry: typeof loaded) => { loaded = entry; } } },
+    fetch: async (url: string, options: { body: string }) => { requests.push({ url, body: JSON.parse(options.body) }); return { ok: !error, status: error ? 400 : 200, json: async () => error ? { error } : { ok: true } }; },
+  });
+  const { Modules } = loaded!.factory(() => react).__test('fish');
+  const expand = (value: unknown): El[] => {
+    if (Array.isArray(value)) return value.flatMap(expand);
+    if (!value || typeof value !== 'object') return [];
+    const el = value as El;
+    return typeof el.type === 'function' ? expand((el.type as (p: unknown) => unknown)({ ...el.props, children: el.children })) : [el, ...el.children.flatMap(expand)];
+  };
+  const text = (value: unknown): string => Array.isArray(value) ? value.map(text).join('') : value && typeof value === 'object' ? text((value as El).children) : value == null || typeof value === 'boolean' ? '' : String(value);
+  const off = { available: false, enabled: false, running: false };
+  let inbox = { ignore: ['conhost', 'msrdc'], custom: false, told: ['远程桌面', 'MSRDC', 'Microsoft Edge'] }, enabled = true, tree: El[] = [];
+  const render = () => { at = 0; tree = expand(Modules({ running: true, onSaved: () => { refreshed++; }, modules: { wechat: off, qq: off, computer: { available: true, enabled: true, running: true }, desktop: { available: true, enabled, running: enabled, inbox }, foreground: off } })); };
+  const button = (label: string | RegExp) => tree.find(el => el.type === 'button' && (typeof label === 'string' ? text(el) === label : label.test(text(el))))!;
+  const settle = async () => { await new Promise(setImmediate); render(); };
+  render();
+  assert.match(text(tree), /信箱不理会这些程序[^]*conhost×msrdc×[^]*最近报过：不再报「远程桌面」不再报「Microsoft Edge」[^]*默认的是 Windows 自己的程序/, 'a told name already left out, in any case, is not offered');
+  assert.equal(tree.some(el => el.type === 'button' && text(el) === '恢复默认'), false, 'nothing to go back to while it is the default');
+  button('不再报「远程桌面」').props!.onClick(); await settle();
+  assert.deepEqual(requests.at(-1), { url: '/dsh-world/worlds/fish/console/inbox-ignore', body: { names: ['conhost', 'msrdc', '远程桌面'] } });
+  assert.match(text(tree), /存好了：信箱不再报「远程桌面」/); assert.equal(refreshed, 1);
+  inbox = { ignore: ['conhost', 'msrdc', '远程桌面'], custom: true, told: ['远程桌面'] }; render();
+  assert.doesNotMatch(text(tree), /最近报过/);
+  button('×').props!.onClick(); await settle();
+  assert.deepEqual(requests.at(-1)!.body, { names: ['msrdc', '远程桌面'] }, '× takes out that one name');
+  tree.find(el => el.type === 'input')!.props!.onChange({ target: { value: ' Mem Reduct ' } }); render();
+  tree.find(el => el.type === 'input')!.props!.onKeyDown({ key: 'Enter' }); await settle();
+  assert.deepEqual(requests.at(-1)!.body, { names: ['conhost', 'msrdc', '远程桌面', 'Mem Reduct'] });
+  assert.equal(tree.find(el => el.type === 'input')!.props!.value, '', 'the box empties once added');
+  const before = requests.length;
+  tree.find(el => el.type === 'input')!.props!.onChange({ target: { value: 'MSRDC' } }); render();
+  button('加上').props!.onClick(); render();
+  assert.equal(requests.length, before, 'a name already there is not sent again'); assert.match(text(tree), /「MSRDC」已经在名单里/);
+  button('恢复默认').props!.onClick(); await settle();
+  assert.deepEqual(requests.at(-1)!.body, { names: null });
+  error = 'names 必须是名字列表'; button('恢复默认').props!.onClick(); await settle();
+  assert.match(text(tree), /保存失败：names 必须是名字列表/);
+  enabled = false; render();
+  assert.doesNotMatch(text(tree), /信箱不理会/, 'no list while her use of the computer is off');
+});

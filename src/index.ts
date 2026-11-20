@@ -299,8 +299,9 @@ export function apply(ctx: Context, config: Config): void {
           // 信箱随「她用电脑」开关：替她看任务栏（按钮在闪、系统通知），有动静时汇总成一句话告诉她，看不看由她定。
           inbox: {
             timeZone: config.timeZone, tell: async (text: string) => await life?.tell(text) ?? false,
-            // A program with a channel of its own reaches her there; the taskbar would tell her the same thing twice.
-            ignore: () => [...(wechat ? ['Weixin', 'WeChat', '微信'] : []), ...(qqNative ? ['QQ'] : [])],
+            // What the partner leaves out (Windows' own programs unless they changed it), and a program with a channel of
+            // its own, which reaches her there: the taskbar would tell her the same thing twice.
+            ignore: () => [...power.inboxIgnore(), ...(wechat ? ['Weixin', 'WeChat', '微信'] : []), ...(qqNative ? ['QQ'] : [])],
           },
           companion: () => names().companion, notice: text => life?.notice(text) });
         computer.setDesktop(power.desktopEnabled());
@@ -323,7 +324,10 @@ export function apply(ctx: Context, config: Config): void {
     /** The console's rows for her browser and her use of the computer; one this machine cannot run says why. */
     const computerRows = (limits: ReturnType<typeof moduleLimits>) => ({
       computer: { available: !limits.computer, ...(limits.computer ? { reason: limits.computer } : {}), enabled: power.computerEnabled(), running: computer !== undefined },
-      desktop: { available: !limits.desktop, ...(limits.desktop ? { reason: limits.desktop } : {}), enabled: power.desktopEnabled(), running: computer?.desktopOn() === true },
+      desktop: {
+        available: !limits.desktop, ...(limits.desktop ? { reason: limits.desktop } : {}), enabled: power.desktopEnabled(), running: computer?.desktopOn() === true,
+        inbox: { ignore: power.inboxIgnore(), custom: power.inboxIgnoreCustom(), told: computer?.inbox()?.told ?? [] },
+      },
     });
     let qqChannels: ReturnType<typeof createChannelSessions> | undefined;
     let adapter: AdapterSupervisor | undefined;
@@ -536,6 +540,7 @@ export function apply(ctx: Context, config: Config): void {
       },
       restartWechatAdapter: async () => { if (!adapter) return false; try { await adapter.restart(); } finally { sources.invalidate(); } return true; },
       setWechatSettings: next => { power.setWechat(next); sources.invalidate(); },
+      setInboxIgnore: names => { power.setInboxIgnore(names); sources.invalidate(); },
       setArchiveScope: scope => { power.setArchiveScope(scope); sources.invalidate(); return power.restartRequired(); },
       saveWorldPrompt: text => { if (text.trim()) durableWrite(worldPromptFile, text); else rmSync(worldPromptFile, { force: true }); },
     };

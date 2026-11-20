@@ -867,6 +867,7 @@
       var m = props.modules
       var msgState = useState(''), msg = msgState[0], setMsg = msgState[1]
       var busyState = useState(''), busy = busyState[0], setBusy = busyState[1]
+      var draftState = useState(''), draft = draftState[0], setDraft = draftState[1]
       function flip(name, value) {
         var body = {}; body[name] = value
         steps(name, [body])
@@ -907,7 +908,46 @@
           h('span', { className: 'dw-seg', role: 'group', 'aria-label': '她用电脑的模式' }, [['off', '关闭'], ['back', '后台'], ['front', '前台']].map(function (option) {
             return h('button', { key: option[0], className: mode === option[0] ? 'on' : '', disabled: !!busy, 'aria-pressed': mode === option[0], onClick: function () { choose(option[0]) } }, option[1])
           })),
-          h('div', { className: 'dw-muted', style: { flexBasis: '100%' } }, about + (mode === 'off' ? '' : '她操作时屏幕顶上有提示，连按两下 Esc 或点「停下」就能叫停。开着时她的信箱也在听：任务栏上有程序在闪或弹通知，等安静 10 秒告诉她一句（微信、QQ 有自己的通道，不算）。')))
+          h('div', { className: 'dw-muted', style: { flexBasis: '100%' } }, about + (mode === 'off' ? '' : '她操作时屏幕顶上有提示，连按两下 Esc 或点「停下」就能叫停。开着时她的信箱也在听：任务栏上有程序在闪或弹通知，等安静 10 秒告诉她一句（微信、QQ 有自己的通道，不算；下面列的程序也不算）。')))
+      }
+      /**
+       * 信箱不理会的程序：每点一下就存，信箱下一次看任务栏就照新的来，所以不留一份会过期的草稿名单。
+       * 「最近报过」是她这次启动以来听到的名字，点一下就不再报。
+       */
+      function inboxRow() {
+        var inbox = m.desktop.inbox, names = inbox.ignore
+        var has = function (name) { return names.some(function (each) { return each.toLowerCase() === name.toLowerCase() }) }
+        var told = inbox.told.filter(function (name) { return !has(name) })
+        function save(next, done) {
+          setBusy('inbox'); setMsg('')
+          post('inbox-ignore', { names: next }).then(function () { setBusy(''); setMsg(done); if (props.onSaved) props.onSaved() },
+            function (e) { setBusy(''); setMsg('保存失败：' + (e.message || e)) })
+        }
+        function add(name) {
+          name = name.trim()
+          if (!name) return
+          if (has(name)) { setMsg('「' + name + '」已经在名单里'); return }
+          save(names.concat([name]), '存好了：信箱不再报「' + name + '」')
+          setDraft('')
+        }
+        var busyNow = busy === 'inbox'
+        return h('div', { key: 'inbox', className: 'dw-setting', style: { flexWrap: 'wrap' } }, [
+          h('div', { key: 'note', style: { flexBasis: '100%' } }, '信箱不理会这些程序（写她听到的名字，或程序的 exe 名）：'),
+          names.length ? names.map(function (name) {
+            return h('span', { key: name }, [
+              h('span', { key: 'w' }, name),
+              h('button', { key: 'x', onClick: function () { save(names.filter(function (each) { return each !== name }), '存好了：信箱又会报「' + name + '」') }, title: '让信箱再报它', disabled: busyNow }, '×'),
+            ])
+          }) : h('span', { key: 'none', className: 'dw-muted' }, '（一个都没有，什么都报）'),
+          h('input', { key: 'add', value: draft, placeholder: '加一个程序', 'aria-label': '信箱不理会的程序', disabled: busyNow,
+            onChange: function (e) { setDraft(e.target.value) }, onKeyDown: function (e) { if (e.key === 'Enter') add(draft) } }),
+          h('button', { key: 'save', className: 'dw-btn', disabled: busyNow || !draft.trim(), onClick: function () { add(draft) } }, '加上'),
+          inbox.custom ? h('button', { key: 'reset', className: 'dw-btn', disabled: busyNow, onClick: function () { save(null, '存好了：回到默认名单') } }, '恢复默认') : null,
+          told.length ? h('div', { key: 'told', style: { flexBasis: '100%' } }, ['最近报过：'].concat(told.map(function (name) {
+            return h('button', { key: name, className: 'dw-btn', disabled: busyNow, onClick: function () { add(name) } }, '不再报「' + name + '」')
+          }))) : null,
+          h('div', { key: 'about', className: 'dw-muted', style: { flexBasis: '100%' } }, '默认的是 Windows 自己的程序，它们不会是有人在叫她：控制台窗口（conhost、OpenConsole）、远程桌面（msrdc、mstsc）、资源管理器（explorer），以及 Windows 自己的通知（Windows.SystemToast、Microsoft.Windows）。不分大小写；写「Microsoft.Windows」也算上以「Microsoft.Windows.」开头的。DSH 自己（DeepSeek Harness，她的家）不在名单里，也永远不报：那是她自己的话。'),
+        ])
       }
       function row(name, label, info, onText, offText) {
         // Unavailable for a reason this machine gives (no browser) or because the config does not have it.
@@ -922,6 +962,7 @@
         row('qq', 'QQ', m.qq, '插件自己直连 OneBot：状态和设置在 QQ 页面。关闭就断开这条通道。', '开启时检查 SDK；缺少时按需安装并提示重启 DSH。'),
         m.computer ? row('computer', '她的浏览器', m.computer, '她有一个自己的 Edge 浏览器，是单独的窗口，登录的是她自己的账号，不用你的鼠标键盘；她学会的操作也存在这里，可以直接再跑。只在她的家里能用。', '她没有自己的浏览器。开启后她下一步就能用；她用电脑也要先开这一项。') : null,
         m.desktop ? desktopRow() : null,
+        m.desktop && m.desktop.enabled && m.desktop.inbox ? inboxRow() : null,
         msg ? h('div', { className: msg.indexOf('失败') >= 0 ? 'dw-bad' : 'dw-muted', role: 'status' }, msg) : null)
     }
     /** 她的浏览器：Edge 在不在、她按分类学会了哪些操作、各自最近一次结果；按钮把窗口拿到前面来扫码。 */
