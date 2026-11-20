@@ -1,16 +1,7 @@
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import type { SpeakerIdentity } from '../shared/identity.ts';
-import type { ChannelReference } from '../shared/context.ts';
 
 export const wechatTextOutput = { schema: { type: 'string' as const }, render: (_args: unknown, value: string) => [{ type: 'text' as const, text: value }] };
-
-export function incomingText(text: string, reference?: ChannelReference): string {
-  if (!reference) return text;
-  const source = JSON.stringify({ id: reference.id, speakerId: reference.speakerId, speakerName: reference.speakerName, type: reference.type });
-  const quoted = reference.image ? (reference.type === 'image' ? '【引用图片，当时已读取】' : '【引用表情包，当时已读取】') : reference.text;
-  const content = quoted + (reference.image?.firstFrame ? '\n动图仅查看首帧。' : '');
-  return [text, `【引用 ${source}】\n` + content.split(/\r\n?|\n/).map(line => '> ' + line).join('\n')].filter(Boolean).join('\n\n');
-}
 
 declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {

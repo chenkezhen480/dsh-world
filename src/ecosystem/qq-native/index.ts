@@ -4,7 +4,7 @@ import { dirname, join, resolve } from 'node:path';
 import type { Context } from '@deepseek-ai/cordis';
 import type { Agent } from '@deepseek-ai/dsh-agent';
 import { speakerIdentity, conversationKey, type SpeakerIdentity } from '../shared/identity.ts';
-import type { ChannelContextMessage } from '../shared/context.ts';
+import { quotedText, type ChannelContextMessage, type ChannelReference } from '../shared/context.ts';
 import { createBridge } from './snowluma.ts';
 import { createQqHome } from './home.ts';
 import { admitQqImages, MAX_KEPT_IMAGES, type QqImageSegment } from './images.ts';
@@ -25,6 +25,12 @@ const MAX_INCOMING = 2_000;
 const SEEN_LIMIT = 500;
 /** The pause between the messages one answer is split into. */
 const SPLIT_PAUSE_MS = 600;
+/** How `segmentsToText` writes a voice clip and a quote; QQ ids can be negative. */
+const VOICE_MARK = /\[语音(?: file=[^\]]*)?\]/;
+const QUOTE_MARK = /\[引用消息 id=(-?\d+)\]/;
+const QUOTE_ANY = /\[引用消息 id=-?\d+\]/g;
+/** How much of a quoted message she reads. */
+const MAX_QUOTED = 300;
 
 /** The file a voice, video or file part carries out of this computer; web addresses leave nothing behind. */
 function carriedFile(part: QqPart): string | undefined {
@@ -185,6 +191,10 @@ export interface QqTransport {
   sendGroup(groupId: string, parts: string | QqPart[]): Promise<{ messageId: string }>;
   sendPrivate(userId: string, parts: string | QqPart[]): Promise<{ messageId: string }>;
   getImage?(file: string): Promise<string>;
+  /** 取一条消息的原文和是谁发的（引用用）；测试替身可以不实现，取不到就写明取不到。 */
+  getMessage?(messageId: string): Promise<{ text: string; userId: string; name: string }>;
+  /** 语音转写（QQ 侧识别）；测试替身可以不实现，转不出就标「未识别」。 */
+  getRecordText?(messageId: string): Promise<string>;
   /** 发账号收藏表情（不是消息段，单发一条）；测试替身可以不实现。 */
   sendCustomFace?(emojiId: string, target: { groupId?: string; userId?: string }): Promise<{ messageId: string }>;
   /** 发一条 QQ 空间说说；测试替身可以不实现。 */
@@ -204,7 +214,7 @@ export interface QqTransportOptions {
 /** One message to send, kept as it was so a retry sends exactly the same. */
 interface Outgoing { kind: 'group' | 'private'; target: string; parts: string | QqPart[] }
 /** What one conversation said while its words were gathering. */
-interface Gathered { text: string; identity: SpeakerIdentity; who: string; images: QqImageSegment[] }
+interface Gathered { text: string; identity: SpeakerIdentity; who: string; images: QqImageSegment[]; messageId: string; quoted?: true }
 
 /**
  * QQ as another way into the same home, without a bridge process in between.
@@ -422,7 +432,43 @@ export function createQqNativeModule(deps: {
     }
     const images = (message.segments ?? []).filter(segment => segment?.type === 'image')
       .slice(0, MAX_KEPT_IMAGES + 1).map(segment => ({ file: segment.data?.file, url: segment.data?.url }));
-    batches.add(key, { text, identity, who: speakerName, images });
+    batches.add(key, { text, identity, who: speakerName, images, messageId });
+  }
+
+  /**
+   * 语音换成 QQ 侧转写的文字（不引入本地语音识别）；转不出来如实标「未识别」：她可以不知道对方说了什么，
+   * 但不能装作听过。
+   */
+  async function transcribeVoices(item: Gathered): Promise<void> {
+    if (!VOICE_MARK.test(item.text)) return;
+    let said = '';
+    if (item.messageId) {
+      try { said = (await client?.getRecordText?.(item.messageId))?.trim() ?? ''; }
+      catch (error) { deps.logger.warn(`QQ 语音转写失败: ${errorText(error)}`); }
+    }
+    item.text = item.text.replace(new RegExp(VOICE_MARK.source, 'g'), said ? `[语音：${said}]` : '[语音（未识别）]');
+  }
+
+  /**
+   * 引用换成被引用那条的原文，按微信的写法写成【引用】块：谁说的、说了什么，标明是引用（QUOTED_NOTE 跟着这一轮
+   * 的上下文去）。只取这一层，不顺着引用链往回翻；取不到就写明取不到，让她知道这里少了一块。
+   */
+  async function resolveQuote(item: Gathered): Promise<void> {
+    const mark = QUOTE_MARK.exec(item.text);
+    if (!mark) return;
+    const id = mark[1]!;
+    let reference: ChannelReference;
+    try {
+      const quoted = await client?.getMessage?.(id);
+      if (!quoted) throw new Error('这条通道取不了被引用的消息');
+      const text = Array.from(quoted.text.replace(QUOTE_ANY, '[引用消息]')).slice(0, MAX_QUOTED).join('');
+      reference = { id, type: 'text', text: text || '（没有文字）', ...(quoted.userId ? { speakerId: `qq:${quoted.userId}` } : {}), ...(quoted.name ? { speakerName: quoted.name } : {}) };
+    } catch (error) {
+      deps.logger.warn(`QQ 取被引用消息失败: ${errorText(error)}`);
+      reference = { id, type: 'other', text: '（取不到原文）', error: errorText(error) };
+    }
+    item.text = quotedText(item.text.replace(mark[0], '').trim(), reference);
+    item.quoted = true;
   }
 
   async function answer(key: string, gathered: Gathered[]): Promise<void> {
@@ -432,7 +478,6 @@ export function createQqNativeModule(deps: {
     // The first speaker's identity carries the turn; a group's lines keep their names in the text.
     const { identity } = gathered[0]!;
     const isGroup = identity.conversationType === 'group';
-    const text = gathered.length === 1 ? gathered[0]!.text : gathered.map(item => isGroup && item.who ? `${item.who}: ${item.text}` : item.text).join('\n');
     // 同一个会话还在回上一轮的话：这几句先存着，等那一轮说完再排。硬并进去的话，
     // 两轮会同时对着同一段上下文写，她要么重复自己，要么答到一半被人插话。
     if (answering.has(key)) {
@@ -444,10 +489,13 @@ export function createQqNativeModule(deps: {
     }
     answering.add(key);
     try {
+      // 语音和引用先换成能读的文字再拼：一批最多几条，挨个查就够。
+      for (const item of gathered) { await transcribeVoices(item); await resolveQuote(item); }
+      const text = gathered.length === 1 ? gathered[0]!.text : gathered.map(item => isGroup && item.who ? `${item.who}: ${item.text}` : item.text).join('\n');
       const images = gathered.flatMap(item => item.images.map(image => ({ ...image, identity: item.identity })));
       const reply = await home.ask(text, identity, contexts.get(key) ?? [], images.length
         ? () => admitQqImages(deps.ctx, images, client?.getImage?.bind(client))
-        : undefined);
+        : undefined, gathered.some(item => item.quoted));
       const words = stripHostNoise(reply.text);
       // 提醒过一次还是没有能发的话：不发，但要留下痕迹，分得清「她没说出话」和「路丢了」（#34）；
       // 只剩复述的聊天记录、工具标签这些（#35）也一样。
