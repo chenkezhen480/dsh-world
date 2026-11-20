@@ -614,21 +614,21 @@ export function createBridge(options: Loose) {
 
     /**
      * 取一条消息的原文（引用/回复用）：OneBot `get_msg`。
-     * 只取这一条的文本，不顺着引用链往回翻；取不到就让调用方降级成「取不到原文」，不编。
+     * 只取这一条的文本，不顺着引用链往回翻。用 call 不用 request：request 遇到失败的回复（消息过期、撤回）
+     * 不抛错，只把失败的回复原样交回，读出来是一条空消息；call 会抛，调用方才写得出「取不到原文」。
      */
     async getMessage(messageId: string): Promise<{ text: string; userId: string; name: string }> {
       if (!client) throw new Error('QQ 桥未启动或已停止，无法取被引用的消息');
-      const raw = await withTimeout(client.request('get_msg', { message_id: Number(messageId) }), SEND_TIMEOUT_MS, '取被引用的消息');
-      const data = raw?.data ?? raw ?? {};
-      const message = data.message ?? data.raw_message ?? '';
-      return { text: segmentsToText(message).replace(/\s+/g, ' ').trim(), userId: String(data.user_id ?? ''), name: String(data.sender?.card || data.sender?.nickname || '') };
+      const data = await withTimeout(client.call('get_msg', { message_id: Number(messageId) }), SEND_TIMEOUT_MS, '取被引用的消息') as Loose;
+      const message = data?.message ?? data?.raw_message ?? '';
+      return { text: segmentsToText(message).replace(/\s+/g, ' ').trim(), userId: String(data?.user_id ?? ''), name: String(data?.sender?.card || data?.sender?.nickname || '') };
     },
 
-    /** 语音转写：OneBot `get_record_text`（QQ 侧识别，不引入本地 ASR）。转不出来返回空串。 */
+    /** 语音转写：OneBot `get_record_text`（QQ 侧识别，不引入本地 ASR）。认不出来是空串；失败照样抛（见 getMessage）。 */
     async getRecordText(messageId: string): Promise<string> {
       if (!client) throw new Error('QQ 桥未启动或已停止，无法取语音转写');
-      const raw = await withTimeout(client.request('get_record_text', { message_id: Number(messageId) }), SEND_TIMEOUT_MS, '取语音转写');
-      return String(raw?.data?.text ?? raw?.text ?? '').trim();
+      const data = await withTimeout(client.call('get_record_text', { message_id: Number(messageId) }), SEND_TIMEOUT_MS, '取语音转写');
+      return String(data?.text ?? '').trim();
     },
 
     async getImage(file: string): Promise<string> {

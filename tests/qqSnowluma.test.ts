@@ -6,6 +6,8 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import net from 'node:net';
+import { once } from 'node:events';
+import { WebSocketServer } from 'ws';
 import {
   createBridge,
   segmentsToText,
@@ -188,6 +190,30 @@ test('出站：两个 reply 抛错（SDK 契约）、未知类型/缺字段/空 
   assert.throws(() => buildSegments([{ type: 'image' }]), /缺少必填字段 "file"/);
   assert.throws(() => buildSegments([]), /parts 不能为空/);
   assert.throws(() => buildSegments(42), /必须是数组或字符串/);
+});
+
+test('取被引用的消息、取语音转写：QQ 回「失败」时要抛，不能读成一条空消息', async t => {
+  // 本机一个假的 OneBot：get_msg 只有 7 能取到，get_record_text 对 8 失败，其余动作一律成功。
+  const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+  await once(server, 'listening');
+  server.on('connection', socket => socket.on('message', raw => {
+    const { action, params, echo } = JSON.parse(String(raw));
+    const failed = { status: 'failed', retcode: 1404, data: null, wording: '消息不存在', echo };
+    const ok = (data: Loose) => ({ status: 'ok', retcode: 0, data, echo });
+    const answer = action === 'get_msg'
+      ? (params.message_id === 7 ? ok({ message: [{ type: 'text', data: { text: '去看海' } }], user_id: 42, sender: { nickname: '小林' } }) : failed)
+      : action === 'get_record_text' ? (params.message_id === 8 ? failed : ok({ text: '今天有点累' }))
+        : ok({ user_id: 1, nickname: 'her' });
+    socket.send(JSON.stringify(answer));
+  }));
+  const bridge = createBridge({ wsUrl: `ws://127.0.0.1:${(server.address() as net.AddressInfo).port}/` });
+  // The bridge goes first, so no connection is left for the server to wait on.
+  t.after(async () => { await bridge.stop(); server.close(); });
+  await bridge.start();
+  assert.deepEqual(await bridge.getMessage('7'), { text: '去看海', userId: '42', name: '小林' });
+  await assert.rejects(bridge.getMessage('9'), 'an expired or recalled message is a failure, not an empty one');
+  assert.equal(await bridge.getRecordText('5'), '今天有点累');
+  await assert.rejects(bridge.getRecordText('8'));
 });
 
 test('sendGroup/sendPrivate 未启动时 reject 得清楚；stop 幂等；初始状态 closed', async () => {
