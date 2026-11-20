@@ -70,6 +70,7 @@ const configOf = (over: Partial<QqNativeConfig> = {}): QqNativeConfig => ({
   groupTrigger: 'mention',
   groupTriggers: {},
   groupKeywords: [],
+  awakeSeconds: 0,
   // 阳台默认关着（端口 0）：绝大多数用例不该顺手起一个服务器。
   bridge: { port: 0, token: '', title: '阳台', contextMessages: 6 },
   ...over,
@@ -715,6 +716,33 @@ test('面板存的唤醒词落盘，重载后还在；mention 群里带词就算
   await settle(800);
   assert.equal(wire.sent.length, 1, '命中唤醒词，开口');
   assert.deepEqual(JSON.parse(readFileSync(stateFile, 'utf8')), { groupKeywords: ['大肥鱼'] });
+  qq.stop();
+});
+
+test('唤醒模式：被叫到进唤醒，唤醒中没叫她的句子照记不回，状态里看得到醒着的群', async t => {
+  const { ctx, cleanup } = await hostFixture(t, () => textResponse('嗯，我在'));
+  const dir = mkdtempSync(join(tmpdir(), 'dw-qq-awake-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const stateFile = join(dir, 'qq-native.json');
+  const agent = (await ctx.agents.create({ sessionId: SessionId('home'), agentOptions: { provider: 'test', model: 'test' } })).agent;
+  const wire = fakeTransport();
+  // 唤醒 60 秒，收束闹钟在测试里等不到，正好验证「醒着」的中间态。
+  const make = () => createQqNativeModule({ ctx, home: async () => agent, config: () => configOf({ allowGroups: ['700700700'], groupTrigger: 'mention', groupKeywords: ['大肥鱼'], awakeSeconds: 60 }), stateFile, logger: quiet, transport: wire.factory });
+  const qq = make();
+  qq.start();
+  // 带唤醒词的一条：开口，并进唤醒
+  wire.emitGroup(incoming({ kind: 'group', groupId: '700700700', userId: '300', messageId: 'aw-1', text: '大肥鱼在吗' }));
+  await settle(800);
+  assert.equal(wire.sent.length, 1, '被叫到，开口');
+  assert.deepEqual(Object.keys(qq.status().awake), [JSON.stringify(['qq', '2039693365', 'group', '700700700'])], '状态里看得到醒着的群');
+  // 唤醒中没叫她的句子：照记，不回
+  wire.emitGroup(incoming({ kind: 'group', groupId: '700700700', userId: '301', messageId: 'aw-2', text: '大家吃饭去啊' }));
+  await settle(800);
+  assert.equal(wire.sent.length, 1, '唤醒中没叫她的句子不开口');
+  // 又叫她一次：开口，唤醒顺延
+  wire.emitGroup(incoming({ kind: 'group', groupId: '700700700', userId: '300', messageId: 'aw-3', text: '大肥鱼一起去吗' }));
+  await settle(800);
+  assert.equal(wire.sent.length, 2, '再叫再答');
+  assert.equal(qq.status().awakeSeconds, 60);
   qq.stop();
 });
 

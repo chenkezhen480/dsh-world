@@ -687,6 +687,18 @@
       function dropKeyword(i) {
         setKw(function (old) { var words = (old.words || []).slice(); words.splice(i, 1); return { words: words, draft: old.draft } })
       }
+      var awState = useState({ draft: null }), aw = awState[0], setAw = awState[1]
+      var awFrom = props.native ? String(props.native.awakeSeconds ?? 0) : ''
+      useEffect(function () { setAw({ draft: null }) }, [awFrom])
+      function saveAwake() {
+        var raw = (aw.draft === null ? awFrom : aw.draft).trim()
+        if (raw === '') { setMsg('唤醒时长不能是空的：0 到 3600 的秒数，0 就是关'); return }
+        var n = Number(raw)
+        if (!Number.isInteger(n) || n < 0 || n > 3600) { setMsg('唤醒时长要是 0 到 3600 的整数秒，现在是「' + raw + '」'); return }
+        change({ awakeSeconds: n }, function () {
+          return n ? '存好了：mention 的群里被叫到后，她醒 ' + n + ' 秒，期间接着听、到点看话题完没完' : '存好了：唤醒模式关着，被叫到就只答那一轮'
+        })
+      }
       function startSnowluma() {
         change({ startSnowluma: true }, function (state) {
           var r = state && state.launch
@@ -803,6 +815,19 @@
             onInput: function (e) { var v = e.target.value; setKw(function (old) { return { words: old.words, draft: v } }) } }),
           h('button', { key: 'save', className: 'dw-btn', disabled: busy, onClick: saveKeywords }, '存唤醒词'),
         ]) : null,
+        (function (n) {
+          if (!n) return null
+          var seconds = n.awakeSeconds ?? 0
+          var editing = aw.draft !== null
+          var shown = editing ? aw.draft : String(seconds)
+          return h('div', { key: 'awake', className: 'dw-setting', style: { flexWrap: 'wrap' } }, [
+            h('div', { key: 'note', style: { flexBasis: '100%' } }, '唤醒模式（mention 的群里被叫到后，她保持醒着接着听；期间没叫她的句子只记不回，到点她看话题完没完，没完自己续一段）：'),
+            h('div', { key: 'state' }, seconds ? h('span', { className: 'dw-ok' }, '● 开着 · ' + seconds + ' 秒') : h('span', { className: 'dw-muted' }, '○ 关着 · 被叫到只答那一轮')),
+            h('input', { key: 'input', value: shown, placeholder: '秒数，0 = 关', style: { width: 110 }, disabled: busy,
+              onInput: function (e) { var v = e.target.value; setAw({ draft: v }) } }),
+            h('button', { key: 'save', className: 'dw-btn', disabled: busy, onClick: saveAwake }, '存唤醒时长'),
+          ])
+        })(props.native),
         (function (n) {
           if (!n) return null
           var b = n.bridge

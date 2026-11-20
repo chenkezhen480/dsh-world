@@ -116,6 +116,16 @@ test('唤醒词只收非空、去空格、≤32 字的词；空数组就是清�
   ]);
 });
 
+test('唤醒时长只收 0 到 3600 的整数秒；0 就是关掉唤醒模式', async () => {
+  const patches: unknown[] = [];
+  const route = qqRoute('/dsh-world/worlds/fish', [], doors(), native, patch => { patches.push(patch); return { ok: true }; });
+  const post = (body: unknown) => call(route, request('POST', '/native', { headers: WRITE, body }));
+  for (const bad of [-1, 3601, 1.5, '120', null]) assert.equal((await post({ awakeSeconds: bad })).status, 400, String(bad));
+  assert.equal((await post({ awakeSeconds: 0 })).status, 200, '0 = 关闭');
+  assert.equal((await post({ awakeSeconds: 3600 })).status, 200, '上限一分钟');
+  assert.deepEqual(patches, [{ awakeSeconds: 0 }, { awakeSeconds: 3600 }]);
+});
+
 test('合批窗口只收 0 到 30 秒的整数毫秒：一批从第一句起最多等 30 秒，再长也没用', async () => {
   const patches: unknown[] = [];
   const route = qqRoute('/dsh-world/worlds/fish', [], doors(), native, patch => { patches.push(patch); return { ok: true }; });

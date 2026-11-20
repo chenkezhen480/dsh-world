@@ -49,6 +49,8 @@ export interface WorldConfig {
     groupTriggers?: Record<string, 'mention' | 'all'>;
     /** 群里命中这些词也算在叫她。 */
     groupKeywords?: string[];
+    /** 唤醒模式：被叫到后保持收听/可被续期的时长（秒）；0 = 关闭，被叫到只答那一轮。 */
+    awakeSeconds?: number;
     /** 只停嘴不停耳：这个时间（ISO）之前照收、照记上下文，但一句都不回；到点自己醒。空着就是没静默。 */
     mutedUntil?: string;
     /** 她自己在「自己的时间」里开的那轮（闹钟、世界线），说完要不要把那段话推到 ownerQQ。默认推。 */
