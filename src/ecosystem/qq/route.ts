@@ -40,7 +40,7 @@ function allowed(req: IncomingMessage, allowedHosts: readonly string[]): boolean
  * What the panel may change about her own channel: replying, the balcony's port, staying quiet until a time
  * (`null` speaks again at once), who may talk to her, and starting SnowLuma once by hand.
  */
-export interface NativePatch { autoReply?: boolean; bridge?: { port: number }; mutedUntil?: string | null; allowPrivate?: string[]; allowGroups?: string[]; batchQuietMs?: number; groupTriggers?: Record<string, 'mention' | 'all'>; startSnowluma?: true }
+export interface NativePatch { autoReply?: boolean; bridge?: { port: number }; mutedUntil?: string | null; allowPrivate?: string[]; allowGroups?: string[]; batchQuietMs?: number; groupTriggers?: Record<string, 'mention' | 'all'>; groupKeywords?: string[]; forwardOwn?: boolean; aliases?: Record<string, string>; awakeSeconds?: number; startSnowluma?: true }
 type SetNative = (patch: NativePatch) => unknown;
 
 /** A whitelist from the panel: QQ numbers as strings or numbers, blanks dropped; an empty list lets nobody in. */
@@ -73,6 +73,36 @@ function groupTriggers(raw: unknown, key: string): Record<string, 'mention' | 'a
   return map;
 }
 
+// 群里的唤醒词：mention 模式下，消息里带其中一个词才算在叫她。空字符串一律不要。
+function groupKeywords(raw: unknown, key: string): string[] | string {
+  if (!Array.isArray(raw)) return `${key} 要是一个数组`;
+  const words: string[] = [];
+  for (const one of raw) {
+    if (typeof one !== 'string') return `${key} 里只能是词`;
+    const word = one.trim();
+    if (!word) continue;
+    if (word.length > 32) return `${key} 里有条超过 32 个字：${word.slice(0, 12)}…`;
+    words.push(word);
+  }
+  return words;
+}
+
+/**
+ * 白名单号码的备注，从面板过来：键是 QQ 号/群号，值是一条短话。只影响显示，
+ * 不参与任何判定，所以值的长短不挑；但键必须是号码，写错了面板上就显示不出来。
+ */
+function aliases(raw: unknown, key: string): Record<string, string> | string {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return `${key} 要是一个对象，键是号码`;
+  const map: Record<string, string> = {};
+  for (const [rawId, value] of Object.entries(raw as Record<string, unknown>)) {
+    const id = String(rawId).trim();
+    if (!/^[0-9]+$/.test(id)) return `${key} 里有个不是号码：${id || '(空)'}`;
+    if (typeof value !== 'string') return `${key} 里 ${id} 的备注要是一段文字`;
+    if (value.trim()) map[id] = value.trim().slice(0, 100);
+  }
+  return map;
+}
+
 async function write(doors: ConsoleDoors | undefined, path: string, body: Record<string, unknown> | undefined, setNative?: SetNative): Promise<JsonResult | undefined> {
   switch (path) {
     case '/native': {
@@ -101,6 +131,25 @@ async function write(doors: ConsoleDoors | undefined, path: string, body: Record
         if (typeof map === 'string') return bad(map);
         patch.groupTriggers = map;
       }
+      if (body?.groupKeywords !== undefined) {
+        const words = groupKeywords(body.groupKeywords, 'groupKeywords');
+        if (typeof words === 'string') return bad(words);
+        patch.groupKeywords = words;
+      }
+      if (body?.forwardOwn !== undefined) {
+        if (typeof body.forwardOwn !== 'boolean') return bad('forwardOwn 要是一个开关（true 推、false 不推）');
+        patch.forwardOwn = body.forwardOwn;
+      }
+      if (body?.aliases !== undefined) {
+        const map = aliases(body.aliases, 'aliases');
+        if (typeof map === 'string') return bad(map);
+        patch.aliases = map;
+      }
+      if (body?.awakeSeconds !== undefined) {
+        const s = body.awakeSeconds;
+        if (typeof s !== 'number' || !Number.isInteger(s) || s < 0 || s > 3600) return bad('awakeSeconds 要是 0 到 3600 之间的整数（秒；0 = 关闭唤醒模式）');
+        patch.awakeSeconds = s;
+      }
       if (body?.startSnowluma === true) patch.startSnowluma = true;
       // 阳台：外面那条线开在哪个端口。换端口会打断已经连上的线，所以只认一个整数，别的一律拒。
       const rawBridge = body?.bridge;
@@ -111,7 +160,7 @@ async function write(doors: ConsoleDoors | undefined, path: string, body: Record
         if (typeof port !== 'number' || !Number.isInteger(port) || port < 0 || port > 65535) return bad('bridge.port 要是 0 到 65535 之间的整数');
         patch.bridge = { port };
       }
-      if (!Object.keys(patch).length) return bad('autoReply、bridge、mutedUntil、allowPrivate、allowGroups、batchQuietMs、groupTriggers、startSnowluma 至少要给一个');
+      if (!Object.keys(patch).length) return bad('autoReply、bridge、mutedUntil、allowPrivate、allowGroups、batchQuietMs、groupTriggers、groupKeywords、forwardOwn、aliases、awakeSeconds、startSnowluma 至少要给一个');
       return ok(setNative(patch));
     }
     case '/open': {

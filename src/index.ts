@@ -91,6 +91,11 @@ export const Config = z.object({
     // 面板上每个群一行，改完不用重启通道；群号填错的、值认不出的，都当没写 —— 不能让一个填坏的群从此不开口。
     groupTriggers: z.dict(z.union([z.const('mention').description('只接被叫到的'), z.const('all').description('每句都接')])).default({}),
     groupKeywords: z.array(z.string()).default([]),
+    // 唤醒模式：mention 的群里她被叫到后，先回读最近 contextMessages 条群消息（只看不回），
+    // 然后保持唤醒 awakeSeconds 秒；期间由她自己挑值得接的话回，不是每句必答。到点后她要
+    // 判断话题完没完，没完可以自己续一段；完了就退回 mention 等下一次被叫。
+    // 0 = 关闭这个模式，被叫到就只答那一轮（老行为）。上限 3600。
+    awakeSeconds: z.number().default(0),
     // 只停嘴不停耳：这个时间之前照收、照记，但不回，到点自己醒。ISO 时间，如 2026-10-28T08:00:00+08:00。
     mutedUntil: z.string().default(''),
     // SnowLuma 装在哪：控制台那扇门要去它的 config/runtime.json 拿地址与端口。空着就按 D:\SnowLuma、
@@ -389,7 +394,10 @@ export function apply(ctx: Context, config: Config): void {
             groupTrigger: q.groupTrigger ?? 'mention',
             groupTriggers: q.groupTriggers ?? {},
             groupKeywords: q.groupKeywords ?? [],
+            awakeSeconds: q.awakeSeconds ?? 0,
             mutedUntil: q.mutedUntil ?? '',
+            forwardOwn: q.forwardOwn ?? true,
+            aliases: q.aliases ?? {},
             snowlumaHome: discoverSnowlumaHome(q.snowlumaHome ?? ''),
             supervise: q.supervise ?? true,
             bridge: {

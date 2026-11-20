@@ -23,7 +23,8 @@ async function until(check: () => boolean, what: string, timeoutMs = 10_000) {
 }
 const configOf = (over: Partial<QqNativeConfig> = {}): QqNativeConfig => ({
   enabled: true, wsUrl: 'ws://127.0.0.1:1', accessToken: '', allowPrivate: ['100'], ownerQQ: '', allowGroups: ['200'], autoReply: true,
-  contextMessages: 3, batchQuietMs: 0, groupTrigger: 'mention', groupTriggers: {}, groupKeywords: [], mutedUntil: '', snowlumaHome: '', supervise: false,
+  contextMessages: 3, batchQuietMs: 0, groupTrigger: 'mention', groupTriggers: {}, groupKeywords: [],
+  awakeSeconds: 0, mutedUntil: '', forwardOwn: true, aliases: {}, snowlumaHome: '', supervise: false,
   bindHomeSession: 'none', bridge: { port: 0, token: '', title: '阳台', contextMessages: 6 }, ...over,
 });
 const incoming = (over: Record<string, unknown> = {}) => ({ kind: 'private', groupId: null, userId: '100', messageId: String(Math.random()), selfId: '9', text: '在吗', ...over });
@@ -186,6 +187,16 @@ test('what she says in a turn of her own at home also reaches the owner, and not
   elsewhere.followup(createUserMessage({ source: { kind: 'dsh-world-life' }, content: [{ type: 'text', text: '闹钟' }] }));
   await elsewhere.whenIdle(); await settle();
   assert.equal(qq.transport.sent.length, 2, 'only her home');
+});
+
+test('forwardOwn: false keeps her own home turns from reaching the owner', async t => {
+  const qq = await channel(t, text => text.includes('闹钟') ? '起来了\n\n今天先写日记' : '回你', { ownerQQ: '100', forwardOwn: false });
+  qq.agent.followup(createUserMessage({ source: { kind: 'dsh-world-life' }, content: [{ type: 'text', text: '【我的时间】闹钟响了' }] }));
+  await qq.agent.whenIdle(); await settle(900);
+  assert.deepEqual(qq.transport.sent, [], 'her own turn stays home');
+  qq.agent.followup(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: '在吗' }] }));
+  await qq.agent.whenIdle(); await settle();
+  assert.equal(qq.transport.sent.length, 0, 'config off: nothing forwarded, the answering path is unchanged');
 });
 
 test('the watchdog starts SnowLuma when its port is closed and says why when it cannot', async () => {

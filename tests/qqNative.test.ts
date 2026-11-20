@@ -62,12 +62,15 @@ const configOf = (over: Partial<QqNativeConfig> = {}): QqNativeConfig => ({
   // 一条一问：合批有自己的用例。
   batchQuietMs: 0,
   mutedUntil: '',
+  forwardOwn: true,
+  aliases: {},
   snowlumaHome: '',
   supervise: false,
   bindHomeSession: 'none',
   groupTrigger: 'mention',
   groupTriggers: {},
   groupKeywords: [],
+  awakeSeconds: 0,
   // 阳台默认关着（端口 0）：绝大多数用例不该顺手起一个服务器。
   bridge: { port: 0, token: '', title: '阳台', contextMessages: 6 },
   ...over,
@@ -669,6 +672,78 @@ test('阳台：线走了以后她说的话记成 dropped，不再混进 spoken',
   assert.equal(status.relayed, 1);
   assert.equal(status.spoken, 0, '线都走了，不该算"说出去了"');
   assert.equal(status.dropped, 1, '没递到要单独记一笔');
+});
+
+test('forwardOwn 配置透传：默认推，面板可以关', async t => {
+  const { ctx } = await hostFixture(t, () => textResponse('嗯'));
+  const channel = createQqNativeModule({ ctx, home: async () => { throw new Error('unused'); }, config: () => configOf(), logger: quiet, transport: fakeTransport().factory });
+  assert.equal(channel.status().forwardOwn, true, '默认推');
+  channel.update({ forwardOwn: false });
+  assert.equal(channel.status().forwardOwn, false);
+  assert.equal(configOf({ forwardOwn: false }).forwardOwn, false);
+});
+
+test('面板拨的 forwardOwn 与备注存下来，重载后还在', async t => {
+  const { ctx } = await hostFixture(t, () => textResponse('嗯'));
+  const dir = mkdtempSync(join(tmpdir(), 'dw-qq-fwd-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const stateFile = join(dir, 'qq-native.json');
+  const make = () => createQqNativeModule({ ctx, home: async () => { throw new Error('unused'); }, config: () => configOf(), stateFile, logger: quiet, transport: fakeTransport().factory });
+  assert.equal(make().status().forwardOwn, true, '默认推');
+  make().update({ forwardOwn: false, aliases: { '2653935317': '鳐辰' } });
+  assert.equal(make().status().forwardOwn, false);
+  assert.deepEqual(make().status().aliases, { '2653935317': '鳐辰' });
+  assert.deepEqual(JSON.parse(readFileSync(stateFile, 'utf8')), { forwardOwn: false, aliases: { '2653935317': '鳐辰' } });
+});
+
+test('面板存的唤醒词落盘，重载后还在；mention 群里带词就算在叫她', async t => {
+  const { ctx, cleanup } = await hostFixture(t, () => textResponse('嗯，我在'));
+  cleanup.push(() => {}, );
+  const dir = mkdtempSync(join(tmpdir(), 'dw-qq-kw-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const stateFile = join(dir, 'qq-native.json');
+  const agent = (await ctx.agents.create({ sessionId: SessionId('home'), agentOptions: { provider: 'test', model: 'test' } })).agent;
+  const wire = fakeTransport();
+  const make = () => createQqNativeModule({ ctx, home: async () => agent, config: () => configOf({ allowGroups: ['700700700'], groupTrigger: 'mention' }), stateFile, logger: quiet, transport: wire.factory });
+  const qq = make();
+  qq.start();
+  // 先来一条既不 @ 也不带词的，不该接
+  wire.emitGroup(incoming({ kind: 'group', groupId: '700700700', userId: '300', messageId: 'kw-1', text: '今天天气不错' }));
+  await settle(800);
+  assert.deepEqual(wire.sent, [], '没叫她就不开口');
+  // 存下唤醒词，再带词来一条，就该接了
+  qq.update({ groupKeywords: ['大肥鱼'] });
+  assert.deepEqual(make().status().groupKeywords, ['大肥鱼']);
+  wire.emitGroup(incoming({ kind: 'group', groupId: '700700700', userId: '300', messageId: 'kw-2', text: '这条是给大肥鱼看的' }));
+  await settle(800);
+  assert.equal(wire.sent.length, 1, '命中唤醒词，开口');
+  assert.deepEqual(JSON.parse(readFileSync(stateFile, 'utf8')), { groupKeywords: ['大肥鱼'] });
+  qq.stop();
+});
+
+test('唤醒模式：被叫到进唤醒，唤醒中没叫她的句子照记不回，状态里看得到醒着的群', async t => {
+  const { ctx, cleanup } = await hostFixture(t, () => textResponse('嗯，我在'));
+  const dir = mkdtempSync(join(tmpdir(), 'dw-qq-awake-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const stateFile = join(dir, 'qq-native.json');
+  const agent = (await ctx.agents.create({ sessionId: SessionId('home'), agentOptions: { provider: 'test', model: 'test' } })).agent;
+  const wire = fakeTransport();
+  // 唤醒 60 秒，收束闹钟在测试里等不到，正好验证「醒着」的中间态。
+  const make = () => createQqNativeModule({ ctx, home: async () => agent, config: () => configOf({ allowGroups: ['700700700'], groupTrigger: 'mention', groupKeywords: ['大肥鱼'], awakeSeconds: 60 }), stateFile, logger: quiet, transport: wire.factory });
+  const qq = make();
+  qq.start();
+  // 带唤醒词的一条：开口，并进唤醒
+  wire.emitGroup(incoming({ kind: 'group', groupId: '700700700', userId: '300', messageId: 'aw-1', text: '大肥鱼在吗' }));
+  await settle(800);
+  assert.equal(wire.sent.length, 1, '被叫到，开口');
+  assert.deepEqual(Object.keys(qq.status().awake), [JSON.stringify(['qq', '2039693365', 'group', '700700700'])], '状态里看得到醒着的群');
+  // 唤醒中没叫她的句子：照记，不回
+  wire.emitGroup(incoming({ kind: 'group', groupId: '700700700', userId: '301', messageId: 'aw-2', text: '大家吃饭去啊' }));
+  await settle(800);
+  assert.equal(wire.sent.length, 1, '唤醒中没叫她的句子不开口');
+  // 又叫她一次：开口，唤醒顺延
+  wire.emitGroup(incoming({ kind: 'group', groupId: '700700700', userId: '300', messageId: 'aw-3', text: '大肥鱼一起去吗' }));
+  await settle(800);
+  assert.equal(wire.sent.length, 2, '再叫再答');
+  assert.equal(qq.status().awakeSeconds, 60);
+  qq.stop();
 });
 
 test('面板先改阳台端口，也不会丢掉之前存下的自动回复开关', async t => {
