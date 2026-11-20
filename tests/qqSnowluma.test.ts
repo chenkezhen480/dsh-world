@@ -163,6 +163,11 @@ test('出站：reply/at/text 的段形状与 CQ 转义', () => {
   assert.equal(segs[2].data.text, '[CQ：at,qq=all] 好');   // 全角防注入，切片第 6 节
 });
 
+test('出站：语音和视频是消息段，文件不是段，混进来就明确拒绝', () => {
+  assert.deepEqual(buildSegments([{ type: 'record', file: 'C:/a.mp3' }, { type: 'video', file: 'C:/b.mp4' }]).map((segment: { type: string }) => segment.type), ['record', 'video']);
+  assert.throws(() => buildSegments([{ type: 'file', path: 'C:/c.txt' }]), /单独上传/);
+});
+
 test('出站：字符串等价 text；数字 qq/id 可用', () => {
   assert.deepEqual(buildSegments('hi'), [{ type: 'text', data: { text: 'hi' } }]);
   const segs = buildSegments([{ type: 'at', qq: 123 }, { type: 'face', id: 14 }]);

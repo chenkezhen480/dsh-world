@@ -1,4 +1,4 @@
-import { isAbsolute, relative, resolve } from 'node:path';
+import { insideDir } from '../worldScope.ts';
 import type { ActivityRecord } from './types.ts';
 
 const shells = new Set(['pwsh', 'bash', 'powershell', 'shell']);
@@ -58,8 +58,7 @@ export function summarizeCall(tool: string, argumentsJson: string, roomDir: stri
   const sentence = spoken[tool]?.(args);
   if (sentence !== undefined) return { summary: clip(sentence), outside: false };
   const paths = collectPaths(args, false, []);
-  const inside = (path: string) => { const rel = relative(roomDir, resolve(roomDir, path)); return rel === '' || (!/^\.\.(?:[\\/]|$)/.test(rel) && !isAbsolute(rel)); };
-  return { summary: clip(paths.length ? paths.join(', ') : argumentsJson), outside: paths.some(path => !inside(path)) };
+  return { summary: clip(paths.length ? paths.join(', ') : argumentsJson), outside: paths.some(path => !insideDir(roomDir, path)) };
 }
 
 /**

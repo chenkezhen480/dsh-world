@@ -2,10 +2,13 @@
 // the panel's whitelist, @全体, her own words reaching the owner, and the SnowLuma watchdog.
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { SessionId } from '@deepseek-ai/dsh-session';
 import { hostFixture, textResponse } from './hostFixture.ts';
-import { createQqNativeModule, type QqNativeConfig, type QqPart, type QqTransport, type QqTransportOptions } from '../src/ecosystem/qq-native/index.ts';
+import { createQqNativeModule, roomFilesOnly, type QqNativeConfig, type QqPart, type QqTransport, type QqTransportOptions } from '../src/ecosystem/qq-native/index.ts';
 import { planReply, stripHostNoise } from '../src/ecosystem/qq-native/replies.ts';
 import { identityPrefix } from '../src/ecosystem/shared/identity.ts';
 import { createBatcher } from '../src/ecosystem/qq-native/batch.ts';
@@ -23,8 +26,7 @@ async function until(check: () => boolean, what: string, timeoutMs = 10_000) {
 }
 const configOf = (over: Partial<QqNativeConfig> = {}): QqNativeConfig => ({
   enabled: true, wsUrl: 'ws://127.0.0.1:1', accessToken: '', allowPrivate: ['100'], ownerQQ: '', allowGroups: ['200'], autoReply: true,
-  contextMessages: 3, batchQuietMs: 0, groupTrigger: 'mention', groupTriggers: {}, groupKeywords: [],
-  awakeSeconds: 0, mutedUntil: '', forwardOwn: true, aliases: {}, snowlumaHome: '', supervise: false,
+  contextMessages: 3, batchQuietMs: 0, groupTrigger: 'mention', groupTriggers: {}, groupKeywords: [], mutedUntil: '', forwardOwn: true, aliases: {}, snowlumaHome: '', supervise: false,
   bindHomeSession: 'none', bridge: { port: 0, token: '', title: '阳台', contextMessages: 6 }, ...over,
 });
 const incoming = (over: Record<string, unknown> = {}) => ({ kind: 'private', groupId: null, userId: '100', messageId: String(Math.random()), selfId: '9', text: '在吗', ...over });
@@ -48,7 +50,7 @@ function wire(failures = 0) {
   return { factory, sent, stickers, posts, private: (message: unknown) => options?.onPrivateMessage?.(message), group: (message: unknown) => options?.onGroupMessage?.(message) };
 }
 
-async function channel(t: test.TestContext, reply: string | ((text: string) => string), over: Partial<QqNativeConfig> = {}, failures = 0) {
+async function channel(t: test.TestContext, reply: string | ((text: string) => string), over: Partial<QqNativeConfig> = {}, failures = 0, roomDir?: string) {
   const asked: string[] = [];
   const { ctx, cleanup } = await hostFixture(t, request => {
     const words = request.messages.filter(message => message.role === 'user' && ['user', 'dsh-world-life'].includes(message.source?.kind ?? '')).at(-1);
@@ -59,7 +61,7 @@ async function channel(t: test.TestContext, reply: string | ((text: string) => s
   const agent = (await ctx.agents.create({ sessionId: SessionId('qq-home'), agentOptions: { provider: 'test', model: 'test' } })).agent;
   const transport = wire(failures);
   let config = configOf(over);
-  const module = createQqNativeModule({ ctx, home: async () => agent, config: () => config, logger: quiet, transport: transport.factory, isHome: id => id === agent.id });
+  const module = createQqNativeModule({ ctx, home: async () => agent, config: () => config, logger: quiet, transport: transport.factory, isHome: id => id === agent.id, ...(roomDir ? { roomDir } : {}) });
   module.start(); cleanup.push(module.stop);
   return { ctx, agent, transport, module, asked, set: (next: Partial<QqNativeConfig>) => { config = { ...config, ...next }; } };
 }
@@ -213,4 +215,117 @@ test('the watchdog starts SnowLuma when its port is closed and says why when it 
   const lost = createSnowlumaSupervisor({ homeDir: '', host: '127.0.0.1', port: 3003, probe: async () => false, log: () => {} });
   lost.start(); await settle(10); lost.stop();
   assert.match(lost.status().lastError!, /snowlumaHome/);
+});
+
+test('voice, video and file marks become their own parts', () => {
+  assert.deepEqual(planReply('[[voice:a.mp3]][[video:b.mp4]][[file:c.txt]]').messages, [[{ type: 'record', file: 'a.mp3' }, { type: 'video', file: 'b.mp4' }, { type: 'file', path: 'c.txt' }]]);
+});
+
+test('a lone user or assistant line is hers; next to a recalled record it is the record label (#35)', () => {
+  assert.equal(stripHostNoise('今天学了个词\nuser\n就是这个'), '今天学了个词\nuser\n就是这个');
+  assert.equal(stripHostNoise('{"role":"user","text":"在吗"}\nuser\n我在'), '我在');
+});
+
+test('the outbox says why it gave up: too long in the queue, or the channel going away', async () => {
+  const dropped: [string, string | undefined][] = [];
+  const outbox = createOutbox<string>({ send: async () => { throw new Error('down'); }, dropped: (item, reason) => dropped.push([item, reason]), intervalMs: 10, maxTries: 2 });
+  outbox.start();
+  await outbox.send('old');
+  await until(() => dropped.length > 0, 'giving up');
+  await outbox.send('left');
+  outbox.stop();
+  assert.deepEqual(dropped, [['old', 'ttl'], ['left', 'stop']]);
+  assert.equal(outbox.size, 0);
+});
+
+/** Her room with one voice clip, a folder outside it with a secret, and a link in the room that points outside. */
+function rooms(t: test.TestContext) {
+  const base = realpathSync(mkdtempSync(join(tmpdir(), 'dw-qq-room-'))); t.after(() => rmSync(base, { recursive: true, force: true }));
+  const room = join(base, 'room'), outside = join(base, 'outside');
+  mkdirSync(join(room, '录'), { recursive: true }); mkdirSync(outside);
+  writeFileSync(join(room, '录', '早安.mp3'), 'mp3'); writeFileSync(join(outside, 'secret.txt'), 'secret');
+  symlinkSync(outside, join(room, 'out'), 'junction');
+  return { room, outside };
+}
+
+test('voice, video and files leave only from her room; a link in the room cannot reach out of it', t => {
+  const { room, outside } = rooms(t);
+  const clip = join(room, '录', '早安.mp3'), secret = join(outside, 'secret.txt');
+  assert.deepEqual(roomFilesOnly([{ type: 'text', text: '听' }, { type: 'record', file: '录/早安.mp3' }], room),
+    { parts: [{ type: 'text', text: '听' }, { type: 'record', file: clip }], refused: [] }, 'a path written from her room goes on whole');
+  assert.deepEqual(roomFilesOnly([{ type: 'file', path: secret }], room), { parts: [], refused: [secret] });
+  assert.deepEqual(roomFilesOnly([{ type: 'file', path: 'out/secret.txt' }], room), { parts: [], refused: ['out/secret.txt'] }, 'the link is read for real');
+  assert.deepEqual(roomFilesOnly([{ type: 'video', file: 'https://example.com/a.mp4' }, { type: 'image', file: 'C:/a.png' }], room).refused, [], 'web addresses and images keep their old rule');
+  assert.deepEqual(roomFilesOnly([{ type: 'record', file: clip }], undefined), { parts: [], refused: [clip] }, 'no room, nothing goes');
+  assert.deepEqual(roomFilesOnly('只是一句话', room), { parts: '只是一句话', refused: [] });
+});
+
+test('a voice clip from her room goes out with her words; a file from elsewhere stays, and the card says so', async t => {
+  const { room, outside } = rooms(t);
+  const qq = await channel(t, `听这个[[voice:录/早安.mp3]][[file:${join(outside, 'secret.txt')}]]`, {}, 0, room);
+  qq.transport.private(incoming());
+  await until(() => qq.transport.sent.length > 0, 'her answer');
+  assert.deepEqual(qq.transport.sent[0]!.parts, [{ type: 'text', text: '听这个' }, { type: 'record', file: join(room, '录', '早安.mp3') }]);
+  assert.match(qq.module.status().lastError ?? '', /只能发她房间里的文件，这些没发：.*secret\.txt/);
+});
+
+test('words that come while she is still answering that conversation wait for her to finish, then get their own answer', async t => {
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const asked: string[] = [];
+  const { ctx, cleanup } = await hostFixture(t, async function* (request) {
+    const words = request.messages.filter(message => message.role === 'user' && message.source?.kind === 'user').at(-1);
+    const last = (words?.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('') ?? '').split('\n').at(-1) ?? '';
+    asked.push(last);
+    if (asked.length === 1) await gate;
+    yield* textResponse(`回：${last}`);
+  });
+  const agent = (await ctx.agents.create({ sessionId: SessionId('qq-home'), agentOptions: { provider: 'test', model: 'test' } })).agent;
+  const transport = wire();
+  const module = createQqNativeModule({ ctx, home: async () => agent, config: () => configOf(), logger: quiet, transport: transport.factory });
+  module.start(); cleanup.push(module.stop);
+  transport.private(incoming({ text: '第一句' }));
+  await until(() => asked.length === 1, 'the first question');
+  transport.private(incoming({ text: '第二句' }));
+  await settle(200);
+  assert.equal(asked.length, 1, 'the second waits while the first is being answered');
+  release();
+  await until(() => transport.sent.length === 2, 'both answers');
+  assert.deepEqual(transport.sent.map(item => item.parts), ['回：第一句', '回：第二句']);
+});
+
+test('a full request queue counts as turned away, not as a failed answer', async t => {
+  const { ctx, cleanup } = await hostFixture(t, () => textResponse('不会到这儿'));
+  let refusal = new Error('request queue is full');
+  const transport = wire();
+  const module = createQqNativeModule({ ctx, home: async () => { throw refusal; }, config: () => configOf(), logger: quiet, transport: transport.factory });
+  module.start(); cleanup.push(module.stop);
+  transport.private(incoming({ text: '一' }));
+  await until(() => module.status().rejected === 1, 'the refusal');
+  assert.equal(module.status().failed, 0);
+  refusal = new Error('model blew up');
+  transport.private(incoming({ text: '二' }));
+  await until(() => module.status().failed === 1, 'the failure');
+  assert.equal(module.status().rejected, 1);
+});
+
+test('a message without an id is still seen once: who, when and what make its fingerprint', async t => {
+  const qq = await channel(t, '嗯');
+  const bare = { messageId: '', time: 1_700_000_000, text: '在吗' };
+  qq.transport.private(incoming(bare)); qq.transport.private(incoming(bare));
+  await until(() => qq.transport.sent.length > 0, 'the answer'); await settle(300);
+  assert.equal(qq.asked.length, 1, 'the same event twice is answered once');
+  qq.transport.private(incoming({ ...bare, time: 1_700_000_060 }));
+  await until(() => qq.asked.length === 2, 'the same words a minute later');
+});
+
+test('the watchdog probes the port the panel changed to, not the one it started with', async () => {
+  let port = 3003;
+  const probed: number[] = [];
+  const watchdog = createSnowlumaSupervisor({ homeDir: () => 'C:/SnowLuma', host: '127.0.0.1', port: () => port, intervalMs: 20, probe: async (_host, at) => { probed.push(at); return true; }, launch: () => ({ started: true, how: 'spawn' }), log: () => {} });
+  watchdog.start();
+  await until(() => probed.length > 0, 'the first probe');
+  port = 3010;
+  await until(() => probed.includes(3010), 'a probe on the new port');
+  watchdog.stop();
 });

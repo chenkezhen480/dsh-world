@@ -3,6 +3,13 @@ import type { Agent } from '@deepseek-ai/dsh-agent';
 import type { Session } from '@deepseek-ai/dsh-session';
 import type {} from '@deepseek-ai/dsh-system-prompt';
 import type { ToolDefinition } from '@deepseek-ai/dsh-tools';
+import { isAbsolute, relative, resolve } from 'node:path';
+
+/** Whether `path` (relative ones read from `root`) is `root` or below it. Lexical: links, `~` and `%VAR%` are not resolved. */
+export function insideDir(root: string, path: string): boolean {
+  const rel = relative(root, resolve(root, path));
+  return rel === '' || (!/^\.\.(?:[\\/]|$)/.test(rel) && !isAbsolute(rel));
+}
 
 /**
  * Her world and persona reach only her preset's sessions in her room's workspace. A

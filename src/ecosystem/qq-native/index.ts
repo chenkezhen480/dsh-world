@@ -1,6 +1,6 @@
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import type { Context } from '@deepseek-ai/cordis';
 import type { Agent } from '@deepseek-ai/dsh-agent';
 import { speakerIdentity, conversationKey, type SpeakerIdentity } from '../shared/identity.ts';
@@ -14,7 +14,7 @@ import { planReply, stripHostNoise, type QqPart } from './replies.ts';
 import { createSnowlumaSupervisor, type SnowlumaStatus } from '../qq/supervisor.ts';
 import { startSnowluma, type StartResult } from '../qq/snowluma-start.ts';
 import type { NativePatch } from '../qq/route.ts';
-import type { InWorld } from '../../worldScope.ts';
+import { insideDir, type InWorld } from '../../worldScope.ts';
 import { createNativeBridge, type BridgeStatus, type NativeBridge } from './native-bridge.ts';
 
 export type { QqPart } from './replies.ts';
@@ -25,6 +25,31 @@ const MAX_INCOMING = 2_000;
 const SEEN_LIMIT = 500;
 /** The pause between the messages one answer is split into. */
 const SPLIT_PAUSE_MS = 600;
+
+/** The file a voice, video or file part carries out of this computer; web addresses leave nothing behind. */
+function carriedFile(part: QqPart): string | undefined {
+  const path = part.type === 'file' ? part.path : part.type === 'record' || part.type === 'video' ? part.file : undefined;
+  return path === undefined || /^https?:\/\//i.test(path) ? undefined : path;
+}
+
+/**
+ * Voice, video and files leave this computer as they are, so only what she put in her own room may go: one line in a
+ * chat must not be able to send away whatever sits on the disk. Paths are read for real, so a link in her room cannot
+ * point out of it, and a path written from her room is handed on whole. Images keep their old rule.
+ */
+export function roomFilesOnly(parts: string | QqPart[], roomDir: string | undefined): { parts: string | QqPart[]; refused: string[] } {
+  if (typeof parts === 'string') return { parts, refused: [] };
+  const refused: string[] = [];
+  const kept = parts.flatMap((part): QqPart[] => {
+    const path = carriedFile(part);
+    if (path === undefined) return [part];
+    let real: string | undefined;
+    try { if (roomDir) { const room = realpathSync(roomDir); real = realpathSync(resolve(room, path)); if (!insideDir(room, real)) real = undefined; } } catch { real = undefined; }
+    if (real === undefined) { refused.push(path); return []; }
+    return [part.type === 'file' ? { ...part, path: real } : { ...part, file: real } as QqPart];
+  });
+  return { parts: kept, refused };
+}
 
 /** The newest `limit` ids, oldest dropped first. */
 function recentIds(limit: number) {
@@ -86,8 +111,6 @@ export interface QqNativeConfig {
   groupTriggers: Readonly<Record<string, 'mention' | 'all'>>;
   /** 群里命中这些词也算在叫她。 */
   groupKeywords: readonly string[];
-  /** 唤醒模式：mention 的群里被叫到后保持几秒；0 = 被叫到只答那一轮（老行为）。 */
-  awakeSeconds: number;
   /** 只停嘴不停耳：这个时间（ISO）之前照收、照记上下文，但不回；到点自己醒。空着就是没静默。 */
   mutedUntil: string;
   /** 她自己在「自己的时间」里开的那轮（闹钟、世界线），说完要不要把那段话推到 ownerQQ。默认推。 */
@@ -145,10 +168,6 @@ export interface QqNativeStatus {
   /** 每个群自己的规矩（只有写过的群在里面）。 */
   groupTriggers: Record<string, 'mention' | 'all'>;
   groupKeywords: string[];
-  /** 唤醒模式：被叫到后保持几秒（0 = 关闭）。 */
-  awakeSeconds: number;
-  /** 唤醒模式进行中的那些群：键是会话 key，值是到点时刻（epoch 毫秒）。 */
-  awake: Record<string, number>;
   /** 静默到什么时候；没在静默就是 null。 */
   mutedUntil: string | null;
   /** 同一个人连发几句合成一次问的窗口（毫秒）。 */
@@ -201,6 +220,8 @@ export function createQqNativeModule(deps: {
   /** Whether the session is her home now: what she says there on her own goes to the owner too. */
   isHome?(sessionId: string): boolean;
   config(): QqNativeConfig;
+  /** 她的房间：语音、视频、文件只从这里发。不给就一个都不发。 */
+  roomDir?: string;
   /** 面板拨的开关存这儿；不给就只在内存里活到下一次重载。 */
   stateFile?: string;
   logger: { info(...args: unknown[]): void; warn(...args: unknown[]): void; error(...args: unknown[]): void };
@@ -215,10 +236,6 @@ export function createQqNativeModule(deps: {
   const answering = new Set<string>();
   /** 上一个会话正在回话时又到的几句，等那一轮结束再排（不能并进正在跑的那轮，也不能丢）。 */
   const deferred = new Map<string, Gathered[]>();
-  /** 唤醒模式进行中的群：键是会话 key，值是到点时刻（epoch 毫秒）。到点由收束计时器判断话题完没完。 */
-  const awakeUntil = new Map<string, number>();
-  /** 每个群一个收束计时器；到点她回头看这个话题完没完，没完可以自己续。 */
-  const awakeTimers = new Map<string, NodeJS.Timeout>();
   let client: QqTransport | undefined;
   let nativeBridge: NativeBridge | undefined;
   let stopped = false;
@@ -234,7 +251,7 @@ export function createQqNativeModule(deps: {
   };
 
   // 拨过的开关写在 stateFile 里，重载不丢；配置里那个是出厂默认。
-  type Overrides = { autoReply?: boolean; bridge?: { port?: number }; mutedUntil?: string | null; allowPrivate?: string[]; allowGroups?: string[]; batchQuietMs?: number; groupTriggers?: Record<string, 'mention' | 'all'>; groupKeywords?: string[]; forwardOwn?: boolean; aliases?: Record<string, string>; awakeSeconds?: number };
+  type Overrides = { autoReply?: boolean; bridge?: { port?: number }; mutedUntil?: string | null; allowPrivate?: string[]; allowGroups?: string[]; batchQuietMs?: number; groupTriggers?: Record<string, 'mention' | 'all'>; groupKeywords?: string[]; forwardOwn?: boolean; aliases?: Record<string, string> };
   const overrides = ((): Overrides => {
     try { return deps.stateFile ? JSON.parse(readFileSync(deps.stateFile, 'utf8')) : {}; } catch { return {}; }
   })();
@@ -255,7 +272,6 @@ export function createQqNativeModule(deps: {
       ...(overrides.batchQuietMs === undefined ? {} : { batchQuietMs: overrides.batchQuietMs }),
       ...(overrides.groupTriggers === undefined ? {} : { groupTriggers: overrides.groupTriggers }),
       ...(overrides.groupKeywords === undefined ? {} : { groupKeywords: overrides.groupKeywords }),
-      ...(overrides.awakeSeconds === undefined ? {} : { awakeSeconds: overrides.awakeSeconds }),
       ...(overrides.forwardOwn === undefined ? {} : { forwardOwn: overrides.forwardOwn }),
       ...(overrides.aliases === undefined ? {} : { aliases: overrides.aliases }),
       bridge: overrides.bridge?.port === undefined ? base.bridge : { ...base.bridge, port: overrides.bridge.port },
@@ -296,7 +312,13 @@ export function createQqNativeModule(deps: {
   /** Sends one of her answers: its paragraphs a pause apart (queued if they fail), then stickers and posts. */
   async function say(kind: 'group' | 'private', target: string, text: string): Promise<void> {
     const plan = planReply(text);
-    for (const [index, parts] of plan.messages.entries()) {
+    for (const [index, planned] of plan.messages.entries()) {
+      const { parts, refused } = roomFilesOnly(planned, deps.roomDir);
+      if (refused.length) {
+        stats.lastError = `只能发她房间里的文件，这些没发：${refused.join('、')}`;
+        deps.logger.warn(`QQ ${stats.lastError}`);
+      }
+      if (!parts.length) continue;
       if (index) await pause(SPLIT_PAUSE_MS);
       if (!await outbox.send({ kind, target, parts })) deps.logger.warn(`QQ 这条没发出去，先排队（${outbox.size} 条待发）`);
     }
@@ -311,13 +333,6 @@ export function createQqNativeModule(deps: {
   }
 
   /**
-   * 群里这句是不是在叫她。
-   *
-   * 量过：不做这个判断时，群里没被叫到的每一句都会让她跑完一整轮、还往群里冒一条——哪怕她自己在话里
-   * 写的是「这句不接」，钱和噪声都已经花了。所以只有被 @ 到（@全体 是群公告，不算）、有人引用过她的话、
-   * 或者命中配的关键词，才把话递到她跟前；其余只记进那个群的上下文，等她真被叫到时知道刚才在说什么。
-   */
-  /**
    * 这个群自己那条规矩，没写（或者写得认不出）就照全局那个走。
    * 一个填错的群号不该让那个群从此不开口，所以只认 mention / all，别的一律当没写。
    */
@@ -327,6 +342,13 @@ export function createQqNativeModule(deps: {
     return config.groupTrigger === 'all' ? 'all' : 'mention';
   }
 
+  /**
+   * 群里这句是不是在叫她。
+   *
+   * 量过：不做这个判断时，群里没被叫到的每一句都会让她跑完一整轮、还往群里冒一条——哪怕她自己在话里
+   * 写的是「这句不接」，钱和噪声都已经花了。所以只有被 @ 到（@全体 是群公告，不算）、有人引用过她的话、
+   * 或者命中配的关键词，才把话递到她跟前；其余只记进那个群的上下文，等她真被叫到时知道刚才在说什么。
+   */
   function directedAtHer(message: QqIncoming, config: QqNativeConfig): boolean {
     if (triggerForGroup(message.groupId ?? '', config) === 'all') return true;
     for (const segment of message.segments ?? []) {
@@ -348,44 +370,6 @@ export function createQqNativeModule(deps: {
     list.push(message);
     while (list.length > Math.max(1, Math.min(limit, 20))) list.shift();
     contexts.set(key, list);
-  }
-
-  /**
-   * 唤醒到期：回头看这个话题完没完。她看的是攒下来的上下文——如果最后几句还在对着她说话
-   * （有人 @ 她、引用她、或者话里带着叫她的词），就续一段唤醒，让她把话听完；真没人理了，
-   * 就安静退回 mention。收束那一轮本身不产生回复。
-   */
-  function closeAwake(key: string): void {
-    awakeUntil.delete(key);
-    awakeTimers.delete(key);
-    const config = settings();
-    if (stopped || !config.autoReply) return;
-    // 话题还在继续的判断：最后一条是刚才一分钟内到的，而且最近几句里还有人叫她
-    // （@ 她、唤醒词）。只是有人聊天不算——他们聊完就该让她退回去。
-    const list = contexts.get(key) ?? [];
-    const last = list.at(-1);
-    const minuteAgo = Date.now() - 60_000;
-    if (!last || !last.occurredAt || Date.parse(last.occurredAt) < minuteAgo) return;
-    const words = (config.groupKeywords ?? []).filter(word => word !== '');
-    const stillCalling = list.slice(-3).some(item => words.some(word => item.text.includes(word)) || item.text.includes('@'));
-    if (!stillCalling) return;
-    // 还在说话就多给一段唤醒时长，让她把收尾听完。
-    const seconds = Math.max(30, Math.min(config.awakeSeconds, 3600));
-    awakeUntil.set(key, Date.now() + seconds * 1000);
-    awakeTimers.set(key, setTimeout(() => closeAwake(key), seconds * 1000));
-    awakeTimers.get(key)?.unref?.();
-    deps.logger.info(`QQ ${key} 唤醒到期但话题还在，续 ${seconds} 秒`);
-  }
-
-  /** 进唤醒：记下到点时刻，排收束闹钟。重复唤醒就顺延。 */
-  function openAwake(key: string, config: QqNativeConfig): void {
-    if (config.awakeSeconds <= 0) return;
-    const seconds = Math.min(config.awakeSeconds, 3600);
-    awakeUntil.set(key, Date.now() + seconds * 1000);
-    awakeTimers.get(key)?.unref?.();
-    clearTimeout(awakeTimers.get(key));
-    awakeTimers.set(key, setTimeout(() => closeAwake(key), seconds * 1000));
-    awakeTimers.get(key)?.unref?.();
   }
 
   // Close messages of one conversation are asked together; each keeps who said it (a group has several voices).
@@ -432,14 +416,10 @@ export function createQqNativeModule(deps: {
     const key = conversationKey(identity);
     // 群里没叫她的话、静默中的话、自动回复关着时的话，都只进上下文：不开口、也不花一轮（关掉自动回复就是
     // 「别理它」，连问都不问；静默到点自己醒）。等她真被叫到，就知道刚才在说什么。私聊不看叫没叫她。
-    // 唤醒也改变不了这条门：唤醒只是给「被叫到的那一瞬」之后的几句话多留一段耳朵（收束闹钟自己判断话题
-    // 完没完），没叫她的句子照样只记不回——不然唤醒期就成了变相的 all，每一句都要花一轮。
     if ((isGroup && !directedAtHer(message, config)) || mutedUntil(config) || !config.autoReply) {
       pushContext(key, { id: messageId || String(Date.now()), occurredAt: new Date().toISOString(), text, identity }, config.contextMessages);
       return;
     }
-    // 这一句是叫她：进唤醒（记到点时刻、排收束闹钟），重复唤醒顺延。
-    if (isGroup && config.awakeSeconds > 0 && directedAtHer(message, config)) openAwake(key, config);
     const images = (message.segments ?? []).filter(segment => segment?.type === 'image')
       .slice(0, MAX_KEPT_IMAGES + 1).map(segment => ({ file: segment.data?.file, url: segment.data?.url }));
     batches.add(key, { text, identity, who: speakerName, images });
@@ -573,8 +553,6 @@ export function createQqNativeModule(deps: {
       groupTrigger: config.groupTrigger,
       groupTriggers: { ...(config.groupTriggers ?? {}) },
       groupKeywords: [...(config.groupKeywords ?? [])],
-      awakeSeconds: config.awakeSeconds,
-      awake: Object.fromEntries([...awakeUntil].filter(([, until]) => until > Date.now())),
       conversations: contexts.size,
       answering: answering.size + batches.size,
       lastEventAt: stats.lastEventAt,
@@ -611,7 +589,6 @@ export function createQqNativeModule(deps: {
       if (patch.groupTriggers !== undefined) overrides.groupTriggers = patch.groupTriggers;
       // 唤醒词整组换掉：面板一次交来全部词，空数组就是清空，回到只认 @ 和引用。
       if (patch.groupKeywords !== undefined) overrides.groupKeywords = patch.groupKeywords;
-      if (patch.awakeSeconds !== undefined) overrides.awakeSeconds = patch.awakeSeconds;
       if (patch.forwardOwn !== undefined) overrides.forwardOwn = patch.forwardOwn;
       if (patch.aliases !== undefined) overrides.aliases = patch.aliases;
       writeOverrides();

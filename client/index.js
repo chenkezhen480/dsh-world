@@ -577,41 +577,36 @@
         if (!isFinite(sec) || sec < 0 || sec > 30) { setMsg('填 0 到 30 之间的秒数（一批最多等 30 秒）'); return }
         change({ batchQuietMs: Math.round(sec * 1000) })
       }
-      // 白名单：谁的话能进来。行式：号 + 备注 + 启用，存的时候仍是 allowPrivate/allowGroups 数组。
-      // 备注走 aliases（只影响显示）；行内不勾 = 这个人暂时收不进来（号码留着，随时勾回来）。
+      // 白名单：谁的话能进来。一行一个号（私聊或群）加备注，存的时候仍是 allowPrivate/allowGroups 两个数组；
+      // 备注走 aliases，只影响显示。每行有自己的 key：号码是正在改的字，拿它当 key 的话每敲一个字输入框都会重建。
       var savedAliases = (props.native && props.native.aliases) || {}
-      var allowIds = props.native ? (props.native.allowPrivateIds || []).concat(props.native.allowGroupsIds || []) : []
+      var savedPrivate = props.native ? props.native.allowPrivateIds || [] : []
+      var allowIds = props.native ? savedPrivate.concat(props.native.allowGroupsIds || []) : []
       var allowRowsFrom = allowIds.join('|') + '|' + JSON.stringify(savedAliases)
-      var allowRowsState = useState({ from: '', rows: [] }), allowRows = allowRowsState[0], setAllowRows = allowRowsState[1]
+      var allowRowsState = useState({ from: '', rows: [], next: 0 }), allowRows = allowRowsState[0], setAllowRows = allowRowsState[1]
       useEffect(function () {
         setAllowRows(function (current) {
           if (current.from === allowRowsFrom) return current
-          // 重排：私聊在前、群在后；已存的备注带上；没见过的号从旧草稿里搬，避免手抖丢行。
-          var byId = {}
-          current.rows.forEach(function (row) { byId[row.id] = row })
-          var rows = allowIds.map(function (id) {
-            var old = byId[id]
-            return { id: id, kind: old && old.kind ? old.kind : (props.native && (props.native.allowPrivateIds || []).indexOf(id) >= 0 ? 'private' : 'group'), on: old ? old.on : true, note: old ? old.note : (savedAliases[id] || '') }
+          var rows = allowIds.map(function (id, index) {
+            return { key: current.next + index, id: id, kind: index < savedPrivate.length ? 'private' : 'group', note: savedAliases[id] || '' }
           })
-          return { from: allowRowsFrom, rows: rows }
+          return { from: allowRowsFrom, rows: rows, next: current.next + rows.length }
         })
       }, [allowRowsFrom])
-      function patchRow(id, patch) {
+      function patchRow(key, patch) {
         setAllowRows(function (current) {
-          var rows = current.rows.map(function (row) { return row.id === id ? Object.assign({}, row, patch) : row })
-          return { from: current.from, rows: rows }
+          var rows = current.rows.map(function (row) { return row.key === key ? Object.assign({}, row, patch) : row })
+          return { from: current.from, rows: rows, next: current.next }
         })
       }
       function addAllowRow() {
         setAllowRows(function (current) {
-          var id = String(Math.floor(Math.random() * 9e8 + 1e8))
-          return { from: current.from, rows: current.rows.concat([{ id: id, kind: 'private', on: true, note: '' }]) }
+          return { from: current.from, rows: current.rows.concat([{ key: current.next, id: '', kind: 'private', note: '' }]), next: current.next + 1 }
         })
       }
-      function dropAllowRow(id) {
+      function dropAllowRow(key) {
         setAllowRows(function (current) {
-          var rows = current.rows.filter(function (row) { return row.id !== id })
-          return { from: current.from, rows: rows }
+          return { from: current.from, rows: current.rows.filter(function (row) { return row.key !== key }), next: current.next }
         })
       }
       function saveAllow() {
@@ -620,11 +615,12 @@
           var id = String(row.id).trim()
           if (!/^[0-9]+$/.test(id)) { if (!wrong) wrong = id || '(空)'; return }
           if (row.note.trim()) aliasesOut[id] = row.note.trim().slice(0, 100)
-          if (row.on) (row.kind === 'group' ? groups : people).push(id)
+          var list = row.kind === 'group' ? groups : people
+          if (list.indexOf(id) < 0) list.push(id)
         })
         if (wrong) { setMsg('请填 QQ 号：「' + wrong + '」不是号码'); return }
         change({ allowPrivate: people, allowGroups: groups, aliases: aliasesOut }, function () {
-          return people.length || groups.length ? '名单存好了：私聊 ' + people.length + ' 个、群 ' + groups.length + ' 个（不勾的号码留在表里，勾回来再存就恢复）' : '名单存好了：现在谁的话都不收'
+          return people.length || groups.length ? '名单存好了：私聊 ' + people.length + ' 个、群 ' + groups.length + ' 个' : '名单存好了：现在谁的话都不收'
         })
       }
       // 每个群自己的接话规矩。map 里没有这个群 = 跟着全局 groupTrigger 走；
@@ -639,10 +635,11 @@
       var savedTriggers = (props.native && props.native.groupTriggers) || {}
       var triggersFrom = groups.join('|') + '|' + JSON.stringify(savedTriggers)
       var triggerState = useState({ from: '', map: {} }), triggerMap = triggerState[0].map, setTrigger = triggerState[1]
-      var kwState = useState({ words: null, draft: '' }), kw = kwState[0], setKw = kwState[1]
-      var kwFrom = (props.native && JSON.stringify(props.native.groupKeywords || [])) || '[]'
+      // 唤醒词：打开时填上已存的词，之后只在存下的词变了时重填，不覆盖正在加的那个。
+      var kwState = useState({ from: '', words: null, draft: '' }), kw = kwState[0], setKw = kwState[1]
+      var kwFrom = props.native ? JSON.stringify(props.native.groupKeywords || []) : ''
       useEffect(function () {
-        setKw(function (old) { return old.from === kwFrom ? old : { words: JSON.parse(kwFrom), draft: '' } })
+        setKw(function (old) { return old.from === kwFrom ? old : { from: kwFrom, words: kwFrom ? JSON.parse(kwFrom) : null, draft: '' } })
       }, [kwFrom])
       useEffect(function () {
         setTrigger(function (current) {
@@ -682,22 +679,9 @@
         change({ groupKeywords: words }, function () {
           return words.length ? '存好了：' + words.length + ' 个唤醒词，mention 的群里带其中一个就算在叫她' : '存好了：现在唤醒词清空，mention 只认 @ 和引用她的消息'
         })
-        setKw({ words: words, draft: '' })
       }
       function dropKeyword(i) {
-        setKw(function (old) { var words = (old.words || []).slice(); words.splice(i, 1); return { words: words, draft: old.draft } })
-      }
-      var awState = useState({ draft: null }), aw = awState[0], setAw = awState[1]
-      var awFrom = props.native ? String(props.native.awakeSeconds ?? 0) : ''
-      useEffect(function () { setAw({ draft: null }) }, [awFrom])
-      function saveAwake() {
-        var raw = (aw.draft === null ? awFrom : aw.draft).trim()
-        if (raw === '') { setMsg('唤醒时长不能是空的：0 到 3600 的秒数，0 就是关'); return }
-        var n = Number(raw)
-        if (!Number.isInteger(n) || n < 0 || n > 3600) { setMsg('唤醒时长要是 0 到 3600 的整数秒，现在是「' + raw + '」'); return }
-        change({ awakeSeconds: n }, function () {
-          return n ? '存好了：mention 的群里被叫到后，她醒 ' + n + ' 秒，期间接着听、到点看话题完没完' : '存好了：唤醒模式关着，被叫到就只答那一轮'
-        })
+        setKw(function (old) { var words = (old.words || []).slice(); words.splice(i, 1); return { from: old.from, words: words, draft: old.draft } })
       }
       function startSnowluma() {
         change({ startSnowluma: true }, function (state) {
@@ -766,20 +750,16 @@
           ])
         })(props.native),
         props.native ? h('div', { key: 'allow', className: 'dw-setting', style: { flexWrap: 'wrap' } }, [
-          h('div', { key: 'h', className: 'dw-muted', style: { width: '100%' } }, '谁的话能进来：一行一个人/一个群，不勾就是暂时不收（号码留在表里）。改完不用重启。'),
+          h('div', { key: 'h', className: 'dw-muted', style: { width: '100%' } }, '谁的话能进来：一行一个人或一个群，备注只给你自己看。表里没有的号谁都进不来。改完不用重启。'),
           allowRows.rows.map(function (row, index) {
-            return h('div', { key: 'r' + row.id, className: 'dw-setting', style: { width: '100%', gap: 8 } }, [
-              h('select', { key: 'k', 'aria-label': '号码 ' + row.id + ' 是私聊还是群', disabled: busy, value: row.kind, onChange: function (e) { patchRow(row.id, { kind: e.target.value }) } }, [
+            return h('div', { key: 'r' + row.key, className: 'dw-setting', style: { width: '100%', gap: 8 } }, [
+              h('select', { key: 'k', 'aria-label': '第 ' + (index + 1) + ' 行是私聊还是群', disabled: busy, value: row.kind, onChange: function (e) { patchRow(row.key, { kind: e.target.value }) } }, [
                 h('option', { key: 'p', value: 'private' }, '私聊'),
                 h('option', { key: 'g', value: 'group' }, '群'),
               ]),
-              h('input', { key: 'i', type: 'text', inputMode: 'numeric', 'aria-label': '第 ' + (index + 1) + ' 行的号码', placeholder: 'QQ 号', disabled: busy, value: row.id, style: { width: 140, fontVariantNumeric: 'tabular-nums' }, onChange: function (e) { patchRow(row.id, { id: e.target.value }) } }),
-              h('input', { key: 'n', type: 'text', 'aria-label': '号码 ' + row.id + ' 的备注', placeholder: '备注（只是给自己看）', disabled: busy, value: row.note, onChange: function (e) { patchRow(row.id, { note: e.target.value }) } }),
-              h('label', { key: 'e', style: { display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer' }, title: '不勾就是暂时不收' }, [
-                h('input', { key: 'c', type: 'checkbox', checked: row.on, disabled: busy, onChange: function (e) { patchRow(row.id, { on: e.target.checked }) } }),
-                h('span', { key: 't' }, '收'),
-              ]),
-              h('button', { key: 'x', className: 'dw-btn', disabled: busy, onClick: function () { dropAllowRow(row.id) }, title: '从表里删掉这一行（存了才会生效）' }, '删'),
+              h('input', { key: 'i', type: 'text', inputMode: 'numeric', 'aria-label': '第 ' + (index + 1) + ' 行的号码', placeholder: 'QQ 号', disabled: busy, value: row.id, style: { width: 140, fontVariantNumeric: 'tabular-nums' }, onChange: function (e) { patchRow(row.key, { id: e.target.value }) } }),
+              h('input', { key: 'n', type: 'text', 'aria-label': '第 ' + (index + 1) + ' 行的备注', placeholder: '备注（只是给自己看）', disabled: busy, value: row.note, onChange: function (e) { patchRow(row.key, { note: e.target.value }) } }),
+              h('button', { key: 'x', className: 'dw-btn', disabled: busy, onClick: function () { dropAllowRow(row.key) }, title: '从表里删掉这一行（存了才会生效）' }, '删'),
             ])
           }),
           h('button', { key: 'a', className: 'dw-btn', disabled: busy, onClick: addAllowRow }, '加一行'),
@@ -808,26 +788,15 @@
         kw.words ? h('div', { key: 'keywords', className: 'dw-setting', style: { flexWrap: 'wrap' } }, [
           h('div', { key: 'note', style: { flexBasis: '100%' } }, '唤醒词（mention 的群里，消息带其中一个就算在叫她；清空后只认 @ 和引用）：'),
           kw.words.length ? kw.words.map(function (w, i) {
-            return h('span', { key: w + '.' + i }, w,
-              h('button', { onClick: function () { dropKeyword(i) }, title: '删掉这个词', disabled: busy }, '×'))
+            return h('span', { key: w + '.' + i }, [
+              h('span', { key: 'w' }, w),
+              h('button', { key: 'x', onClick: function () { dropKeyword(i) }, title: '删掉这个词', disabled: busy }, '×'),
+            ])
           }) : h('span', { key: 'none', className: 'dw-muted' }, '（还没有）'),
-          h('input', { key: 'add', value: kw.draft, placeholder: '加一个唤醒词',
-            onInput: function (e) { var v = e.target.value; setKw(function (old) { return { words: old.words, draft: v } }) } }),
+          h('input', { key: 'add', value: kw.draft, placeholder: '加一个唤醒词', 'aria-label': '加一个唤醒词', disabled: busy,
+            onChange: function (e) { var v = e.target.value; setKw(function (old) { return { from: old.from, words: old.words, draft: v } }) } }),
           h('button', { key: 'save', className: 'dw-btn', disabled: busy, onClick: saveKeywords }, '存唤醒词'),
         ]) : null,
-        (function (n) {
-          if (!n) return null
-          var seconds = n.awakeSeconds ?? 0
-          var editing = aw.draft !== null
-          var shown = editing ? aw.draft : String(seconds)
-          return h('div', { key: 'awake', className: 'dw-setting', style: { flexWrap: 'wrap' } }, [
-            h('div', { key: 'note', style: { flexBasis: '100%' } }, '唤醒模式（mention 的群里被叫到后，她保持醒着接着听；期间没叫她的句子只记不回，到点她看话题完没完，没完自己续一段）：'),
-            h('div', { key: 'state' }, seconds ? h('span', { className: 'dw-ok' }, '● 开着 · ' + seconds + ' 秒') : h('span', { className: 'dw-muted' }, '○ 关着 · 被叫到只答那一轮')),
-            h('input', { key: 'input', value: shown, placeholder: '秒数，0 = 关', style: { width: 110 }, disabled: busy,
-              onInput: function (e) { var v = e.target.value; setAw({ draft: v }) } }),
-            h('button', { key: 'save', className: 'dw-btn', disabled: busy, onClick: saveAwake }, '存唤醒时长'),
-          ])
-        })(props.native),
         (function (n) {
           if (!n) return null
           var b = n.bridge

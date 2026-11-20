@@ -74,14 +74,14 @@ test('她自己的话推不推、名单备注：只认真开关和号码键', as
   const post = (body: unknown) => call(route, request('POST', '/native', { headers: WRITE, body }));
   assert.equal((await post({ forwardOwn: false })).status, 200, '关掉推送');
   assert.equal((await post({ forwardOwn: 'no' })).status, 400, '只认真开关，别的不猜');
-  assert.match(String((await post({ aliases: '2653935317' })).body.error), /要是一个对象/);
-  assert.match(String((await post({ aliases: { abc: '鳐辰' } })).body.error), /不是号码：abc/);
-  assert.match(String((await post({ aliases: { '2653935317': 5 } })).body.error), /备注要是一段文字/);
-  assert.equal((await post({ aliases: { ' 2653935317 ': '  鳐辰  ', '700700700': '' } })).status, 200, 'trim、空备注不落');
+  assert.match(String((await post({ aliases: '100100100' })).body.error), /要是一个对象/);
+  assert.match(String((await post({ aliases: { abc: '小林' } })).body.error), /不是号码：abc/);
+  assert.match(String((await post({ aliases: { '100100100': 5 } })).body.error), /备注要是一段文字/);
+  assert.equal((await post({ aliases: { ' 100100100 ': '  小林  ', '700700700': '' } })).status, 200, 'trim、空备注不落');
   assert.equal((await post({ aliases: {} })).status, 200, '空对象清掉全部备注');
   assert.deepEqual(patches, [
     { forwardOwn: false },
-    { aliases: { '2653935317': '鳐辰' } },
+    { aliases: { '100100100': '小林' } },
     { aliases: {} },
   ]);
 });
@@ -108,22 +108,12 @@ test('唤醒词只收非空、去空格、≤32 字的词；空数组就是清�
   assert.equal((await post({ groupKeywords: '大肥鱼' })).status, 400, '要是一个数组');
   assert.match(String((await post({ groupKeywords: [42] })).body.error), /只能是词/);
   assert.match(String((await post({ groupKeywords: ['x'.repeat(33)] })).body.error), /超过 32 个字/);
-  assert.equal((await post({ groupKeywords: ['  大肥鱼 ', '', 'D老师'] })).status, 200);
+  assert.equal((await post({ groupKeywords: ['  大肥鱼 ', '', '鱼鱼'] })).status, 200);
   assert.equal((await post({ groupKeywords: [] })).status, 200, '空数组就是清空');
   assert.deepEqual(patches, [
-    { groupKeywords: ['大肥鱼', 'D老师'] },
+    { groupKeywords: ['大肥鱼', '鱼鱼'] },
     { groupKeywords: [] },
   ]);
-});
-
-test('唤醒时长只收 0 到 3600 的整数秒；0 就是关掉唤醒模式', async () => {
-  const patches: unknown[] = [];
-  const route = qqRoute('/dsh-world/worlds/fish', [], doors(), native, patch => { patches.push(patch); return { ok: true }; });
-  const post = (body: unknown) => call(route, request('POST', '/native', { headers: WRITE, body }));
-  for (const bad of [-1, 3601, 1.5, '120', null]) assert.equal((await post({ awakeSeconds: bad })).status, 400, String(bad));
-  assert.equal((await post({ awakeSeconds: 0 })).status, 200, '0 = 关闭');
-  assert.equal((await post({ awakeSeconds: 3600 })).status, 200, '上限一分钟');
-  assert.deepEqual(patches, [{ awakeSeconds: 0 }, { awakeSeconds: 3600 }]);
 });
 
 test('合批窗口只收 0 到 30 秒的整数毫秒：一批从第一句起最多等 30 秒，再长也没用', async () => {

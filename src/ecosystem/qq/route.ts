@@ -40,7 +40,7 @@ function allowed(req: IncomingMessage, allowedHosts: readonly string[]): boolean
  * What the panel may change about her own channel: replying, the balcony's port, staying quiet until a time
  * (`null` speaks again at once), who may talk to her, and starting SnowLuma once by hand.
  */
-export interface NativePatch { autoReply?: boolean; bridge?: { port: number }; mutedUntil?: string | null; allowPrivate?: string[]; allowGroups?: string[]; batchQuietMs?: number; groupTriggers?: Record<string, 'mention' | 'all'>; groupKeywords?: string[]; forwardOwn?: boolean; aliases?: Record<string, string>; awakeSeconds?: number; startSnowluma?: true }
+export interface NativePatch { autoReply?: boolean; bridge?: { port: number }; mutedUntil?: string | null; allowPrivate?: string[]; allowGroups?: string[]; batchQuietMs?: number; groupTriggers?: Record<string, 'mention' | 'all'>; groupKeywords?: string[]; forwardOwn?: boolean; aliases?: Record<string, string>; startSnowluma?: true }
 type SetNative = (patch: NativePatch) => unknown;
 
 /** A whitelist from the panel: QQ numbers as strings or numbers, blanks dropped; an empty list lets nobody in. */
@@ -145,11 +145,6 @@ async function write(doors: ConsoleDoors | undefined, path: string, body: Record
         if (typeof map === 'string') return bad(map);
         patch.aliases = map;
       }
-      if (body?.awakeSeconds !== undefined) {
-        const s = body.awakeSeconds;
-        if (typeof s !== 'number' || !Number.isInteger(s) || s < 0 || s > 3600) return bad('awakeSeconds 要是 0 到 3600 之间的整数（秒；0 = 关闭唤醒模式）');
-        patch.awakeSeconds = s;
-      }
       if (body?.startSnowluma === true) patch.startSnowluma = true;
       // 阳台：外面那条线开在哪个端口。换端口会打断已经连上的线，所以只认一个整数，别的一律拒。
       const rawBridge = body?.bridge;
@@ -160,7 +155,7 @@ async function write(doors: ConsoleDoors | undefined, path: string, body: Record
         if (typeof port !== 'number' || !Number.isInteger(port) || port < 0 || port > 65535) return bad('bridge.port 要是 0 到 65535 之间的整数');
         patch.bridge = { port };
       }
-      if (!Object.keys(patch).length) return bad('autoReply、bridge、mutedUntil、allowPrivate、allowGroups、batchQuietMs、groupTriggers、groupKeywords、forwardOwn、aliases、awakeSeconds、startSnowluma 至少要给一个');
+      if (!Object.keys(patch).length) return bad('autoReply、bridge、mutedUntil、allowPrivate、allowGroups、batchQuietMs、groupTriggers、groupKeywords、forwardOwn、aliases、startSnowluma 至少要给一个');
       return ok(setNative(patch));
     }
     case '/open': {
