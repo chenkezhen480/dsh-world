@@ -129,7 +129,8 @@ test('she is told when nothing was playing, when the pause did not take, and whe
 });
 
 test('a long recording returns at once and is looked at when it is over; what cannot be recorded is refused before anything starts', async () => {
-  const s = setup({ secondMs: 1 });
+  // Four milliseconds a "second": a frame every 20 ms, so the first one is back before the second is due even on a busy machine.
+  const s = setup({ secondMs: 4 });
   await s.desktop.act({ action: 'open', app: '播放器' });
   for (const [input, why] of [[{ seconds: 0 }, /seconds 要在 1 到 600 之间/], [{ seconds: 601 }, /seconds 要在 1 到 600 之间/], [{}, /seconds 要在/], [{ seconds: 10, every: 0.1 }, /every 要在 0.5 到 30 之间/], [{ seconds: 600, every: 0.5 }, /这样要录 1201 帧，最多 600 帧：把 every 调大/]] as const)
     await assert.rejects(s.desktop.act({ action: 'record', ...input }), why);

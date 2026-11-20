@@ -1,4 +1,5 @@
 // src/ecosystem/computer/browser/page.ts
+import { setTimeout as pause } from 'node:timers/promises';
 import type { Cdp } from './cdp.ts';
 import { PAGE_LIB } from './pageLib.ts';
 import type { Anchor, Condition, ExtractSpec, Target } from '../procedures/format.ts';
@@ -12,7 +13,8 @@ export interface Page {
   open(url: string): Promise<void>;
   read(options?: { page?: number; ref?: number }): Promise<string>;
   brief(): Promise<string>;
-  click(target: Target): Promise<void>;
+  /** `holdMs`: how long the button stays down, a long press; 0 or absent for a plain click. */
+  click(target: Target, holdMs?: number): Promise<void>;
   type(target: Target, text: string): Promise<void>;
   press(key: string): Promise<void>;
   scroll(direction: 'up' | 'down', target?: Target): Promise<void>;
@@ -93,10 +95,11 @@ export function createPage(cdp: Cdp): Page {
     },
     async read({ page = 1, ref } = {}) { return formatRead(await snapshot(ref), page); },
     async brief() { return formatRead(await snapshot(), 1, 15, 300); },
-    async click(target) {
+    async click(target, holdMs = 0) {
       const { x, y } = await pointOf(target);
       await mouse('mouseMoved', x, y, { button: 'none', clickCount: 0 });
       await mouse('mousePressed', x, y, { buttons: 1 });
+      if (holdMs > 0) await pause(holdMs);
       await mouse('mouseReleased', x, y);
     },
     async type(target, text) {

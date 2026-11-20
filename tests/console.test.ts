@@ -110,6 +110,29 @@ test('the compact-after-review switch is a boolean write that survives a restart
   assert.ok(!('compactAfterReview' in JSON.parse(readFileSync(join(dir, 'world.json'), 'utf8'))), 'on is the absence of the key');
 });
 
+test('after the upgrade her browser and her use of the computer stay as they really were: a config line taken out still means no', async t => {
+  const world = (stored: Record<string, unknown>) => {
+    const dir = mkdtempSync(join(tmpdir(), 'dw-legacy-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
+    writeFileSync(join(dir, 'world.json'), JSON.stringify({ running: true, ...stored }));
+    return dir;
+  };
+  const both = { computerEnabled: true, desktopEnabled: true };
+  const kept = createWorldSwitch(world(both), 'workspace', '09:00', { computer: true, desktop: true });
+  assert.deepEqual([kept.computerEnabled(), kept.desktopEnabled()], [true, true], 'allowed in the config and switched on: on');
+  const revoked = world(both);
+  const removed = createWorldSwitch(revoked, 'workspace', '09:00', { computer: true });
+  assert.deepEqual([removed.computerEnabled(), removed.desktopEnabled()], [true, false], 'desktop: true taken out: her use of the computer is off');
+  assert.deepEqual([createWorldSwitch(revoked).computerEnabled(), createWorldSwitch(revoked).desktopEnabled()], [true, false], 'settled once: the config lines can go now');
+  const off = createWorldSwitch(world(both), 'workspace', '09:00', { computer: false, desktop: true });
+  assert.deepEqual([off.computerEnabled(), off.desktopEnabled()], [false, false], 'computer: false: neither, since one runs inside the other');
+  const later = world({});
+  createWorldSwitch(later).setModules({ computer: true });
+  assert.equal(createWorldSwitch(later, 'workspace', '09:00', {}).computerEnabled(), true, 'switched on from the console after the upgrade: the config has no say');
+  const fresh = world({});
+  createWorldSwitch(fresh);
+  assert.ok(!('consoleSwitchesOnly' in JSON.parse(readFileSync(join(fresh, 'world.json'), 'utf8'))), 'nothing on, nothing written');
+});
+
 test('the review and morning times are HH:MM writes that survive a restart; empty goes back to 23:00 and the configured morning', async t => {
   const dir = mkdtempSync(join(tmpdir(), 'dw-schedule-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
   const { actions, calls } = fakeActions();

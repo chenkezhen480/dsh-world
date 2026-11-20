@@ -49,6 +49,7 @@ test('memory tools show her the short line, and memory_image hands the picture o
   const service = {
     find: async () => ({ items: [{ ref: 'c:1', time: '2026-11-17T00:00:00Z', kind: 'conversation', current: true, excerpt: `看 ${archived}` }], coverage: { state: 'ready' } }),
     read: async () => ({ ref: 'c:1', kind: 'conversation', title: '', time: '2026-11-17T00:00:00Z', content: archived, offset: 0, totalChars: archived.length }),
+    wiki: { catalog: async () => ({}), gaps: async () => undefined },
   } as unknown as MemoryService;
   let inside = true;
   const tools = memoryTools(service, () => inside, undefined, () => fakeStore(() => true));

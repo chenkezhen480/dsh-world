@@ -3,13 +3,13 @@ import type { AttachmentStore } from '@deepseek-ai/dsh-attachment';
 import type { Context } from '@deepseek-ai/cordis';
 import type { Agent } from '@deepseek-ai/dsh-agent';
 import { createSystemMessage, createUserMessage, isAgentLoopRequest, type MessageId, type StreamChunk, type UserMessage } from '@deepseek-ai/dsh-llm';
-import { appendPluginRecord, pluginRecordOf, SessionLogOffset, type Session, type SessionSeq } from '@deepseek-ai/dsh-session';
+import { appendPluginRecord, pluginRecordOf, SessionLogOffset, SessionSeq, type Session } from '@deepseek-ai/dsh-session';
 import type {} from '@deepseek-ai/dsh-compaction';
 import './hostContract.ts';
 import { isOrdinarySession } from './archive.ts';
 import { compactsWhole, llmError } from './compaction.ts';
 import { compactionFor } from './console/homeApply.ts';
-import { Faults } from './faults.ts';
+import { errorText, Faults } from './faults.ts';
 import { createHistory, excludePresentMessages, GROUP_PRIVACY, renderHistory } from './history.ts';
 import { MOOD_CLEARED, moodAge, moodText, moodUpdatedAt, readMood } from './mood.ts';
 import { createWorldToolRegistry, memoryTools } from './memoryTools.ts';
@@ -186,6 +186,11 @@ interface MemoryState { reload: boolean; cold: boolean; position: RequestPositio
  * turn first summarizes the old conversation, then re-reads her memory block and prompt as a newly opened session
  * would: that first request misses the cache anyway, and every later step carries the summary instead of the whole old
  * conversation. A conversation in progress does not pause that long, so its cached prefix stays whole.
+ *
+ * A DSH restart is not a start: a session reopened with its block still on the surface keeps it (`keepsBlock`), and
+ * whether it is cold is read from its log. The host holds a session's whole log in memory and never drops an event,
+ * so a block read again on every restart was a copy of the newest turns added to that memory each time, and it made
+ * the provider bill the conversation after the old block again.
  */
 export function createWorldRuntime(ctx: Context, config: WorldConfig, store: ArchiveStore, world?: WorldPromptSource, memoryTurns: () => number = () => DEFAULT_MEMORY_TURNS, coldHours: () => number = () => DEFAULT_COLD_HOURS, now: () => number = Date.now) {
   if (config.archiveScope === 'workspace' && !world?.archiveSession) throw new Error('Workspace archive requires the host workspace selection');
@@ -226,9 +231,31 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
     return event?.type === 'user/message' && ownMemory(event.data.source);
   });
 
+  /** Written on each block, so a restart can tell whether the block on the surface was read the way it would be now. */
+  const blockScope = config.archiveScope ?? 'workspace';
+  /** One block of this world on the surface, from the session's own log and read under the archive scope in use. */
+  function keepsBlock(session: Session): boolean {
+    const blocks = recallNodes(session, source => source?.kind === memorySource);
+    if (blocks.length !== 1 || blocks[0]! < session.inheritedEventCount) return false;
+    const event = session.eventAt(blocks[0]!);
+    if (event?.type !== 'user/message') return false;
+    const { source } = event.data;
+    return source.kind === memorySource && source.worldId === config.worldId && source.scope === blockScope;
+  }
+  /** When the session last asked the model, from its log; undefined for one that never has. */
+  function lastStepAt(session: Session): number | undefined {
+    for (let seq = session.seq - 1; seq >= session.inheritedEventCount; seq--) {
+      const event = session.eventAt(SessionSeq(seq));
+      if (event?.type === 'step/start') return event.time;
+    }
+    return undefined;
+  }
   function newMemoryState(session: Session): MemoryState {
-    const inScope = included(session);
-    return { reload: true, cold: false, position: { turn: 1, step: 1 }, retiring: [], inScope, restart: !inScope && belongsToWorld(session, config) };
+    const inScope = included(session), lastRequestAt = lastStepAt(session);
+    return {
+      reload: !keepsBlock(session), cold: false, position: { turn: 1, step: 1 }, retiring: [], inScope, restart: !inScope && belongsToWorld(session, config),
+      ...(lastRequestAt === undefined ? {} : { lastRequestAt }),
+    };
   }
   /**
    * Archive failures never stop her talking: they stay in the health list, and what she said meanwhile is replayed
@@ -320,14 +347,26 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
     if (!compactsWhole(engine)) return;
     await faults.track(`cold:${agent.id}`, `会话 ${agent.id} 久未开口后的压缩失败，已改为只重读记忆块和人设`, async () => { await engine.compactWhole(agent, signal); }).catch(() => {});
   }
+  /** Her wiki's catalog; a wiki that cannot be read is a fault and leaves the chat part of the block as it is. */
+  async function wikiCatalog(): Promise<string | undefined> {
+    if (!service) return undefined;
+    try {
+      const { text, failure } = await service.wiki.catalog();
+      if (failure) faults.set('wiki', `认识页没能全部读到：${failure}`); else faults.clear('wiki');
+      return text;
+    } catch (error) { faults.set('wiki', `认识页的目录没能读出来：${errorText(error)}`); return undefined; }
+  }
+  /** The recall a session starts with: her wiki's catalog first (a map, looked over first), then the recent chat. */
   async function freshBlock(session: Session, state: MemoryState): Promise<UserMessage | undefined> {
-    const turns = await history.loadRecentTurns(memoryTurns(), archivedByScope);
+    // The two reads are independent, and the first step waits for both.
+    const [turns, catalog] = await Promise.all([history.loadRecentTurns(memoryTurns(), archivedByScope), wikiCatalog()]);
     const present = new Set(session.deriveMessages().map(message => message.id));
     const rendered = renderHistory(excludePresentMessages(turns, present), config.timeZone, names(), config.archiveScope === 'home');
-    const text = rendered && inGroup(session) ? `${rendered}\n\n${GROUP_PRIVACY}` : rendered;
+    const body = [catalog, rendered].filter(Boolean).join('\n\n');
+    const text = body && inGroup(session) ? `${body}\n\n${GROUP_PRIVACY}` : body;
     // A session entering this workspace can still carry an inherited recall from another world.
     retireMemory(session, state, included(session));
-    return text ? createUserMessage({ content: [{ type: 'text', text }], source: { kind: memorySource, form: 'recall', worldId: config.worldId } }) : undefined;
+    return text ? createUserMessage({ content: [{ type: 'text', text }], source: { kind: memorySource, form: 'recall', worldId: config.worldId, scope: blockScope } }) : undefined;
   }
   /** Reads what the first catch-up had to leave, once the host can say which sessions belong to her. */
   async function retryCatchUp(): Promise<void> {

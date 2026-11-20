@@ -2,13 +2,14 @@
 import { errorText } from '../../../faults.ts';
 import { describeAnchor, type Row } from '../browser/page.ts';
 import type { ProcedureLibrary } from './library.ts';
-import type { DesktopInput, DesktopResult } from '../desktop/desktop.ts';
+import { holdMs, type DesktopInput } from '../desktop/input.ts';
+import type { DesktopResult } from '../desktop/turns.ts';
 import { isOpenTooSoon, isWebAddress, procedurePath, substitute, WEB_ONLY, type Anchor, type Condition, type DesktopProcedure, type DesktopStep, type ExtractSpec, type Procedure, type Step, type Target } from './format.ts';
 
 /** What replaying needs from a page; her browser's `Page` is one. */
 export interface Driver {
   open(url: string): Promise<void>;
-  click(target: Target): Promise<void>;
+  click(target: Target, holdMs?: number): Promise<void>;
   type(target: Target, text: string): Promise<void>;
   press(key: string): Promise<void>;
   wait(condition: Condition, timeoutMs: number, signal?: AbortSignal): Promise<void>;
@@ -65,10 +66,14 @@ function emptyRows(spec: ExtractSpec, rows: Row[]): string | undefined {
   return blank === undefined ? undefined : `提取到 ${rows.length} 条，但字段 ${blank} 每一条都是空的${EMPTY_HINT}`;
 }
 
+const held = (hold: number | undefined) => hold === undefined ? '点' : `长按 ${hold} 秒`;
 const at = (point: { x?: number; y?: number }) => point.x === undefined ? '' : `（${point.x}, ${point.y}）`;
 export function describeStep(step: Step | DesktopStep): string {
   if ('open' in step) return `打开 ${step.open}`;
-  if ('click' in step) return 'x' in step.click ? `点${at(step.click)}` : `点 ${describeAnchor(step.click)}`;
+  if ('click' in step) {
+    if ('x' in step.click) return `${held(step.click.hold)}${at(step.click)}`;
+    return `${held('hold' in step ? step.hold : undefined)} ${describeAnchor(step.click)}`;
+  }
   if ('type' in step) return 'into' in step.type ? `在 ${describeAnchor(step.type.into)} 输入` : `输入${at(step.type)}`;
   if ('drag' in step) return `从${at(step.drag)}拖到${at({ x: step.drag.x2, y: step.drag.y2 })}`;
   if ('press' in step) return `按 ${step.press}`;
@@ -96,7 +101,7 @@ export async function runProcedure(procedure: Procedure, args: Args, driver: Dri
     const outward = 'outward' in step && step.outward === true;
     try {
       if ('open' in step) { const url = substitute(step.open, args); if (!isWebAddress(url)) throw new Error(WEB_ONLY); await driver.open(url); }
-      else if ('click' in step) await driver.click({ anchor: fill(step.click, args) });
+      else if ('click' in step) await driver.click({ anchor: fill(step.click, args) }, holdMs(step.hold));
       else if ('type' in step) await driver.type({ anchor: fill(step.type.into, args) }, substitute(step.type.text, args));
       else if ('press' in step) await driver.press(step.press);
       else if ('wait' in step) await driver.wait(fillCondition(step.wait, args), (step.wait.seconds ?? 10) * 1000, signal);

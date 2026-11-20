@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Faults } from '../src/faults.ts';
-import { createInbox, ELSEWHERE } from '../src/ecosystem/computer/inbox/inbox.ts';
+import { createInbox, ELSEWHERE, senderName, UNNAMED } from '../src/ecosystem/computer/inbox/inbox.ts';
 
 const posted = (id: number, app: string, texts: string[], at = '2026-11-16T10:20:00.000Z') => ({ id, app, appId: `${app}.App`, at, texts });
 const flash = (app: string, exe = app) => ({ app, exe, at: '2026-11-16T10:00:00.000Z' });
@@ -57,7 +57,8 @@ test('a program with a channel of its own is left out, and a word her home did n
   const { inbox, told, state, pass } = world(['Weixin', 'QQ']);
   await inbox.look();
   state.flashes = [flash('微信', 'Weixin'), flash('QQ', 'QQ'), flash('Windows PowerShell', 'powershell')];
-  state.notifications = [posted(5, 'QQ', ['在吗'])];
+  // Known only by its path or package id, it is still the program with its own channel.
+  state.notifications = [posted(5, 'QQ', ['在吗']), { ...posted(6, '', ['在吗']), appId: 'C:\\Program Files\\Tencent\\QQ\\Bin\\QQ.exe' }, { ...posted(7, '', ['在吗']), appId: 'D:\\Weixin\\Weixin.exe' }];
   state.free = false;
   await inbox.look(); pass(10_000); await inbox.look();
   assert.deepEqual(told, []);
@@ -66,6 +67,20 @@ test('a program with a channel of its own is left out, and a word her home did n
   assert.equal(told.length, 1);
   assert.match(told[0]!, /^外面有动静（任务栏上看到的），程序没有替你打开看：\n- Windows PowerShell：任务栏在闪（18:00 起）\n看不看、回不回你自己定。\n任务栏上只看得到/);
   assert.doesNotMatch(told[0]!, /微信|QQ/);
+});
+
+test('every line names the program: from the name Windows shows, else from its id, else said to be unsigned', async () => {
+  const { inbox, told, state, pass } = world();
+  await inbox.look();
+  state.notifications = [
+    { id: 7, app: '', appId: '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe', at: '2026-11-16T10:20:00.000Z', texts: ['构建好了'] },
+    { id: 8, app: '', appId: 'Microsoft.WindowsTerminal_8wekyb3d8bbwe!App', at: '2026-11-16T10:21:00.000Z', texts: ['完成'] },
+    // Posted under an id no installed program has: Windows gives no sender at all.
+    { id: 9, app: '', appId: '', at: '2026-11-16T10:22:00.000Z', texts: ['inbox live', '你好'] },
+  ];
+  await inbox.look(); pass(10_000); await inbox.look();
+  assert.deepEqual(told[0]!.split('\n').filter(line => line.startsWith('- ')).map(line => line.slice(2, line.indexOf('：'))), ['powershell', 'Microsoft.WindowsTerminal', UNNAMED]);
+  assert.equal(senderName('QQ', 'Tencent.QQ'), 'QQ');
 });
 
 test('what it cannot see is a fault until it can again', async () => {

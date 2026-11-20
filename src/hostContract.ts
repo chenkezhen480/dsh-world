@@ -10,7 +10,8 @@ declare module '@deepseek-ai/dsh-llm/types' {
 
 declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {
-    'dsh-world-history': { kind: 'dsh-world-history'; form: 'recall'; worldId?: string };
+    /** `scope`: the archive scope the block was read under; a block without it predates 0.8.1 and is read again. */
+    'dsh-world-history': { kind: 'dsh-world-history'; form: 'recall'; worldId?: string; scope?: string };
     'dsh-world-summary-input': { kind: 'dsh-world-summary-input' };
     'dsh-world-life': { kind: 'dsh-world-life' };
     /** 她在 mood.md 里写的心情值：快照，不是谁说的话，不进归档。 */

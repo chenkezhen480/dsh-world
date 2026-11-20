@@ -199,7 +199,8 @@ for (const retained of [false, true]) test(`workspace removal during history loa
   const { agent } = await ctx.agents.create({ sessionId: SessionId('racing'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } });
   if (retained) {
     agent.followup(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'before restart' }] })); await agent.whenIdle();
-    await runtime.stop(); runtime = createWorldRuntime(ctx, config, store, source); await runtime.start(); requests.length = 0;
+    // A restart keeps the block on the surface; one a day later reads memory again, which is the race this is about.
+    await runtime.stop(); runtime = createWorldRuntime(ctx, config, store, source, undefined, undefined, () => Date.now() + 25 * 60 * 60_000); await runtime.start(); requests.length = 0;
   }
   let entered!: () => void; const reading = new Promise<void>(resolve => { entered = resolve; });
   let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });

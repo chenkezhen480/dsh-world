@@ -19,7 +19,7 @@ using System.Text;
 using System.Threading;
 using System.Windows.Automation;
 
-public class DeskWindow { public long hwnd { get; set; } public long owner { get; set; } public uint pid { get; set; } public string exe { get; set; } public string title { get; set; } public bool minimized { get; set; } public int width { get; set; } public int height { get; set; } }
+public class DeskWindow { public long hwnd { get; set; } public long owner { get; set; } public uint pid { get; set; } public string exe { get; set; } public string title { get; set; } public bool minimized { get; set; } public int width { get; set; } public int height { get; set; } public string appId { get; set; } }
 public class DeskShot { public int width { get; set; } public int height { get; set; } public int clientWidth { get; set; } public int clientHeight { get; set; } public string print { get; set; } public int left { get; set; } public int top { get; set; } }
 
 public static class Desk {
@@ -63,6 +63,7 @@ public static class Desk {
   [DllImport("kernel32.dll")] static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
   [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
   [DllImport("advapi32.dll")] static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern int GetApplicationUserModelId(IntPtr process, ref uint length, StringBuilder id);
   [StructLayout(LayoutKind.Sequential)] struct KEYBDINPUT { public ushort vk, scan; public uint flags, time; public IntPtr extra; }
   [StructLayout(LayoutKind.Sequential)] struct MOUSEINPUT { public int dx, dy; public uint data, flags, time; public IntPtr extra; }
   [StructLayout(LayoutKind.Explicit)] struct INPUTUNION { [FieldOffset(0)] public MOUSEINPUT mouse; [FieldOffset(0)] public KEYBDINPUT key; }
@@ -81,6 +82,7 @@ public static class Desk {
   public static List<DeskWindow> Windows() {
     Aware();
     var list = new List<DeskWindow>();
+    var apps = new Dictionary<uint, string>();
     EnumWindows((h, l) => {
       if (!IsWindowVisible(h) || (GetWindowLong(h, -20) & 0x80) != 0) return true;
       int cloaked;
@@ -94,10 +96,22 @@ public static class Desk {
       try { exe = Process.GetProcessById((int)pid).ProcessName; } catch (Exception) { }
       RECT r;
       GetWindowRect(h, out r);
-      list.Add(new DeskWindow { hwnd = h.ToInt64(), owner = GetWindow(h, 4).ToInt64(), pid = pid, exe = exe, title = title.ToString(), minimized = IsIconic(h), width = r.R - r.L, height = r.B - r.T });
+      string app;
+      if (!apps.TryGetValue(pid, out app)) apps[pid] = app = AppId(pid);
+      list.Add(new DeskWindow { hwnd = h.ToInt64(), owner = GetWindow(h, 4).ToInt64(), pid = pid, exe = exe, title = title.ToString(), minimized = IsIconic(h), width = r.R - r.L, height = r.B - r.T, appId = app });
       return true;
     }, IntPtr.Zero);
     return list;
+  }
+  /**
+   * A Store app's id (`Microsoft.WindowsNotepad_8wekyb3d8bbwe!App`), the one its Start menu entry starts it by, so a
+   * window titled in one language is found by a name in another; null for any other program.
+   */
+  static string AppId(uint pid) {
+    var process = OpenProcess(0x1000, false, pid);
+    if (process == IntPtr.Zero) return null;
+    try { uint length = 256; var id = new StringBuilder(256); return GetApplicationUserModelId(process, ref length, id) == 0 ? id.ToString() : null; }
+    finally { CloseHandle(process); }
   }
 
   static IntPtr Live(long hwnd) {
@@ -157,20 +171,23 @@ public static class Desk {
       using (var g = Graphics.FromImage(picture)) {
         g.InterpolationMode = InterpolationMode.HighQualityBicubic;
         g.DrawImage(full, new Rectangle(0, 0, ow, oh), part, GraphicsUnit.Pixel);
-        // Where the last click landed, so a miss of a few pixels is seen and corrected rather than repeated.
-        if (markX >= 0 && markY >= 0) {
-          float cx = (float)((markX - part.X) * k), cy = (float)((markY - part.Y) * k);
-          using (var pen = new Pen(Color.Red, 3)) {
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-            g.DrawEllipse(pen, cx - 14, cy - 14, 28, 28);
-            g.DrawLine(pen, cx - 22, cy, cx - 6, cy); g.DrawLine(pen, cx + 6, cy, cx + 22, cy);
-            g.DrawLine(pen, cx, cy - 22, cx, cy - 6); g.DrawLine(pen, cx, cy + 6, cx, cy + 22);
-          }
+      }
+      // Printed before the mark: a picture taken after a click always carries one, and "nothing moved" is about the window.
+      var print = Print(picture);
+      // Where the last click landed, so a miss of a few pixels is seen and corrected rather than repeated.
+      if (markX >= 0 && markY >= 0) {
+        float cx = (float)((markX - part.X) * k), cy = (float)((markY - part.Y) * k);
+        using (var g = Graphics.FromImage(picture))
+        using (var pen = new Pen(Color.Red, 3)) {
+          g.SmoothingMode = SmoothingMode.AntiAlias;
+          g.DrawEllipse(pen, cx - 14, cy - 14, 28, 28);
+          g.DrawLine(pen, cx - 22, cy, cx - 6, cy); g.DrawLine(pen, cx + 6, cy, cx + 22, cy);
+          g.DrawLine(pen, cx, cy - 22, cx, cy - 6); g.DrawLine(pen, cx, cy + 6, cx, cy + 22);
         }
       }
       // A recording keeps hundreds of frames, which as PNG would run to hundreds of megabytes.
       picture.Save(file, file.EndsWith(".jpg", StringComparison.OrdinalIgnoreCase) ? ImageFormat.Jpeg : ImageFormat.Png);
-      return new DeskShot { width = ow, height = oh, clientWidth = full.Width, clientHeight = full.Height, print = Print(picture), left = left, top = top };
+      return new DeskShot { width = ow, height = oh, clientWidth = full.Width, clientHeight = full.Height, print = print, left = left, top = top };
     }
   }
 
@@ -228,6 +245,34 @@ public static class Desk {
     return at;
   }
   static IntPtr Pack(int low, int high) { return new IntPtr(((high & 0xFFFF) << 16) | (low & 0xFFFF)); }
+  static uint ThreadOf(IntPtr h) { uint pid; return GetWindowThreadProcessId(h, out pid); }
+
+  /**
+   * Posted messages do not change the input state a program reads with GetKeyState: Ctrl, Shift and Alt for a
+   * combination, the mouse button for a long press or a drag (WinForms reads the button that way). So the window's
+   * input state is shared for the while and those keys set down in it, then put back. The program reads the state when
+   * it takes the messages, a moment after they are posted. A program that reads the real mouse and keyboard
+   * (GetAsyncKeyState, raw input: most games) still sees nothing held; that takes foreground mode.
+   */
+  static void HoldingDown(uint thread, int[] keys, Action post) {
+    uint me = GetCurrentThreadId();
+    bool shared = keys.Length > 0 && thread != 0 && AttachThreadInput(me, thread, true);
+    var saved = new byte[256];
+    try {
+      if (shared) {
+        GetKeyboardState(saved);
+        var state = (byte[])saved.Clone();
+        foreach (var key in keys) state[key] |= 0x80;
+        SetKeyboardState(state);
+      }
+      post();
+      if (shared) Thread.Sleep(200);
+    } finally {
+      if (shared) { SetKeyboardState(saved); AttachThreadInput(me, thread, false); }
+    }
+  }
+  /** The virtual key of a mouse button, as GetKeyState knows it. */
+  static int ButtonKey(bool right) { return right ? 0x02 : 0x01; }
 
   public static void Click(long hwnd, int x, int y, bool right, int count, int hold) {
     Aware();
@@ -238,7 +283,7 @@ public static class Desk {
     var button = new IntPtr(right ? 2 : 1);
     PostMessage(target, 0x200, IntPtr.Zero, at);
     // A long press is one press, held: the button stays down until the time is up.
-    if (hold > 0) { PostMessage(target, down, button, at); Thread.Sleep(hold); PostMessage(target, up, IntPtr.Zero, at); return; }
+    if (hold > 0) { HoldingDown(ThreadOf(target), new[] { ButtonKey(right) }, delegate { PostMessage(target, down, button, at); Thread.Sleep(hold); PostMessage(target, up, IntPtr.Zero, at); }); return; }
     for (int i = 0; i < count; i++) { PostMessage(target, i == 1 ? twice : down, button, at); PostMessage(target, up, IntPtr.Zero, at); }
   }
 
@@ -256,10 +301,12 @@ public static class Desk {
     uint down = right ? 0x204u : 0x201u, up = right ? 0x205u : 0x202u;
     var button = new IntPtr(right ? 2 : 1);
     PostMessage(target, 0x200, IntPtr.Zero, Pack(point.X, point.Y));
-    PostMessage(target, down, button, Pack(point.X, point.Y));
-    Thread.Sleep(hold > 0 ? hold : 80);
-    for (int i = 1; i <= DragSteps; i++) { PostMessage(target, 0x200, button, Pack(point.X + dx * i / DragSteps, point.Y + dy * i / DragSteps)); Thread.Sleep(20); }
-    PostMessage(target, up, IntPtr.Zero, Pack(point.X + dx, point.Y + dy));
+    HoldingDown(ThreadOf(target), new[] { ButtonKey(right) }, delegate {
+      PostMessage(target, down, button, Pack(point.X, point.Y));
+      Thread.Sleep(hold > 0 ? hold : 80);
+      for (int i = 1; i <= DragSteps; i++) { PostMessage(target, 0x200, button, Pack(point.X + dx * i / DragSteps, point.Y + dy * i / DragSteps)); Thread.Sleep(20); }
+      PostMessage(target, up, IntPtr.Zero, Pack(point.X + dx, point.Y + dy));
+    });
   }
 
   public static void Scroll(long hwnd, int x, int y, int notchesUp, int notchesRight) {
@@ -298,36 +345,23 @@ public static class Desk {
     return new IntPtr(bits);
   }
 
-  /**
-   * Posted key messages do not change the keyboard state a program reads for Ctrl, Shift and Alt, so for a
-   * combination that window's input state is shared for a moment and the modifiers set in it, then put back.
-   */
+  /** A key, with Ctrl, Shift and Alt held for a combination and the key itself held for `hold` milliseconds. */
   public static void Key(long hwnd, int vk, int[] modifiers, int hold) {
     uint thread;
     var to = Focused(Live(hwnd), out thread);
-    uint me = GetCurrentThreadId();
-    bool shared = modifiers.Length > 0 && AttachThreadInput(me, thread, true);
-    var saved = new byte[256];
     bool alt = Array.IndexOf(modifiers, 0x12) >= 0;
     uint down = alt ? 0x104u : 0x100u, up = alt ? 0x105u : 0x101u;
-    try {
-      if (shared) {
-        GetKeyboardState(saved);
-        var state = (byte[])saved.Clone();
-        // Qt and others ask for the left key (VK_LCONTROL), not only the generic one.
-        foreach (var m in modifiers) { state[m] |= 0x80; state[Left(m)] |= 0x80; }
-        SetKeyboardState(state);
-      }
+    var held = new List<int>();
+    // Qt and others ask for the left key (VK_LCONTROL), not only the generic one.
+    foreach (var m in modifiers) { held.Add(m); held.Add(Left(m)); }
+    if (hold > 0) held.Add(vk);
+    HoldingDown(thread, held.ToArray(), delegate {
       foreach (var m in modifiers) PostMessage(to, m == 0x12 ? 0x104u : 0x100u, new IntPtr(m), KeyBits(m, false));
       PostMessage(to, down, new IntPtr(vk), KeyBits(vk, false));
       if (hold > 0) Thread.Sleep(hold);
       PostMessage(to, up, new IntPtr(vk), KeyBits(vk, true));
       for (int i = modifiers.Length - 1; i >= 0; i--) PostMessage(to, modifiers[i] == 0x12 ? 0x105u : 0x101u, new IntPtr(modifiers[i]), KeyBits(modifiers[i], true));
-      // The program reads the state when it takes the messages, which is a moment later.
-      if (shared) Thread.Sleep(200);
-    } finally {
-      if (shared) { SetKeyboardState(saved); AttachThreadInput(me, thread, false); }
-    }
+    });
   }
 
   /** A minimized window back to its place, without activating it: the partner keeps the focus. */

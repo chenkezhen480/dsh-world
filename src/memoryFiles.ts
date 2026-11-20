@@ -2,14 +2,20 @@ import { readFile, readdir, realpath, stat } from 'node:fs/promises';
 import { isAbsolute, join, relative } from 'node:path';
 import { errorText } from './faults.ts';
 import { formatLocalTime } from './timeContext.ts';
-import { extractLinks, fileRef, localDayStart, type MemoryKind, type TimeBasis } from './memoryStore.ts';
+import { extractLinks, extractPageLinks, fileRef, localDayStart, type MemoryKind, type TimeBasis } from './memoryStore.ts';
 
-/** Where she keeps what she writes for memory to find: her diary directory's markdown and text files. 我是谁 is not here; it is placed whole in the world prompt. */
-export interface MemorySources { diaryDir?: string }
+/**
+ * Where she keeps what she writes for memory to find: her diary directory and her wiki (`认识`), markdown and text
+ * files one level deep. 我是谁 is not here; it is placed whole in the world prompt.
+ */
+export interface MemorySources { diaryDir?: string; wikiDir?: string }
 export type AuthorKind = Exclude<MemoryKind, 'conversation'>;
-/** One file as she wrote it, with the time it has and the ref that is bound to this exact text. */
+/**
+ * One file as she wrote it, with the time it has and the ref that is bound to this exact text. `links` are the refs on
+ * its `引用：` lines; `pages` are the wiki pages it names as `[[标题]]` (wiki pages only).
+ */
 export interface AuthorDoc {
-  sourceId: string; kind: AuthorKind; path: string; title: string; content: string; ref: string; links: string[];
+  sourceId: string; kind: AuthorKind; path: string; title: string; content: string; ref: string; links: string[]; pages: string[];
   timeMs: number; time: string; timeBasis: TimeBasis;
 }
 
@@ -44,7 +50,7 @@ export async function readStable(path: string, between?: () => Promise<void>): P
   }
 }
 type Listing = { kind: 'ok'; files: { path: string; id: string }[] } | { kind: 'missing' } | { kind: 'failed'; message: string };
-/** The diary's own markdown and text files, one level: real paths must stay inside it, so links cannot lead out, and nothing is followed from file contents. */
+/** A folder's own markdown and text files, one level: real paths must stay inside it, so links cannot lead out, and nothing is followed from file contents. */
 async function listDirectory(root: string): Promise<Listing> {
   let realRoot: string;
   try { realRoot = await realpath(root); }
@@ -102,9 +108,11 @@ export function createAuthorFiles(sources: MemorySources, timeZone: string) {
     for (const [sourceId, entry] of cache) if (entry.kind === kind && !present.has(sourceId)) { cache.delete(sourceId); failures.delete(sourceId); }
   }
   async function refreshOnce(): Promise<void> {
-    const root = sources.diaryDir;
-    if (!root) return;
-    try { await loadDirectory('diary', root); } catch (error) { failures.set('dir:diary', `${root}：${errorText(error)}`); }
+    // One folder that cannot be read never hides the other.
+    for (const [kind, root] of [['diary', sources.diaryDir], ['wiki', sources.wikiDir]] as const) {
+      if (!root) continue;
+      try { await loadDirectory(kind, root); } catch (error) { failures.set(`dir:${kind}`, `${root}：${errorText(error)}`); }
+    }
   }
   /** Calls arriving during a refresh join it and make it run once more, so a file saved just now is never missed. */
   function refresh(): Promise<void> {
@@ -119,8 +127,11 @@ export function createAuthorFiles(sources: MemorySources, timeZone: string) {
     if (entry.doc) return entry.doc;
     const date = entry.kind === 'diary' ? diaryDate(entry.path) : undefined;
     const day = date ? localDayStart(date, timeZone) : undefined;
+    const name = entry.path.replace(/^.*[\\/]/, ''), wiki = entry.kind === 'wiki';
     entry.doc = {
-      sourceId, kind: entry.kind, path: entry.path, title: entry.path.replace(/^.*[\\/]/, ''), content: entry.content, ref: fileRef(sourceId, entry.content), links: extractLinks(entry.content),
+      // A page is named by its file name without `.md`, which is what `[[标题]]` links to.
+      sourceId, kind: entry.kind, path: entry.path, title: wiki ? name.replace(/\.(md|txt)$/i, '') : name, content: entry.content, ref: fileRef(sourceId, entry.content),
+      links: extractLinks(entry.content), pages: wiki ? extractPageLinks(entry.content) : [],
       timeMs: day?.ms ?? entry.mtimeMs, time: day?.time ?? formatLocalTime(new Date(entry.mtimeMs), timeZone), timeBasis: day ? 'diaryDate' : 'fileObserved',
     };
     return entry.doc;

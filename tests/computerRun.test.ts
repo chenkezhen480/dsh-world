@@ -8,7 +8,7 @@ function fakeDriver(overrides: Partial<Driver> = {}) {
   const calls: string[] = [];
   const driver: Driver = {
     open: async url => { calls.push(`open ${url}`); },
-    click: async target => { calls.push(`click ${JSON.stringify(target)}`); },
+    click: async (target, hold) => { calls.push(`click ${JSON.stringify(target)}${hold ? ` hold ${hold}` : ''}`); },
     type: async (target, text) => { calls.push(`type ${JSON.stringify(target)} ${text}`); },
     press: async key => { calls.push(`press ${key}`); },
     // Like her page: waiting is asking `has` until it holds (here once, without the clock).
@@ -37,6 +37,16 @@ test('steps run in order with arguments filled in', async () => {
   const result = await runProcedure(send, { uid: '42', text: '在吗' }, driver);
   assert.equal(result.ok, true);
   assert.deepEqual(calls, ['open https://message.bilibili.com/#/whisper/mid42', 'wait 10000', 'type {"anchor":{"role":"textbox"}} 在吗', 'click {"anchor":{"role":"button","name":"发送"}}', 'wait 3000']);
+});
+
+test('a page step may hold its click, saved and replayed within the same limit as her desktop', async () => {
+  const procedure = parseProcedure({ name: '长按收藏', category: 'bilibili', description: '长按点赞，一键三连', params: {}, steps: [{ click: { role: 'button', name: '点赞' }, hold: 2 }, { click: { role: 'button', name: '分享' } }] });
+  const { driver, calls } = fakeDriver();
+  assert.deepEqual(await runProcedure(procedure, {}, driver), { ok: true, rows: [], values: {} });
+  assert.deepEqual(calls, ['click {"anchor":{"role":"button","name":"点赞"}} hold 2000', 'click {"anchor":{"role":"button","name":"分享"}}']);
+  assert.throws(() => parseProcedure({ ...procedure, steps: [{ click: { role: 'button' }, hold: 30 }] }), /steps\[0\]\.hold.*最多 10/);
+  const failed = await runProcedure(procedure, {}, fakeDriver({ click: async () => { throw new Error('按不住'); } }).driver);
+  assert.equal(!failed.ok && failed.action, '长按 2 秒 button 「点赞」');
 });
 
 test('a failure stops at its step, says whether anything outward already happened, and shows the page', async () => {

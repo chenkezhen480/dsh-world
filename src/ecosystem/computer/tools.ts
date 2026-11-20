@@ -10,16 +10,19 @@ import type { ComputerRecorder } from './procedures/archive.ts';
 import type { ProcedureLibrary } from './procedures/library.ts';
 import { catalogText } from './procedures/catalog.ts';
 import { checkArgs, cut, failureText, fallbackText, noteRun, resultText, runVersions, type Args } from './procedures/run.ts';
-import { desktopAdvice, isWebAddress, WEB_ONLY, type MessageMap } from './procedures/format.ts';
-import { DESKTOP_KEYS, type Desktop, type DesktopInput, type DesktopResult } from './desktop/desktop.ts';
+import { desktopAdvice, isWebAddress, WEB_ONLY, type Computer, type MessageMap } from './procedures/format.ts';
+import type { Desktop, DesktopResult } from './desktop/desktop.ts';
+import { DESKTOP_KEYS, holdMs, MAX_HOLD_SECONDS, pressed, type DesktopInput } from './desktop/input.ts';
 
 const output = { schema: { type: 'string' as const }, render: (_args: unknown, value: string) => [{ type: 'text' as const, text: value }] };
+/** What a picture of the partner's computer shows: one window in the background, the whole screen in front. */
+const pictured = (screen: boolean) => screen ? '伙伴电脑整个屏幕' : '伙伴电脑上当前窗口';
 
 const DESKTOP_NOTE = `用伙伴的电脑（后台模式）：看当前窗口的截图，按图上的像素操作；输入直接投给那个窗口，不动伙伴的鼠标、不抢焦点，伙伴用着电脑我也能用。学会的操作先用 computer_use 找。以管理员权限运行的程序（很多游戏）后台够不着，要用就请伙伴切到前台模式。action 取一种：open（app 写程序名，打开它当作当前窗口，托盘里的会点开；不写就列出开着的窗口）｜shot（再截一张）｜click（x、y 是截图上的像素；double 双击，right 右键，hold 按住几秒是长按）｜drag（从 x、y 按住拖到 x2、y2 松开；hold 先按住几秒再拖，right 用右键）｜type（text；给 x、y 就先点那里；submit 再回车）｜press（key：${DESKTOP_KEYS}；hold 按住几秒）｜scroll（direction 为 up/down/left/right，可加 x、y）｜zoom（截图上 x、y 到 x2、y2 放大看）｜record（看视频这类会动的：先让它播起来，录 seconds 秒，最多 600；every 每几秒一帧，默认 1；pause 为 false 时录完不暂停）｜stop（停下正在录的）｜review（看录好的：不带参数看全片，from、to 细看一段，at 看某一秒）。每步之后都有新截图，自己看做对了没有；没反应就换个办法，别重复同一下。`;
 /** Foreground mode: the same actions over the whole screen with the real mouse and keyboard. */
 const SCREEN_NOTE = `用伙伴的电脑（前台模式）：伙伴把电脑交给了我。看整个屏幕的截图，用真的鼠标键盘按图上的像素操作，游戏和管理员程序也能用；伙伴的鼠标会跟着动。伙伴连按两下 Esc 或点屏幕顶上的「停下」，我就停。action 和后台模式一样：open（把程序放到最前面，没开的会启动；不写 app 就列出窗口）｜shot｜click（x、y，double、right，hold 长按几秒）｜drag（x、y 拖到 x2、y2；hold 先按住几秒，right）｜type（text，可先给 x、y，submit）｜press（key：${DESKTOP_KEYS}；hold 按住几秒，比如游戏里按住 w 走路）｜scroll（direction，可加 x、y）｜zoom（x、y 到 x2、y2）｜record（seconds、every、pause）｜stop｜review（from、to 或 at）。走通的步骤可以 procedure_save 存成 where:"screen" 的操作，以后在前台模式下用 procedure_run 回放。`;
 
-const FORMAT_NOTE = '格式不对时保存会被拒绝并说明哪里不对。文件是 JSON：name（操作名，中文也行，不含 / 和 .）、category（分类，比如 wechat、bilibili）、description、params（{名字:{type,required?}}）、steps。步骤各取一种：open｜click｜type {into,text}｜press｜wait {text|anchor|url,seconds?}｜check｜extract {list,fields,limit?}｜script（可 return，as 存成值）。锚点 {role?,name?,text?,css?,nth?（从 0 数）}，role、name 用 page_read 里看到的；extract 的字段可以只写 attr，读列表项自己。文字里的 {{参数}} 会代入。会向外发出的步骤标 outward:true。extract 一条都没有、某个字段每条都空、带 as 的 script 结果为空，都算没跑通；本来就可能为空的（比如没有未读）在那一步加 allowEmpty:true。check 最多等 3 秒。没跑通而且还没有向外的动作时，会依次试最近 2 个旧版本。onAlarm:true 表示闹钟前自动跑（不能有必填参数和 outward 步骤）；summary 可用 {{as 名}} 和 {{count}}。messages 把 extract 的字段写进归档：channel、conversationType 写死，其余是 {{字段}} 模板，outgoing 算出 true 表示是你自己说的。\n伙伴电脑上用 desktop 走通的：后台模式写 where:"desktop"，前台模式写 where:"screen"（只能在前台模式下跑）。步骤各取一种：open（程序名或窗口标题，比如「微信」「朋友圈」）｜click {x,y,double?,right?,hold?}｜drag {x,y,x2,y2,right?,hold?}｜type {text,x?,y?}｜press（同 desktop 的按键，可加 hold）｜scroll {direction,x?,y?}｜wait {seconds}。x、y 是 desktop 截图上的像素（desktop 是窗口的截图，screen 是整个屏幕的截图），大小变了会按比例跟着变。回放时步与步之间不停，手动做时等过的地方（点完才弹出的窗口）要写 wait。不能用 onAlarm、summary、messages。跑完会给最后一张截图，自己看做成了没有。';
+const FORMAT_NOTE = `格式不对时保存会被拒绝并说明哪里不对。文件是 JSON：name（操作名，中文也行，不含 / 和 .）、category（分类，比如 wechat、bilibili）、description、params（{名字:{type,required?}}）、steps。步骤各取一种：open｜click（可加 hold：按住的秒数，长按，最多 ${MAX_HOLD_SECONDS} 秒）｜type {into,text}｜press｜wait {text|anchor|url,seconds?}｜check｜extract {list,fields,limit?}｜script（可 return，as 存成值）。锚点 {role?,name?,text?,css?,nth?（从 0 数）}，role、name 用 page_read 里看到的；extract 的字段可以只写 attr，读列表项自己。文字里的 {{参数}} 会代入。会向外发出的步骤标 outward:true。extract 一条都没有、某个字段每条都空、带 as 的 script 结果为空，都算没跑通；本来就可能为空的（比如没有未读）在那一步加 allowEmpty:true。check 最多等 3 秒。没跑通而且还没有向外的动作时，会依次试最近 2 个旧版本。onAlarm:true 表示闹钟前自动跑（不能有必填参数和 outward 步骤）；summary 可用 {{as 名}} 和 {{count}}。messages 把 extract 的字段写进归档：channel、conversationType 写死，其余是 {{字段}} 模板，outgoing 算出 true 表示是你自己说的。\n伙伴电脑上用 desktop 走通的：后台模式写 where:"desktop"，前台模式写 where:"screen"（只能在前台模式下跑）。步骤各取一种：open（程序名或窗口标题，比如「微信」「朋友圈」）｜click {x,y,double?,right?,hold?}｜drag {x,y,x2,y2,right?,hold?}｜type {text,x?,y?}｜press（同 desktop 的按键，可加 hold）｜scroll {direction,x?,y?}｜wait {seconds}。x、y 是 desktop 截图上的像素（desktop 是窗口的截图，screen 是整个屏幕的截图），大小变了会按比例跟着变。回放时步与步之间不停，手动做时等过的地方（点完才弹出的窗口）要写 wait。不能用 onAlarm、summary、messages。跑完会给最后一张截图，自己看做成了没有。`;
 
 /**
  * Her page tools and her catalog: what she learns is found with `computer_use` and run with `procedure_run`, so the tool
@@ -42,8 +45,11 @@ export function computerTools(deps: { agent: Agent; browser: Pick<Browser, 'run'
         const options = { ...(index === undefined ? {} : { page: whole(index, 'page 应该是 1 以上的整数') }), ...(scope === undefined ? {} : ref(scope)) };
         return run(p => p.read(options));
       } }),
-    defineTool({ name: 'page_click', description: '点 page_read 给出的编号。', parameters: { ref: { type: 'integer', required: true } }, output,
-      execute: async args => { const target = ref(args.ref); return run(async p => { await p.click(target); return `已点击 [${args.ref}]，现在：${await where(p)}`; }); } }),
+    defineTool({ name: 'page_click', description: `点 page_read 给出的编号；hold 是按住的秒数，长按（最多 ${MAX_HOLD_SECONDS} 秒）。`, parameters: { ref: { type: 'integer', required: true }, hold: { type: 'number' } }, output,
+      execute: async args => {
+        const target = ref(args.ref), held = holdMs(args.hold);
+        return run(async p => { await p.click(target, held); return `${pressed('点击', args.hold, ` [${args.ref}]`)}现在：${await where(p)}`; });
+      } }),
     defineTool({ name: 'page_type', description: '在编号对应的输入框里输入文字（整段输入，中文也行），框里原有的内容会被替换；submit 为 true 时再按回车。', parameters: { ref: { type: 'integer', required: true }, text: { type: 'string', required: true }, submit: { type: 'boolean' } }, output,
       execute: async args => { const target = ref(args.ref); return run(async p => { await p.type(target, args.text); if (args.submit) await p.press('Enter'); return `已输入，现在：${await where(p)}`; }); } }),
     defineTool({ name: 'page_press', description: `按一个键：${PAGE_KEYS.join('、')}。`, parameters: { key: { type: 'string', required: true } }, output,
@@ -107,11 +113,9 @@ export function computerTools(deps: { agent: Agent; browser: Pick<Browser, 'run'
       context.signal.throwIfAborted();
       const result = await live.act(input as DesktopInput);
       if (!result.image) return result.text;
-      // The action already happened, so a missing image store costs her the picture, never the result.
-      const attachments = deps.attachments();
-      if (!attachments) return `${result.text}（宿主图片存储不可用，看不到截图）`;
-      await attach(attachments, result.image, result.image.caption ? '录下的画面.jpg' : '伙伴的电脑.png', result.image.caption ?? (deps.screen ? '这是伙伴电脑整个屏幕的截图。' : '这是伙伴电脑上当前窗口的截图。'), context);
-      return result.text;
+      const { caption } = result.image;
+      return await shown(result.image, caption ? '录下的画面.jpg' : '伙伴的电脑.png', caption ?? `这是${pictured(deps.screen !== undefined)}的截图。`, context)
+        ? result.text : `${result.text}（宿主图片存储不可用，看不到截图）`;
     } }),
   ];
   return [...page, ...procedures, ...desktop];
@@ -133,12 +137,17 @@ export function computerTools(deps: { agent: Agent; browser: Pick<Browser, 'run'
     context.deferContext(imagesMessage(shownImage(caption, attachment!)));
   }
 
-  /** The picture a desktop run ended on; a missing image store costs her the picture, never the result. */
-  async function lastPicture(image: NonNullable<DesktopResult['image']>, context: ToolRunContext): Promise<string> {
+  /** A picture of something that already happened: a missing image store costs her the picture, never the result. False then. */
+  async function shown(image: NonNullable<DesktopResult['image']>, name: string, caption: string, context: ToolRunContext): Promise<boolean> {
     const attachments = deps.attachments();
-    if (!attachments) return '\n（宿主图片存储不可用，看不到最后的截图）';
-    await attach(attachments, image, '伙伴的电脑.png', '这是操作跑完时伙伴电脑上当前窗口的截图。', context);
-    return '\n最后一张截图附在下一条消息里，看看做成了没有。';
+    if (!attachments) return false;
+    await attach(attachments, image, name, caption, context);
+    return true;
+  }
+  /** The picture a run on the partner's computer ended on. */
+  async function lastPicture(image: NonNullable<DesktopResult['image']>, where: Computer, context: ToolRunContext): Promise<string> {
+    return await shown(image, '伙伴的电脑.png', `这是操作跑完时${pictured(where === 'screen')}的截图。`, context)
+      ? '\n最后一张截图附在下一条消息里，看看做成了没有。' : '\n（宿主图片存储不可用，看不到最后的截图）';
   }
   /** Filing what she read must never cost her the read itself, so a failure is a line after the result. */
   async function archiveNote(map: MessageMap, rows: Row[], args: Args): Promise<string> {
@@ -168,7 +177,7 @@ export function computerTools(deps: { agent: Agent; browser: Pick<Browser, 'run'
     } catch (error) { noteRun(deps.library, path, { thrown: error }); throw error; }
     noteRun(deps.library, path, outcome);
     const { result, ran, fallback } = outcome;
-    const seen = last ? await lastPicture(last, context) : '';
+    const seen = last && procedure.where ? await lastPicture(last, procedure.where, context) : '';
     if (!result.ok) return failureText(path, result) + seen;
     if (procedure.where !== undefined) return '做完了。' + (fallback ? `（${fallbackText(fallback)}趁现在用 desktop 把最新版走通再存。）` : '') + (seen || '（没有截图，用 desktop shot 看看结果）');
     // The version that ran declares what it read, and its own arguments are what fill the records.

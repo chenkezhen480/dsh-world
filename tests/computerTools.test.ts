@@ -15,7 +15,7 @@ function setup(t: test.TestContext, record?: () => Promise<never>, failRun?: Err
   const calls: string[] = [];
   const page = {
     open: async (url: string) => { calls.push(`open ${url}`); }, read: async () => '页 · u\n[1] button 发送', brief: async () => '页 · u',
-    click: async (target: unknown) => { calls.push(`click ${JSON.stringify(target)}`); }, type: async () => {}, press: async () => {}, scroll: async () => {},
+    click: async (target: unknown, hold?: number) => { calls.push(`click ${JSON.stringify(target)}${hold ? ` hold ${hold}` : ''}`); }, type: async () => {}, press: async () => {}, scroll: async () => {},
     wait: async () => {}, has: async () => true, extract: async () => [{ uid: '42', id: 'm1', text: '你好' }], evaluate: async () => 2, shot: async () => Buffer.from('png'), bringToFront: async () => {},
     ...pageOverrides,
   } as unknown as Page;
@@ -34,8 +34,13 @@ test('page tools act on her page and answer briefly', async t => {
   const tools = s.tools();
   assert.deepEqual(tools.map(tool => tool.name).sort(), ['computer_use', 'page_click', 'page_eval', 'page_open', 'page_press', 'page_read', 'page_scroll', 'page_shot', 'page_type', 'page_wait', 'procedure_note', 'procedure_run', 'procedure_save']);
   assert.match(await s.run(tools, 'page_open', { url: 'https://www.bilibili.com/' }), /\[1\] button 发送/);
-  assert.match(await s.run(tools, 'page_click', { ref: 1 }), /已点击 \[1\]/);
-  assert.deepEqual(s.calls, ['open https://www.bilibili.com/', 'click {"ref":1}']);
+  assert.match(await s.run(tools, 'page_click', { ref: 1 }), /^已点击 \[1\]。现在：/);
+  // A long press, in the words and within the limit her desktop tool has.
+  assert.match(await s.run(tools, 'page_click', { ref: 1, hold: 1.5 }), /^已长按 \[1\]，按住 1\.5 秒。现在：/);
+  assert.deepEqual(s.calls, ['open https://www.bilibili.com/', 'click {"ref":1}', 'click {"ref":1} hold 1500']);
+  const runs = s.runs();
+  await assert.rejects(s.run(tools, 'page_click', { ref: 1, hold: 30 }), /hold 是按住的秒数，大于 0、最多 10/);
+  assert.equal(s.runs(), runs, 'refused before the browser is touched');
   await assert.rejects(s.run(tools, 'page_scroll', { direction: 'left' }), /up 或 down/);
   await assert.rejects(s.run(tools, 'page_shot'), /宿主图片存储不可用/);
 });

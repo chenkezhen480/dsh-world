@@ -91,12 +91,12 @@ export function reviewOf(day: string, now: Date, timeZone: string, time: string)
   return review.day > day ? { at: now.toISOString(), day } : review;
 }
 /** Where her day is written down; a file that does not exist is left out. */
-export interface ReviewFiles { conversations?: string; activity?: string; diaryDir: string; selfFile: string; snapshot?: string }
+export interface ReviewFiles { conversations?: string; activity?: string; diaryDir: string; selfFile: string; snapshot?: string; wikiDir?: string }
 /** The evening look back: the day, where to read it, and her 我是谁 to rewrite if she has changed. */
 export function reviewText(review: Review, now: Date, files: ReviewFiles, timeZone: string, fallbackWakeTime: string, messages: AlarmMessages = readAlarmMessages(undefined), extra: Record<string, string> = {}): string {
   const base = { ...extra, timeZone, fallbackWakeTime };
-  const values = { ...base, date: review.day, diaryDir: files.diaryDir, selfFile: files.selfFile, conversations: files.conversations ?? '', activity: files.activity ?? '', snapshot: files.snapshot ?? '', late: lateNotice(now.getTime() - Date.parse(review.at), messages, base) };
-  return withTail(fillMessage(messages, '每日回顾', values, { conversations: Boolean(files.conversations), activity: Boolean(files.activity), snapshot: Boolean(files.snapshot) }), messages, base);
+  const values = { ...base, date: review.day, diaryDir: files.diaryDir, selfFile: files.selfFile, wikiDir: files.wikiDir ?? '', conversations: files.conversations ?? '', activity: files.activity ?? '', snapshot: files.snapshot ?? '', late: lateNotice(now.getTime() - Date.parse(review.at), messages, base) };
+  return withTail(fillMessage(messages, '每日回顾', values, { conversations: Boolean(files.conversations), activity: Boolean(files.activity), snapshot: Boolean(files.snapshot), wikiDir: Boolean(files.wikiDir) }), messages, base);
 }
 function lateNotice(late: number, messages: AlarmMessages, values: Record<string, string>): string {
   return late >= LATE_NOTICE_MS ? fillMessage(messages, '晚到说明', { ...values, lateBy: formatDuration(late) }) : '';

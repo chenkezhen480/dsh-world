@@ -9,6 +9,7 @@ import { createMemory, type MemoryService } from '../src/memory.ts';
 import { createWorldRuntime } from '../src/runtime.ts';
 import { createArchiveStore } from '../src/store.ts';
 import { record } from './fixtures.ts';
+import { NO_LITERAL_MATCH } from '../src/memoryTools.ts';
 
 const config = { worldId: 'fish', agentPreset: 'companion', timeZone: 'Asia/Seoul' };
 const names = { companion: '小鱼', partner: '伙伴' };
@@ -104,4 +105,13 @@ test('a lookup returns a short page: eight hits by default, clipped excerpts, no
   assert.equal(found.items.length, 8); assert.ok(found.nextCursor);
   assert.ok(Array.from(found.items[0].text as string).length <= 201);
   for (const key of ['sourceId', 'timeBasis', 'current', 'search']) assert.ok(!(key in found.items[0]) && !(key in found), key);
+});
+
+test('words that find nothing say the match is literal and how else to look; a browse that finds nothing says nothing', async t => {
+  const s = await setup(t, (_request, index) => index === 0 ? call('memory_find', { query: '房子' }) : index === 1 ? call('memory_find', { kinds: ['diary'] }) : textResponse('好'));
+  await s.store.commitRecords([record('b1', { content: '他说周六去看城西那套两居室', sourceSessionId: 'chat', turnId: 'chat:1' })]);
+  const agent = await create(s.ctx, 'chat');
+  agent.followup(user('想想')); await agent.whenIdle();
+  assert.deepEqual(JSON.parse(lastToolResult(s.requests[1]!)), { items: [], note: NO_LITERAL_MATCH });
+  assert.deepEqual(JSON.parse(lastToolResult(s.requests[2]!)), { items: [] }, 'no words, no note');
 });

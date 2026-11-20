@@ -732,6 +732,10 @@
        */
       function desktopRow() {
         var d = m.desktop, f = m.foreground || {}
+        // Not Windows: still listed, so nobody wonders where it went.
+        if (!d.available) return h('div', { key: 'desktop', className: 'dw-setting' },
+          h('span', null, h('b', null, '她用电脑'), h('span', { className: 'dw-muted' }, ' · 这台电脑用不了')),
+          h('div', { className: 'dw-muted', style: { flexBasis: '100%' } }, d.reason))
         var mode = !d.enabled ? 'off' : f.enabled ? 'front' : 'back'
         function choose(next) {
           if (next === mode) return
@@ -754,17 +758,18 @@
           h('div', { className: 'dw-muted', style: { flexBasis: '100%' } }, about + (mode === 'off' ? '' : '她操作时屏幕顶上有提示，连按两下 Esc 或点「停下」就能叫停。开着时她的信箱也在听：任务栏上有程序在闪或弹通知，等安静 10 秒告诉她一句（微信、QQ 有自己的通道，不算）。')))
       }
       function row(name, label, info, onText, offText) {
-        var state = busy === name ? (name === 'qq' ? '正在检查或安装 SDK…' : '切换中…') : !info.available ? '未配置' : info.restartRequired ? 'SDK 已安装，请重启 DSH' : !info.enabled ? '已关闭' : info.running ? '运行中' : props.running ? '启动中' : '已开启，世界启动后生效'
+        // Unavailable for a reason this machine gives (no browser) or because the config does not have it.
+        var state = busy === name ? (name === 'qq' ? '正在检查或安装 SDK…' : '切换中…') : !info.available ? (info.reason ? '这台电脑用不了' : '未配置') : info.restartRequired ? 'SDK 已安装，请重启 DSH' : !info.enabled ? '已关闭' : info.running ? '运行中' : props.running ? '启动中' : '已开启，世界启动后生效'
         return h('div', { key: name, className: 'dw-setting' },
           h('span', null, h('b', null, label), h('span', { className: 'dw-muted' }, ' · ' + state)),
           h('button', { className: 'dw-btn', disabled: !info.available || busy === name, onClick: function () { flip(name, !info.enabled) } }, info.enabled ? '关闭' : '开启'),
-          h('div', { className: 'dw-muted', style: { flexBasis: '100%' } }, info.enabled ? onText : offText))
+          h('div', { className: 'dw-muted', style: { flexBasis: '100%' } }, !info.available && info.reason ? info.reason : info.enabled ? onText : offText))
       }
       return h(Card, { title: '接入', delay: 270 },
         row('wechat', '微信', m.wechat, '已注册 wechat_chats、wechat_history、wechat_send、wechat_delivery，可先看群聊再发言，并随之启动适配器。关闭会撤掉它们并停掉适配器。', '工具未注册，适配器已停。开启后立即注册，无需重启。'),
         row('qq', 'QQ', m.qq, '插件自己直连 OneBot：状态和设置在 QQ 页面。关闭就断开这条通道。', '开启时检查 SDK；缺少时按需安装并提示重启 DSH。'),
-        m.computer && m.computer.available ? row('computer', '她的浏览器', m.computer, '她有一个自己的 Edge 浏览器，是单独的窗口，登录的是她自己的账号，不用你的鼠标键盘；她学会的操作也存在这里，可以直接再跑。只在她的家里能用。', '她没有自己的浏览器。开启后她下一步就能用。') : null,
-        m.desktop && m.desktop.available ? desktopRow() : null,
+        m.computer ? row('computer', '她的浏览器', m.computer, '她有一个自己的 Edge 浏览器，是单独的窗口，登录的是她自己的账号，不用你的鼠标键盘；她学会的操作也存在这里，可以直接再跑。只在她的家里能用。', '她没有自己的浏览器。开启后她下一步就能用；她用电脑也要先开这一项。') : null,
+        m.desktop ? desktopRow() : null,
         msg ? h('div', { className: msg.indexOf('失败') >= 0 ? 'dw-bad' : 'dw-muted', role: 'status' }, msg) : null)
     }
     /** 她的浏览器：Edge 在不在、她按分类学会了哪些操作、各自最近一次结果；按钮把窗口拿到前面来扫码。 */
@@ -813,11 +818,35 @@
         faults.length ? faults.map(function (f, i) { return h('div', { key: i, className: 'dw-bad' }, '● ' + f) }) : h('div', { className: 'dw-ok' }, '● 一切正常'),
         props.mood ? h('div', { style: { marginTop: 12 } }, KV([['心情', h(Mood, { mood: props.mood, zone: props.zone })]])) : null)
     }
+    /** 有新版本时最上面的一行：只提示，升级要先退出 DSH，按升级说明做。没查到就说没查到，不冒充「已是最新」。 */
+    function UpdateNotice(props) {
+      var u = props.update
+      var msgState = useState(''), msg = msgState[0], setMsg = msgState[1]
+      if (!u) return null
+      /** 剪贴板在 DSH 的窗口里不一定能用：复制不了就说一声，命令在下面展开，可以自己选中复制。 */
+      function copy() {
+        var clipboard = typeof navigator !== 'undefined' && navigator.clipboard
+        if (!clipboard) { setMsg('这里复制不了，展开下面的命令自己复制。'); return }
+        clipboard.writeText(u.command).then(function () { setMsg('已复制。先正常退出 DSH，再粘贴到 ' + u.shell + ' 里运行；升级前会先备份，失败会自动恢复。') }, function () { setMsg('这里复制不了，展开下面的命令自己复制。') })
+      }
+      if (u.newer) return h(Card, { title: '有新版本' },
+        h('div', null, 'dsh-world ' + u.latest + ' 已经发布，现在用的是 ' + u.current + '。'),
+        h('div', { className: 'dw-muted', style: { marginTop: 6 } }, '升级要先正常退出 DSH，再用更新脚本装上；她的归档、日记和设置都会保留。'),
+        u.command ? h('div', { style: { marginTop: 8 } },
+          h('button', { className: 'dw-btn', onClick: copy }, '更新'),
+          msg ? h('span', { className: 'dw-muted', role: 'status', style: { marginLeft: 10 } }, msg) : null,
+          h('details', { style: { marginTop: 8 } }, h('summary', { className: 'dw-muted' }, '看看要运行的命令'), h('pre', { style: { whiteSpace: 'pre-wrap', userSelect: 'all' } }, u.command))) : null,
+        h('div', { style: { marginTop: 8 } }, h('a', { href: u.changelog, target: '_blank', rel: 'noreferrer' }, '更新日志'), ' · ', h('a', { href: u.upgrade, target: '_blank', rel: 'noreferrer' }, '怎么升级')))
+      // The last look failed: said even when an earlier one found nothing newer, so it never passes for being up to date.
+      if (u.error) return h('div', { className: 'dw-muted', style: { margin: '0 0 12px' } }, '没查到有没有新版本：' + u.error + '（明天再查）')
+      return null
+    }
     function Overview(props) {
       var snap = props.snap, zone = snap.timeZone, life = snap.life, alarm = life && life.alarm, mem = snap.memory
       var wakes = life ? list(life.recentWakes) : []
       var welcome = !snap.running && !life
       return h('div', { className: 'dw-pane' },
+        h(UpdateNotice, { update: snap.update }),
         welcome ? h(Card, null, h('div', { className: 'dw-welcome' },
           h('h3', null, '她还没有住进来'),
           h('div', { className: 'dw-muted' }, '先写下她是谁，再按右上角的「开始」。'),
@@ -1061,7 +1090,8 @@
       return h(View, { snap: snap, error: error, tick: tick, refresh: function () { if (loadRef.current) loadRef.current() } })
     }
 
-    return { Console: Console, test: { Budget: Budget, Health: Health, Memory: Memory, MemorySearch: MemorySearch, latest: latest, searchMemory: searchMemory, memoryQuery: memoryQuery, dayStartIso: dayStartIso, WorkspacePermission: WorkspacePermission, CompactAfterReview: CompactAfterReview, Schedule: Schedule, Modules: Modules, Computer: Computer, HomeApply: HomeApply, PhotoAlbum: PhotoAlbum, Wechat: Wechat, Activity: Activity, Diary: Diary, Qq: Qq, Panel: Panel, View: View, Overview: Overview, PersonaEditor: PersonaEditor, PromptEditor: PromptEditor, loadSnapshot: loadSnapshot, renderPersona: renderPersona } }
+    return { Console: Console, test: { UpdateNotice: UpdateNotice, Budget: Budget, Health: Health, Memory: Memory, MemorySearch: MemorySearch, latest: latest, searchMemory: searchMemory, memoryQuery: memoryQuery, dayStartIso: dayStartIso, WorkspacePermission: WorkspacePermission, CompactAfterReview: CompactAfterReview, Schedule: Schedule, Modules: Modules, Computer: Computer, HomeApply: HomeApply, PhotoAlbum: PhotoAlbum, Wechat: Wechat, Activity: Activity, Diary: Diary, Qq: Qq, Panel: Panel, View: View, Overview: Overview, PersonaEditor: PersonaEditor, PromptEditor: PromptEditor, loadSnapshot: loadSnapshot, renderPersona: renderPersona } }
+
   }
 
   async function loadWorldIds() {

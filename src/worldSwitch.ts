@@ -4,7 +4,7 @@ import { durableWrite } from './life/lifeStore.ts';
 import { validArchiveScope, type MemoryArchiveScope } from './archiveSelection.ts';
 import { DEFAULT_REVIEW_TIME, validClockTime } from './life/alarm.ts';
 
-interface WorldSettings { running: boolean; dailyBudget?: number; memoryTurns?: number; coldHours?: number; archiveScope?: MemoryArchiveScope; workspacePermission?: string; wechatContext?: number; wechatBufferSeconds?: number; wechatEnabled?: boolean; qqEnabled?: boolean; computerEnabled?: boolean; desktopEnabled?: boolean; compactAfterReview?: boolean; compactionSwapped?: boolean; reviewTime?: string; wakeTime?: string }
+interface WorldSettings { running: boolean; dailyBudget?: number; memoryTurns?: number; coldHours?: number; archiveScope?: MemoryArchiveScope; workspacePermission?: string; wechatContext?: number; wechatBufferSeconds?: number; wechatEnabled?: boolean; qqEnabled?: boolean; computerEnabled?: boolean; desktopEnabled?: boolean; compactAfterReview?: boolean; compactionSwapped?: boolean; consoleSwitchesOnly?: boolean; reviewTime?: string; wakeTime?: string }
 /** How many of the newest turns the memory block carries when nothing else is set. */
 export const DEFAULT_MEMORY_TURNS = 200;
 /** Hours a session stays silent before its next turn re-reads her memory block and prompt (#36); see `runtime.ts`. */
@@ -19,7 +19,9 @@ export const DEFAULT_WECHAT_BUFFER_SECONDS = 3, MAX_WECHAT_BUFFER_SECONDS = 30;
  * spend a day, and how many recent turns her memory block carries. A world that already has a life line from before the switch existed is running; a new one waits
  * for its partner to press start.
  */
-export function createWorldSwitch(worldDir: string, configuredScope: MemoryArchiveScope = 'workspace', configuredWake = '09:00') {
+/** The config lines that 0.8.0 asked for besides the console switches (`computer`, `desktop`); 0.8.1 reads them once. */
+export interface LegacyModuleConfig { computer?: unknown; desktop?: unknown }
+export function createWorldSwitch(worldDir: string, configuredScope: MemoryArchiveScope = 'workspace', configuredWake = '09:00', legacy: LegacyModuleConfig = {}) {
   const file = join(worldDir, 'world.json');
   const stored = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) as Partial<WorldSettings> : undefined;
   let settings: WorldSettings = {
@@ -37,6 +39,7 @@ export function createWorldSwitch(worldDir: string, configuredScope: MemoryArchi
     ...(typeof stored?.desktopEnabled === 'boolean' ? { desktopEnabled: stored.desktopEnabled } : {}),
     ...(stored?.compactAfterReview === false ? { compactAfterReview: false } : {}),
     ...(stored?.compactionSwapped === true ? { compactionSwapped: true } : {}),
+    ...(stored?.consoleSwitchesOnly === true ? { consoleSwitchesOnly: true } : {}),
     ...(validClockTime(stored?.reviewTime) ? { reviewTime: stored.reviewTime } : {}),
     ...(validClockTime(stored?.wakeTime) ? { wakeTime: stored.wakeTime } : {}),
   };
@@ -45,6 +48,19 @@ export function createWorldSwitch(worldDir: string, configuredScope: MemoryArchi
     durableWrite(file, JSON.stringify(next, null, 2));
     settings = next;
   }
+  /**
+   * In 0.8.0 her browser ran only with `computer: true` in the config and the switch on, and her use of the computer
+   * also needed `desktop: true`; from 0.8.1 the switch alone decides. So the first start after the upgrade keeps what
+   * was really on: a switch whose config line was taken out (or set false) to say no is turned off, not back on.
+   * Once settled, or once either is switched on from the console, the config has no say.
+   */
+  function settleLegacySwitches(): void {
+    if (settings.consoleSwitchesOnly || (!settings.computerEnabled && !settings.desktopEnabled)) return;
+    const { computerEnabled, desktopEnabled, ...rest } = settings;
+    const computer = computerEnabled === true && legacy.computer === true, desktop = computer && desktopEnabled === true && legacy.desktop === true;
+    save({ ...rest, ...(computer ? { computerEnabled: true } : {}), ...(desktop ? { desktopEnabled: true } : {}), consoleSwitchesOnly: true });
+  }
+  settleLegacySwitches();
   return {
     archiveScope: () => activeScope,
     selectedArchiveScope: () => settings.archiveScope ?? configuredScope,
@@ -99,9 +115,9 @@ export function createWorldSwitch(worldDir: string, configuredScope: MemoryArchi
     /** Her use of the partner's computer: off until someone turns it on. */
     desktopEnabled: () => settings.desktopEnabled === true,
     setModules(next: { wechat?: boolean; qq?: boolean; computer?: boolean; desktop?: boolean }): void {
-      const { wechatEnabled, qqEnabled, computerEnabled, desktopEnabled, ...rest } = settings;
+      const { wechatEnabled, qqEnabled, computerEnabled, desktopEnabled, consoleSwitchesOnly: _settled, ...rest } = settings;
       const wechat = next.wechat ?? wechatEnabled ?? existsSync(join(worldDir, 'wechat-outbox.sqlite')), qq = next.qq ?? qqEnabled === true, computer = next.computer ?? computerEnabled === true, desktop = next.desktop ?? desktopEnabled === true;
-      save({ ...rest, wechatEnabled: wechat, ...(qq ? { qqEnabled: true } : {}), ...(computer ? { computerEnabled: true } : {}), ...(desktop ? { desktopEnabled: true } : {}) });
+      save({ ...rest, wechatEnabled: wechat, ...(qq ? { qqEnabled: true } : {}), ...(computer ? { computerEnabled: true } : {}), ...(desktop ? { desktopEnabled: true } : {}), ...(computer || desktop ? { consoleSwitchesOnly: true } : {}) });
     },
     /** Her evening look back and her morning wake when nothing is pending; the configured `fallbackWakeTime` is the morning's default. */
     reviewTime: () => settings.reviewTime ?? DEFAULT_REVIEW_TIME,

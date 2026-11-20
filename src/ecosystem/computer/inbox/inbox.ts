@@ -3,6 +3,7 @@ import { errorText, type Faults } from '../../../faults.ts';
 import { realTimers, type LifeTimers } from '../../../life/alarmTimer.ts';
 import { formatLocalTime } from '../../../timeContext.ts';
 import type { DesktopDriver } from '../desktop/driver.ts';
+import { executable } from '../desktop/programs.ts';
 
 export type Inbox = ReturnType<typeof createInbox>;
 
@@ -20,6 +21,15 @@ const DENIED = /notification access denied/;
 export const ELSEWHERE = '任务栏上只看得到程序在叫你；网页、朋友圈这类任务栏上没有动静的地方，要你自己去看，看过的地方和怎么看可以记进自己的笔记。';
 
 const cut = (text: string) => { const flat = text.replace(/\s+/g, ' ').trim(); return flat.length > PREVIEW ? `${flat.slice(0, PREVIEW)}…` : flat; };
+/** A notification posted under an id no installed program has comes with no sender at all. */
+export const UNNAMED = '没署名的程序';
+/**
+ * Who a notification is from: the name Windows shows for it; else the program its id points at
+ * (`…\Tencent\QQ\Bin\QQ.exe` → `QQ`, `Microsoft.WindowsTerminal_8wekyb3d8bbwe!App` → `Microsoft.WindowsTerminal`).
+ */
+export function senderName(app: string, appId: string): string {
+  return app.trim() || executable(appId) || /^([^_!\\/]+)_[a-z0-9]+!/i.exec(appId)?.[1] || appId.trim() || UNNAMED;
+}
 
 /**
  * Her inbox: the program watches the taskbar for her (a button that flashes, a system notification) and tells her in
@@ -65,8 +75,10 @@ export function createInbox(deps: {
     seen = new Set(posted.map(({ id }) => id));
     if (first) return;
     for (const one of posted) {
-      if (before.has(one.id) || ignored(one.app, one.appId)) continue;
-      note(one.app || one.appId, { notification: { at: new Date(one.at), text: cut(one.texts.filter(Boolean).join('：')) } });
+      // The name it is shown under is checked too: a program known only by its path is still the one with its own channel.
+      const from = senderName(one.app, one.appId);
+      if (before.has(one.id) || ignored(one.app, one.appId, from)) continue;
+      note(from, { notification: { at: new Date(one.at), text: cut(one.texts.filter(Boolean).join('：')) } });
     }
   }
   async function lookAtTaskbar(): Promise<void> {

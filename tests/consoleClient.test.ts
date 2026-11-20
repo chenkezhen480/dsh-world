@@ -469,9 +469,14 @@ test('the module switches say what is on, what is off and what the config does n
   };
   const render = (modules: unknown, running = true) => text(react.createElement(Modules, { modules, running }));
   const on = render({ wechat: { available: true, enabled: true, running: true }, qq: { available: false, enabled: true, running: false } });
-  assert.doesNotMatch(render({ wechat: { available: true, enabled: true, running: true }, qq: { available: false, enabled: true, running: false }, computer: { available: false, enabled: false, running: false } }), /她的浏览器/);
+  // Nothing to write in the config: her browser is the console's switch alone, and says what her use of the computer needs.
+  assert.match(render({ wechat: { available: true, enabled: true, running: true }, qq: { available: false, enabled: true, running: false }, computer: { available: true, enabled: false, running: false } }), /她的浏览器 · 已关闭开启她没有自己的浏览器。开启后她下一步就能用；她用电脑也要先开这一项。/);
   assert.match(render({ wechat: { available: false, enabled: false, running: false }, qq: { available: false, enabled: false, running: false }, computer: { available: true, enabled: true, running: true } }), /她的浏览器 · 运行中/);
-  assert.doesNotMatch(render({ wechat: { available: false, enabled: false, running: false }, qq: { available: false, enabled: false, running: false }, computer: { available: true, enabled: true, running: true }, desktop: { available: false, enabled: false, running: false } }), /她用电脑/);
+  const elsewhere = render({ wechat: { available: false, enabled: false, running: false }, qq: { available: false, enabled: false, running: false }, computer: { available: true, enabled: true, running: true }, desktop: { available: false, reason: '她用电脑目前只支持 Windows。', enabled: false, running: false } });
+  assert.match(elsewhere, /她用电脑 · 这台电脑用不了她用电脑目前只支持 Windows。/, 'not Windows: listed, and why it cannot be used');
+  const noBrowser = render({ wechat: { available: false, enabled: false, running: false }, qq: { available: false, enabled: false, running: false }, computer: { available: false, reason: '这台电脑上找不到 Edge 或 Chrome，她的浏览器要用其中一个。', enabled: false, running: false } });
+  assert.match(noBrowser, /她的浏览器 · 这台电脑用不了开启这台电脑上找不到 Edge 或 Chrome，她的浏览器要用其中一个。/, 'no browser on this machine: said, not offered as a config line');
+  assert.doesNotMatch(elsewhere, /关闭后台前台/);
   const desktop = (d: object, f: object = { available: false, enabled: false, running: false }) => render({ wechat: { available: false, enabled: false, running: false }, qq: { available: false, enabled: false, running: false }, computer: { available: true, enabled: true, running: true }, desktop: d, foreground: f });
   // One row for her use of the computer: off, background or foreground, and what the mode on means.
   assert.match(desktop({ available: true, enabled: false, running: false }), /她用电脑 · 已关闭关闭后台前台她用不了你的电脑。$/);

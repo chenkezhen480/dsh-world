@@ -9,7 +9,7 @@ import { parseProcedure } from '../src/ecosystem/computer/procedures/format.ts';
 import { runProcedure } from '../src/ecosystem/computer/procedures/run.ts';
 import { createProcedureLibrary } from '../src/ecosystem/computer/procedures/library.ts';
 import { computerTools } from '../src/ecosystem/computer/tools.ts';
-import type { DesktopInput } from '../src/ecosystem/computer/desktop/desktop.ts';
+import type { DesktopInput } from '../src/ecosystem/computer/desktop/input.ts';
 
 const POST = {
   name: '发朋友圈', category: 'wechat', description: '在微信里发一条只有文字的朋友圈', where: 'desktop',
@@ -123,7 +123,9 @@ test('procedure_run replays a whole-screen operation only in foreground mode, an
   const background = hands();
   await assert.rejects(make({ desktop: background }).execute({ path: 'starrail/每日奖励', args: {} } as never, context), /前台模式），要请伙伴把「她用电脑」切到「前台」/);
   assert.equal(background.done.length, 0, 'background mode never tries it');
-  const screen = hands(), window = hands();
-  assert.match(String(await make({ desktop: window, screen }).execute({ path: 'starrail/每日奖励', args: {} } as never, context)), /^做完了。/);
+  const screen = hands(), window = hands(), deferred: unknown[] = [];
+  const watched = { signal: new AbortController().signal, deferContext: (message: unknown) => { deferred.push(message); } } as never;
+  assert.match(String(await make({ desktop: window, screen }).execute({ path: 'starrail/每日奖励', args: {} } as never, watched)), /^做完了。/);
   assert.equal(screen.done.length, 6); assert.equal(window.done.length, 0);
+  assert.match(JSON.stringify(deferred), /这是操作跑完时伙伴电脑整个屏幕的截图/, 'the last picture is said to be of the whole screen');
 });

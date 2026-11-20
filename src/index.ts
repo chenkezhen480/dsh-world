@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 // DSH's HMR reconciles the profile once at every start and drops, as failed imports, the profile modules whose import
 // has not finished (dsh-hmr `reconcileProfile`). The QQ module is imported later and is the only way to `ws`, a CommonJS
@@ -23,9 +23,10 @@ import { createLifeRuntime, type LifeRuntime } from './life/runtime.ts';
 import type { LifeOptions } from './life/types.ts';
 import { createOutlet } from './ecosystem/shared/outlets.ts';
 import { readPersona, writePersona } from './persona.ts';
-import { createComputerModule, type ComputerModule } from './ecosystem/computer/index.ts';
+import { createComputerModule, moduleLimits, type ComputerModule } from './ecosystem/computer/index.ts';
 import type { AttachmentStore } from '@deepseek-ai/dsh-attachment';
 import { MOOD_FILE } from './mood.ts';
+import { WIKI_FOLDER } from './wiki.ts';
 import { createElsewhere } from './elsewhere.ts';
 import type { QqNativeModule } from './ecosystem/qq-native/index.ts';
 import { qqRoute } from './ecosystem/qq/route.ts';
@@ -35,7 +36,7 @@ import { createWorldRuntime, guardWorldContext } from './runtime.ts';
 import { createArchiveStore } from './store.ts';
 import type { WorldConfig } from './types.ts';
 import { DEFAULT_TEMPLATE_FILE, MEMORY_SNIPPET_FILE, memoryTemplateGaps, roomTitle, worldNames } from './worldPrompt.ts';
-import { createWorldSwitch } from './worldSwitch.ts';
+import { createWorldSwitch, type LegacyModuleConfig } from './worldSwitch.ts';
 import { CLOCK_TIME, DEFAULT_REVIEW_TIME } from './life/alarm.ts';
 import { createWechatModule, type WechatModule } from './ecosystem/wechat/index.ts';
 import { createWechatRecorder } from './ecosystem/wechat/archive.ts';
@@ -47,7 +48,8 @@ import { addWorldEntry } from './worldAdd.ts';
 import { validWorldId, worldListRoute, worldPath } from './worldRoutes.ts';
 import { createWorkspacePermissions } from './workspacePermissions.ts';
 import { createPhotoStore, type PhotoStore } from './life/photos.ts';
-import { createQqSdkInstaller, type QqSdkProfile } from './ecosystem/qq-native/sdkInstall.ts';
+import { createPackageInstaller, ownPackage, type ProfileContext } from './packageInstall.ts';
+import { createUpdateCheck, upgradeTools } from './console/updates.ts';
 
 export { createWorldRuntime } from './runtime.ts';
 export type { WorldConfig, ConversationRecord, ConversationTurn, ArchiveCursor } from './types.ts';
@@ -105,8 +107,7 @@ export const Config = z.object({
     }).default({ port: 0, token: '', title: '阳台', contextMessages: 6 }),
   }).description('QQ 直接连 OneBot：不经过 qq-bridge 进程，会话与状态都由这个插件自己管'),
   wechat: z.boolean().default(false),
-  computer: z.boolean().default(false).description('她自己的浏览器与自己学会的工具（只在家会话）'),
-  desktop: z.boolean().default(false).description('她也用伙伴的电脑，在后台操作（Windows，只在家会话，要先开 computer）'),
+  updateCheck: z.boolean().default(true).description('每天问一次 npm 上有没有 dsh-world 的新正式版，有就在世界控制台最上面提示；写 false 就不联网、不提示'),
   wechatAdapter: z.object({ python: z.string(), config: z.string() }).description('随微信模块启动和停止 Windows 适配器；写上即视为允许它发送消息'),
   toast: z.boolean().default(true),
   toastAppId: z.string().description('系统通知用的 AppUserModelID；不填就在开始菜单里找 DSH 桌面版'),
@@ -160,7 +161,7 @@ export function apply(ctx: Context, config: Config): void {
     throw new Error(`dsh-world: worldId ${worldId} 与已加载的世界重复`);
   }
   const store = createArchiveStore({ ...config, root: dshHome });
-  const power = createWorldSwitch(worldDir, config.archiveScope ?? 'workspace', config.fallbackWakeTime);
+  const power = createWorldSwitch(worldDir, config.archiveScope ?? 'workspace', config.fallbackWakeTime, config as LegacyModuleConfig);
   const memoryConfig = { ...config, archiveScope: power.archiveScope() };
   const faults = new Faults();
   let photoStore: PhotoStore | undefined;
@@ -169,6 +170,9 @@ export function apply(ctx: Context, config: Config): void {
     catch (error) { faults.set('photos', `相册打不开：${errorText(error)}`); throw error; }
   };
   ctx.effect(() => () => photoStore?.close(), 'dsh-world album');
+  /** Whether a newer release is out, for the console; off with `updateCheck: false`, and then nothing goes to npm. */
+  const updates = config.updateCheck ? createUpdateCheck({ current: ownPackage.version, repository: ownPackage.repository.url }) : undefined;
+  ctx.effect(() => { updates?.start(); return () => updates?.stop(); }, 'dsh-world update check');
   // Her self-description lives in her room whether or not the life line runs; she writes it with her file tools.
   const selfFile = config.selfFile || join(worldDir, 'room', '我是谁.md');
   const moodFile = join(roomDir, MOOD_FILE);
@@ -176,7 +180,11 @@ export function apply(ctx: Context, config: Config): void {
   const elsewhere = createElsewhere();
   const personaFile = config.personaFile || join(worldDir, 'persona.md');
   const worldPromptFile = config.worldPromptFile || join(worldDir, 'world-prompt.md');
-  const options: LifeOptions = { worldDir, roomDir, diaryDir: config.diaryDir || join(worldDir, 'diary'), selfFile, schedule: () => ({ review: power.reviewTime(), wake: power.wakeTime() }), timeZone: config.timeZone, alarmFile: config.alarmTemplateFile || join(worldDir, 'alarm.md') };
+  // Her wiki is hers like 我是谁: a folder in her room, made empty when missing so she and her partner can find it.
+  const wikiDir = join(roomDir, WIKI_FOLDER);
+  try { mkdirSync(wikiDir, { recursive: true }); faults.clear('wiki-dir'); }
+  catch (error) { faults.set('wiki-dir', `认识页的文件夹建不出来：${errorText(error)}`); }
+  const options: LifeOptions = { worldDir, roomDir, diaryDir: config.diaryDir || join(worldDir, 'diary'), wikiDir, selfFile, schedule: () => ({ review: power.reviewTime(), wake: power.wakeTime() }), timeZone: config.timeZone, alarmFile: config.alarmTemplateFile || join(worldDir, 'alarm.md') };
   /** The name in her persona comes first, then the configured one. */
   const names = () => worldNames({ ...config, companionName: readPersona(personaFile).名字 || config.companionName });
   const lifeStore = (() => {
@@ -191,7 +199,7 @@ export function apply(ctx: Context, config: Config): void {
   const archiveSession = createArchiveSelection(power.archiveScope(), id => isHome(id), inWorkspace);
   const inWorldSession = (session: Session) => inWorld(session, config, inWorkspace);
   /** Long-term memory over the archive and her own files; the tools and the console are two doors to it. */
-  const memoryService = createMemory({ store: store.memory, timeZone: config.timeZone, sources: { diaryDir: options.diaryDir }, visible: id => archiveSession(id) });
+  const memoryService = createMemory({ store: store.memory, timeZone: config.timeZone, sources: { diaryDir: options.diaryDir, wikiDir }, visible: id => archiveSession(id) });
 
   /** What is wrong with long-term memory, in the console's health list: a source that could not be read. */
   const memoryHealth = (): string[] => memoryService.status().failures.map(failure => `记忆来源 ${failure.sourceId}：${failure.message}`);
@@ -264,7 +272,8 @@ export function apply(ctx: Context, config: Config): void {
     let life: LifeRuntime | undefined;
     const hostAbort = new AbortController();
     const sdkAvailable = () => { try { import.meta.resolve('@snowluma/sdk'); return true; } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ERR_MODULE_NOT_FOUND') return false; throw error; } };
-    const qqSdk = createQqSdkInstaller({ available: sdkAvailable, profile: () => lifeCtx.get('profileContext') as QqSdkProfile | undefined, signal: hostAbort.signal });
+    const profile = () => lifeCtx.get('profileContext') as ProfileContext | undefined;
+    const qqSdk = createPackageInstaller({ name: '@snowluma/sdk', label: 'SnowLuma SDK', available: sdkAvailable, profile, signal: hostAbort.signal });
     let qqChange = 0;
     const homeApply = createHomeApply({
       ctx: lifeCtx,
@@ -281,7 +290,7 @@ export function apply(ctx: Context, config: Config): void {
     let computer: ComputerModule | undefined;
     /** Her own browser follows the life line and its console switch; a failure to start is a fault, never a broken plugin. */
     function startComputer(): void {
-      if (computer || !config.computer || !power.computerEnabled()) return;
+      if (computer || !power.computerEnabled()) return;
       try {
         computer = createComputerModule({ worldDir, worldId: config.worldId, faults, store, archived: archiveSession, attachments: () => lifeCtx.get('attachments') as AttachmentStore | undefined,
           // 信箱随「她用电脑」开关：替她看任务栏（按钮在闪、系统通知），有动静时汇总成一句话告诉她，看不看由她定。
@@ -291,7 +300,7 @@ export function apply(ctx: Context, config: Config): void {
             ignore: () => [...(wechat ? ['Weixin', 'WeChat', '微信'] : []), ...(qqNative ? ['QQ'] : [])],
           },
           companion: () => names().companion, notice: text => life?.notice(text) });
-        computer.setDesktop(Boolean(config.desktop) && power.desktopEnabled());
+        computer.setDesktop(power.desktopEnabled());
         faults.clear('computer-module');
       } catch (error) { faults.set('computer-module', `她的浏览器模块没能启动：${errorText(error)}`); lifeCtx.logger.error(error); }
     }
@@ -308,6 +317,11 @@ export function apply(ctx: Context, config: Config): void {
       }
     }
     function stopComputer(): void { computer?.stop(); computer = undefined; faults.clear('computer-module'); faults.clear('computer-alarm'); }
+    /** The console's rows for her browser and her use of the computer; one this machine cannot run says why. */
+    const computerRows = (limits: ReturnType<typeof moduleLimits>) => ({
+      computer: { available: !limits.computer, ...(limits.computer ? { reason: limits.computer } : {}), enabled: power.computerEnabled(), running: computer !== undefined },
+      desktop: { available: !limits.desktop, ...(limits.desktop ? { reason: limits.desktop } : {}), enabled: power.desktopEnabled(), running: computer?.desktopOn() === true },
+    });
     let qqChannels: ReturnType<typeof createChannelSessions> | undefined;
     let adapter: AdapterSupervisor | undefined;
     let channels: ReturnType<typeof createChannelSessions> | undefined;
@@ -404,7 +418,7 @@ export function apply(ctx: Context, config: Config): void {
         if (disposed || hostAbort.signal.aborted) return;
         const outlets = config.outlets.map(outlet => createOutlet(outlet, () => host.origin()));
         const notifier: Notifier = { ...(config.toast && toastSupported() ? { toast: windowsToast(config.toastAppId || undefined) } : {}), outlets };
-        const runtime = createLifeRuntime({ ctx: lifeCtx, config: { ...config, companionName: names().companion }, options, store: lifeStore, host, notifier, dailyBudget: power.dailyBudget, inWorkspace, photos, alarmContext: now => alarmContext(now),
+        const runtime = createLifeRuntime({ ctx: lifeCtx, config: { ...config, companionName: names().companion }, options, store: lifeStore, host, notifier, dailyBudget: power.dailyBudget, inWorkspace, photos, alarmContext: now => alarmContext(now), reviewContext: () => memoryService.wiki.gaps(),
           homeTools: { tools: agent => computer?.tools(agent) ?? [], revision: () => computer?.revision() ?? 'off' }, afterReview: () => { if (power.compactAfterReview()) homeApply.request(); }, partnerSpoke: () => computer?.partnerSpoke() });
         life = current = runtime; isHome = runtime.isHome;
         if (config.bridge) { bridge = createBridge({ ctx: lifeCtx, prefix, home: () => runtime.home(), inWorld: inWorldSession, outlets, origin: () => host.origin(), file: join(worldDir, 'bridge.json'), name: names().companion }); bridge.start(); }
@@ -439,7 +453,8 @@ export function apply(ctx: Context, config: Config): void {
     // Her album lives in her room, so the console shows it whether or not the life line is running.
     const sources = consoleSources({ ctx: lifeCtx, config: memoryConfig, archive: store, moodFile, longTerm: memoryService, names, ...(lifeStore ? { lifeStore } : {}), life: () => life, homeApply: homeApply.snapshot, compactAfterReview: power.compactAfterReview, ...(config.life ? { schedule: () => ({ review: power.reviewTime(), wake: power.wakeTime(), defaults: { review: DEFAULT_REVIEW_TIME, wake: config.fallbackWakeTime } }) } : {}), photos, diaryDir: options.diaryDir, running: power.running, dailyBudget: power.dailyBudget, memoryTurns: power.memoryTurns, coldHours: power.coldHours, selectedArchiveScope: power.selectedArchiveScope, workspacePermissions: permissions.snapshot, wechat: () => wechat ? { ...wechat.status(), adapter: adapter?.status() ?? null } : undefined, archiveSession, native: () => qqNative?.status() ?? null,
       compactionPreset: () => configEditor ? compactionPresetOverride(configEditor, config.agentPreset, profileDir()) : null,
-      modules: () => ({ wechat: { available: config.wechat, enabled: power.wechatEnabled(), running: wechat !== undefined }, qq: { available: Boolean(config.qqNative?.enabled), enabled: power.qqEnabled(), running: qqNative !== undefined, ...(qqSdk.needsRestart() ? { restartRequired: true } : {}) }, computer: { available: Boolean(config.computer), enabled: power.computerEnabled(), running: computer !== undefined }, desktop: { available: Boolean(config.computer && config.desktop), enabled: power.desktopEnabled(), running: computer?.desktopOn() === true }, foreground: { available: computer?.desktopOn() === true, enabled: computer?.foregroundOn() === true, running: computer?.foregroundOn() === true } }), computer: () => computer?.status(), faults: () => [...faults.list(), ...(adapter?.status().error ? [`微信适配器：${adapter.status().error}`] : []), ...(memory?.faults() ?? []), ...(bridge?.faults() ?? []), ...memoryHealth()] });
+      update: () => updates?.status(upgradeTools(profile())),
+      modules: () => ({ ...computerRows(moduleLimits()), wechat: { available: config.wechat, enabled: power.wechatEnabled(), running: wechat !== undefined }, qq: { available: Boolean(config.qqNative?.enabled), enabled: power.qqEnabled(), running: qqNative !== undefined, ...(qqSdk.needsRestart() ? { restartRequired: true } : {}) }, foreground: { available: computer?.desktopOn() === true, enabled: computer?.foregroundOn() === true, running: computer?.foregroundOn() === true } }), computer: () => computer?.status(), faults: () => [...faults.list(), ...(adapter?.status().error ? [`微信适配器：${adapter.status().error}`] : []), ...(memory?.faults() ?? []), ...(bridge?.faults() ?? []), ...memoryHealth()] });
     const actions: ConsoleActions = {
       start: () => changeWorld(async () => {
         if (disposed || power.running()) return;
@@ -472,8 +487,11 @@ export function apply(ctx: Context, config: Config): void {
       async setModules(patch) {
         if (patch.wechat !== undefined && !config.wechat) return '没有配置微信模块（配置里 wechat: true）';
         if (patch.qq !== undefined && !config.qqNative?.enabled) return '没有配置原生 QQ 通道（配置里 qqNative.enabled）';
-        if (patch.computer !== undefined && !config.computer) return '没有配置计算机模块（配置里 computer: true）';
-        if (patch.desktop !== undefined && !(config.computer && config.desktop)) return '没有配置她用电脑（配置里 computer: true 和 desktop: true）';
+        const limits = moduleLimits();
+        if (patch.computer === true && limits.computer) return limits.computer;
+        if (patch.desktop === true && limits.desktop) return limits.desktop;
+        // Her use of the computer runs inside the browser module; switched on alone it would wait forever.
+        if (patch.desktop === true && !(patch.computer ?? power.computerEnabled())) return '先打开「她的浏览器」：她用电脑和它在同一个模块里';
         const change = patch.qq === undefined ? qqChange : ++qqChange;
         let restartRequired = false;
         if (patch.qq === true) {

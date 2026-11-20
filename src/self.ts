@@ -15,10 +15,14 @@ export function renderSelf(selfFile: string): string {
   try { text = existsSync(selfFile) ? readFileSync(selfFile, 'utf8').trim() : ''; }
   catch (error) { return `（这次没能读到我是谁.md：${error instanceof Error ? error.message : String(error)}。它还在，下次会再试。）`; }
   if (!text) return '';
+  const { text: read, rest } = capOwn(text, SELF_CAP);
+  const body = `<我是谁.md>\n${read}\n</我是谁.md>`;
+  return rest ? `${body}\n（后面还有 ${rest} 字没读进来；挑最要紧的留下吧。）` : body;
+}
+/** Her own text as much of it as is read in, by characters, never splitting one; `rest` is how many were left out. */
+export function capOwn(text: string, cap: number): { text: string; rest: number } {
   const chars = Array.from(text);
-  const capped = chars.length > SELF_CAP;
-  const body = `<我是谁.md>\n${capped ? chars.slice(0, SELF_CAP).join('') : text}\n</我是谁.md>`;
-  return capped ? `${body}\n（后面还有 ${chars.length - SELF_CAP} 字没读进来；挑最要紧的留下吧。）` : body;
+  return chars.length > cap ? { text: chars.slice(0, cap).join(''), rest: chars.length - cap } : { text, rest: 0 };
 }
 /** Keeps her 我是谁 as it is today beside it, in `<name>.history/<day><ext>`, so every change she makes can be seen and undone. Undefined when she has not written one. */
 export function keepSelfCopy(selfFile: string, day: string): string | undefined {

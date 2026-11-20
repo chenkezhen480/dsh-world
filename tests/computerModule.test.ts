@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { Agent } from '@deepseek-ai/dsh-agent';
 import { Faults } from '../src/faults.ts';
-import { createComputerModule } from '../src/ecosystem/computer/index.ts';
+import { createComputerModule, moduleLimits } from '../src/ecosystem/computer/index.ts';
 
 test('the module offers her tools, keeps its tool list as she learns, and reports its state', async t => {
   const worldDir = mkdtempSync(join(tmpdir(), 'computer-module-')); t.after(() => rmSync(worldDir, { recursive: true, force: true }));
@@ -44,6 +44,12 @@ test('stopping clears the browser fault and the faults of her broken tool files'
   assert.ok(faults.list().some(line => line.includes('broken.json')));
   module.stop();
   assert.deepEqual(faults.list(), []);
+});
+
+test('what this machine cannot run is said once, for the console row and its refusal alike', () => {
+  assert.deepEqual(moduleLimits('win32', () => 'C:\\Edge\\msedge.exe'), {});
+  assert.deepEqual(moduleLimits('win32', () => undefined), { computer: '这台电脑上找不到 Edge 或 Chrome，她的浏览器要用其中一个。' });
+  assert.deepEqual(moduleLimits('darwin', () => undefined), { computer: '这台电脑上找不到 Edge 或 Chrome，她的浏览器要用其中一个。', desktop: '她用电脑目前只支持 Windows。' });
 });
 
 test('her desktop switch adds and removes the desktop tool; on another system it is a fault, not a tool', async t => {

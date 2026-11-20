@@ -25,7 +25,7 @@
 
 ## 已有 world：用编译包更新
 
-已经装过 `dsh-world` 时，保留原 profile 和世界目录，不要另建 world。先下载编译好的 `.tgz`：浏览器直接打开 npm 上的安装包地址即可，例如 <https://registry.npmjs.org/dsh-world/-/dsh-world-0.8.0.tgz>，其他版本把地址里的两处版本号一起换掉；也可以从 [CI 运行记录](https://github.com/chenkezhen480/dsh-world/actions) 的 Artifacts 下载（需登录 GitHub，产物会过期）。更新成品无需 Git、npm 或 TypeScript 编译器；需要 Node ≥ 22.16、系统 `tar` 和 DSH 自带 pnpm。
+已经装过 `dsh-world` 时，保留原 profile 和世界目录，不要另建 world。0.8.1 起，有新版本时世界控制台「概览」最上面会提示，卡片上的「更新」按钮会复制一段按这台电脑填好的升级命令，就是下面这些步骤，退出 DSH 后粘贴运行即可；下面是手动做的方法。先下载编译好的 `.tgz`：浏览器直接打开 npm 上的安装包地址即可，例如 <https://registry.npmjs.org/dsh-world/-/dsh-world-0.8.0.tgz>，其他版本把地址里的两处版本号一起换掉；也可以从 [CI 运行记录](https://github.com/chenkezhen480/dsh-world/actions) 的 Artifacts 下载（需登录 GitHub，产物会过期）。更新成品无需 Git、npm 或 TypeScript 编译器；需要 Node ≥ 22.16、系统 `tar` 和 DSH 自带 pnpm。
 
 1. 从应用菜单正常退出 DSH，等待微信适配器一并退出。脚本会拒绝在 DSH 或适配器仍运行时更新，不强制结束进程。
 2. 使用仓库的 `scripts/update-world.mjs`，或已安装包的 `node_modules/dsh-world/scripts/update-world.mjs`。老版本尚无此文件时，可从仓库单独下载这个脚本，无需克隆或安装源码依赖。

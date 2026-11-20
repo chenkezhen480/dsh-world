@@ -5,6 +5,7 @@ import { createServer, type Server, type Socket } from 'node:net';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { errorText, type Faults } from '../../../faults.ts';
+import { quotePowerShell } from '../../../powershell.ts';
 
 export type DesktopDriver = ReturnType<typeof createDesktopDriver>;
 
@@ -105,9 +106,8 @@ export function createDesktopDriver(deps: { faults: Faults; command?: string[]; 
       server.on('error', error => fail(errorText(error)));
       server.listen(`\\\\.\\pipe\\${pipe}`, () => {
         // The launcher only asks Windows to start the helper as administrator; the helper itself dials the pipe.
-        const quoted = (text: string) => `'${text.replace(/'/g, "''")}'`;
         const args = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', `"${HELPER_SCRIPT}"`, '-Pipe', pipe, '-Key', key];
-        const launcher = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `Start-Process -FilePath powershell.exe -Verb RunAs -WindowStyle Hidden -ArgumentList ${args.map(quoted).join(',')}`], { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
+        const launcher = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `Start-Process -FilePath powershell.exe -Verb RunAs -WindowStyle Hidden -ArgumentList ${args.map(quotePowerShell).join(',')}`], { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
         let said = '';
         launcher.stderr!.on('data', (chunk: Buffer) => { said += chunk.toString('utf8'); });
         launcher.on('error', error => fail(errorText(error)));

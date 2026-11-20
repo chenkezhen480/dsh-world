@@ -56,6 +56,8 @@ export interface SnapshotDeps {
   archiveSession?(id: string): boolean;
   /** Faults outside the life line: the memory line, the bridge, starting and stopping. */
   faults(): string[];
+  /** Whether a newer dsh-world is on npm; absent when the config turned the check off. */
+  update?(): unknown;
   /** Which modules the config allows, whether their console switch is on, and whether they are running now. */
   modules?(): unknown;
   /** Her own browser and the tools she saved; absent while the module is off. */
@@ -93,6 +95,7 @@ export function consoleSources(deps: SnapshotDeps): ConsoleSources & { invalidat
       diaryDates: diary.dates(), activityDays: lifeStore?.activityDays() ?? [],
       mood: deps.moodFile ? moodView(deps.moodFile) : null,
       native,
+      update: deps.update?.() ?? null,
       modules: deps.modules?.() ?? null,
       computer: deps.computer?.() ?? null,
     };

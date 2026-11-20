@@ -20,7 +20,7 @@ import { budgetText, cancelReply, greetingText, checkReply, earlyStopText, nextL
 import { summarizeSince } from './activity.ts';
 import { createAlarmTimer, realTimers, type LifeTimers } from './alarmTimer.ts';
 import { createEarlyStopWatch } from './earlyStop.ts';
-import { closedDiaryRefusal } from './diary.ts';
+import { closedDiaryRefusal, wikiRefusal } from './diary.ts';
 import { createHome } from './home.ts';
 import type { LifeHost } from './host.ts';
 import { createJournal } from './journal.ts';
@@ -50,6 +50,8 @@ export interface LifeDeps {
   afterReview?: () => void;
   /** Read-only facts appended after the user's alarm template is rendered; may take a moment (her own tools run first). */
   alarmContext?: (now: Date) => string | undefined | Promise<string | undefined>;
+  /** Read-only facts appended after the evening review is rendered: what her wiki is missing. */
+  reviewContext?: () => string | undefined | Promise<string | undefined>;
   /** More tools for her home whose set changes at run time; registered again when the revision moves. */
   homeTools?: { tools(agent: Agent): readonly ToolDefinition[]; revision(): string };
   photos?: () => PhotoStore;
@@ -284,8 +286,13 @@ export function createLifeRuntime(deps: LifeDeps) {
     if (reviewing) days.add(reviewing);
     return days;
   }
-  /** The evening look back on her day; her 我是谁 is kept as it was, so she can rewrite it freely. */
-  function lookBack(review: Review): Promise<void> {
+  /**
+   * The evening look back on her day; her 我是谁 is kept as it was, so she can rewrite it freely. What her wiki is
+   * missing (links to pages not written, pages her catalog leaves out) follows the text her template gives, whatever
+   * the template says, for her to mend while she tidies her pages.
+   */
+  async function lookBack(review: Review): Promise<void> {
+    const wiki = await optionalFacts(deps.reviewContext, 'review-facts', '回顾附加的认识页情况');
     let snapshot: string | undefined;
     const take = () => {
       reviewing = review.day;
@@ -294,26 +301,30 @@ export function createLifeRuntime(deps: LifeDeps) {
       state.review = nextReview(clock(), timeZone, options.schedule().review);
     };
     const existing = (dir: string) => { const file = join(options.worldDir, dir, `${review.day}.jsonl`); return existsSync(file) ? file : undefined; };
-    return sayOwn('每日回顾', 'review', review.at, { review }, take, () => { state.review = review; }, now => reviewText(review, now, {
-      ...withValue('conversations', existing('conversations')), ...withValue('activity', existing('activity')), ...withValue('snapshot', snapshot),
-      diaryDir: options.diaryDir, selfFile: options.selfFile,
-    }, timeZone, wake(), alarmMessages(), templateValues()), () => deps.afterReview?.());
+    return sayOwn('每日回顾', 'review', review.at, { review }, take, () => { state.review = review; }, now => {
+      const text = reviewText(review, now, {
+        ...withValue('conversations', existing('conversations')), ...withValue('activity', existing('activity')), ...withValue('snapshot', snapshot),
+        diaryDir: options.diaryDir, selfFile: options.selfFile, ...withValue('wikiDir', options.wikiDir),
+      }, timeZone, wake(), alarmMessages(), templateValues());
+      return wiki ? `${text}\n\n${wiki}` : text;
+    }, () => deps.afterReview?.());
   }
-  /** The optional facts line never holds up her alarm: a failure or a wait past the limit is a fault and the alarm goes without it. */
-  async function alarmFacts(): Promise<string | undefined> {
-    if (!deps.alarmContext) return undefined;
+  /** An optional facts line never holds up what it follows: a failure or a wait past the limit is a fault and the message goes without it. */
+  async function optionalFacts(get: (() => string | undefined | Promise<string | undefined>) | undefined, key: string, what: string): Promise<string | undefined> {
+    if (!get) return undefined;
     let handle: unknown;
     const limit = new Promise<never>((_, reject) => { handle = timers.set(() => reject(new Error('等了太久')), ALARM_FACTS_LIMIT_MS); });
     try {
-      const facts = await Promise.race([Promise.resolve().then(() => deps.alarmContext!(clock())), limit]);
-      faults.clear('alarm-facts');
+      const facts = await Promise.race([Promise.resolve().then(get), limit]);
+      faults.clear(key);
       return facts;
     } catch (error) {
       ctx.logger.error(error);
-      faults.set('alarm-facts', `闹钟附加的信息没取到：${errorText(error)}`);
+      faults.set(key, `${what}没取到：${errorText(error)}`);
       return undefined;
     } finally { timers.clear(handle); }
   }
+  const alarmFacts = () => optionalFacts(deps.alarmContext && (() => deps.alarmContext!(clock())), 'alarm-facts', '闹钟附加的信息');
   async function send(alarm: Alarm): Promise<void> {
     try {
       // Resolve (or rebuild) the home first: a rebuilt home must still see this alarm as pending.
@@ -418,9 +429,11 @@ export function createLifeRuntime(deps: LifeDeps) {
     ...(deps.homeTools ? { extras: deps.homeTools } : {}),
     inWorld: agent => !stopped && includes(agent.session),
     isHome: agent => agent.id === state.homeSessionId,
+    // The rules for her own files, in one place: closed diary days, and her wiki written only at home.
     guard: ({ name, arguments: args, agent }) => {
-      const today = formatLocalTime(clock(), timeZone).slice(0, 10);
-      return closedDiaryRefusal(name, args, options.diaryDir, agent?.session.header.cwd ?? options.roomDir, openDiaryDays(today), today);
+      const today = formatLocalTime(clock(), timeZone).slice(0, 10), cwd = agent?.session.header.cwd ?? options.roomDir;
+      return closedDiaryRefusal(name, args, options.diaryDir, cwd, openDiaryDays(today), today)
+        ?? (options.wikiDir ? wikiRefusal(name, args, options.wikiDir, cwd, agent !== undefined && agent.id === state.homeSessionId) : undefined);
     },
     tools: agent => [
       ...lifeTools({ planNext, checkAlarm, cancelAlarm, notifier, names, origin: () => { try { return host.origin(); } catch { return undefined; } }, descriptions: alarmDescriptions(alarmMessages(), templateValues()) }),

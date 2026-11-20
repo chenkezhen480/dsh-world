@@ -115,6 +115,15 @@ test('a program closed to the tray is opened from its tray icon, and the focus g
   assert.equal(s.ops().includes('launch'), false, 'never a second copy');
 });
 
+test('a Start menu that cannot be listed leaves the tray to try, and is named when nothing else finds the program', async () => {
+  const unlisted = () => { throw new Error('Get-StartApps is not recognized'); };
+  const windows = [TERMINAL];
+  const s = setup(windows, { apps: unlisted, tray: () => { windows.push(WECHAT); return { result: 'opened', cursor: [10, 20] }; } });
+  assert.match((await s.desktop.act({ action: 'open', app: '微信' })).text, /^它收在托盘里，已经从托盘图标点开/);
+  const none = setup([TERMINAL], { apps: unlisted });
+  await assert.rejects(none.desktop.act({ action: 'open', app: '记事本' }), /找不到叫「记事本」的程序：开着的窗口和托盘图标里都没有，开始菜单没能读出来（[^）]*Get-StartApps is not recognized）/);
+});
+
 test('a program that takes the front again after the hand-back is handed back again, and a failure is said', async () => {
   const windows = [TERMINAL];
   let front = TERMINAL.hwnd, stolen = 1;
@@ -160,6 +169,30 @@ test('a name nobody has is said; without a name she sees what is open', async ()
   const s = setup();
   await assert.rejects(s.desktop.act({ action: 'open', app: '画图' }), /找不到叫「画图」的程序：开着的窗口、托盘图标和开始菜单里都没有/);
   assert.equal((await s.desktop.act({ action: 'open' })).text, '开着的窗口：Windows PowerShell、微信。收在托盘里的、没开的，写它的名字也能打开。');
+});
+
+test('a program open under another name is found through its Start menu entry or its title, never started again', async () => {
+  // Notepad's window is English on this machine and the Start menu calls it 记事本; Explorer's title ends with its name.
+  const notepad = { hwnd: 300, owner: 0, pid: 30, exe: 'Notepad', title: 'Untitled - Notepad', minimized: false, width: 900, height: 700, appId: 'Microsoft.WindowsNotepad_8wekyb3d8bbwe!App' };
+  const desktopWindow = { hwnd: 1, owner: 0, pid: 40, exe: 'explorer', title: 'Program Manager', minimized: false, width: 2560, height: 1600 };
+  const folder = { hwnd: 400, owner: 0, pid: 40, exe: 'explorer', title: '下载 - 文件资源管理器', minimized: false, width: 1200, height: 800 };
+  const s = setup([TERMINAL, notepad, desktopWindow, folder]);
+  assert.match((await s.desktop.act({ action: 'open', app: '记事本' })).text, /^记事本 的截图/);
+  assert.equal(s.calls.filter(([op]) => op === 'shot').at(-1)![1].hwnd, notepad.hwnd);
+  assert.match((await s.desktop.act({ action: 'open', app: '文件资源管理器' })).text, /^文件资源管理器 的截图/);
+  assert.equal(s.calls.filter(([op]) => op === 'shot').at(-1)![1].hwnd, folder.hwnd, 'the folder window, not the desktop behind it');
+  assert.deepEqual(s.ops().filter(op => op === 'tray' || op === 'launch'), []);
+});
+
+test('a held press or a drag that changed nothing at all is told with what to do; a plain click is not', async () => {
+  const s = setup(undefined, { shot: args => { writeFileSync(String(args.file), 'png'); return { width: 1280, height: 1024, clientWidth: 1600, clientHeight: 1280, print: 'ab'.repeat(256) }; } });
+  await s.desktop.act({ action: 'open', app: '微信' });
+  assert.match((await s.desktop.act({ action: 'drag', x: 10, y: 10, x2: 300, y2: 10 })).text, /^已拖过去。截图和动手之前一模一样。后台模式下，有的程序（很多游戏）读的是真实的鼠标键盘，看不到按住和拖动；该动的没动，就请伙伴切到前台模式。/);
+  assert.match((await s.desktop.act({ action: 'press', key: 'w', hold: 1 })).text, /^已按 w，按住 1 秒。截图和动手之前一模一样/);
+  assert.doesNotMatch((await s.desktop.act({ action: 'click', x: 10, y: 10 })).text, /一模一样/);
+  const moving = setup(undefined, { shot: args => { writeFileSync(String(args.file), 'png'); return { width: 1280, height: 1024, clientWidth: 1600, clientHeight: 1280, print: String(args.markX).padStart(512, '0') }; } });
+  await moving.desktop.act({ action: 'open', app: '微信' });
+  assert.doesNotMatch((await moving.desktop.act({ action: 'drag', x: 10, y: 10, x2: 300, y2: 10 })).text, /一模一样/);
 });
 
 test('keys: names people write and combinations; anything else is refused before the window is touched', async () => {

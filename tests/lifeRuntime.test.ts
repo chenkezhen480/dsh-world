@@ -42,7 +42,7 @@ function fakeTimers(clock: { now: Date }) {
     jump(ms: number) { clock.now = new Date(clock.now.getTime() + ms); for (const entry of pending) entry.at += ms; },
   };
 }
-interface SetupOptions { afterReview?: () => void; partnerSpoke?: () => void; before?: (worldDir: string) => Promise<void>; host?: (host: LifeHost) => LifeHost; store?: (store: LifeStore) => LifeStore; notifier?: Notifier; dailyBudget?: () => number | undefined; inWorkspace?: (id: string) => boolean; alarmContext?: (now: Date) => string | undefined | Promise<string | undefined>; schedule?: { review: string; wake: string } }
+interface SetupOptions { afterReview?: () => void; partnerSpoke?: () => void; before?: (worldDir: string) => Promise<void>; host?: (host: LifeHost) => LifeHost; store?: (store: LifeStore) => LifeStore; notifier?: Notifier; dailyBudget?: () => number | undefined; inWorkspace?: (id: string) => boolean; alarmContext?: (now: Date) => string | undefined | Promise<string | undefined>; reviewContext?: () => string | undefined | Promise<string | undefined>; schedule?: { review: string; wake: string } }
 async function setup(t: test.TestContext, model: (request: GenerateOptions, index: number) => AsyncIterable<StreamChunk>, setupOptions: SetupOptions = {}) {
   const requests: GenerateOptions[] = [];
   const { ctx, root, cleanup, errors } = await hostFixture(t, request => { if (request.purpose !== 'compaction') requests.push(request); return model(request, requests.length - 1); });
@@ -68,8 +68,8 @@ async function setup(t: test.TestContext, model: (request: GenerateOptions, inde
   const host = setupOptions.host?.(baseHost) ?? baseHost;
   const baseStore = createLifeStore(worldDir, config.timeZone);
   const store = setupOptions.store?.(baseStore) ?? baseStore;
-  const options = { worldDir, roomDir: join(worldDir, 'room'), diaryDir: join(worldDir, 'diary'), selfFile: join(worldDir, 'room', 'self.md'), schedule: () => setupOptions.schedule ?? { review: '23:00', wake: '09:00' }, timeZone: config.timeZone, alarmFile: join(worldDir, 'alarm.md') };
-  const make = () => createLifeRuntime({ ctx, config, options, store, host, notifier: setupOptions.notifier ?? { toast: async () => {}, outlets: [] }, clock: () => clock.now, timers, ...(setupOptions.dailyBudget ? { dailyBudget: setupOptions.dailyBudget } : {}), inWorkspace: setupOptions.inWorkspace, alarmContext: setupOptions.alarmContext, ...(setupOptions.afterReview ? { afterReview: setupOptions.afterReview } : {}), ...(setupOptions.partnerSpoke ? { partnerSpoke: setupOptions.partnerSpoke } : {}) });
+  const options = { worldDir, roomDir: join(worldDir, 'room'), diaryDir: join(worldDir, 'diary'), wikiDir: join(worldDir, 'room', '认识'), selfFile: join(worldDir, 'room', 'self.md'), schedule: () => setupOptions.schedule ?? { review: '23:00', wake: '09:00' }, timeZone: config.timeZone, alarmFile: join(worldDir, 'alarm.md') };
+  const make = () => createLifeRuntime({ ctx, config, options, store, host, notifier: setupOptions.notifier ?? { toast: async () => {}, outlets: [] }, clock: () => clock.now, timers, ...(setupOptions.dailyBudget ? { dailyBudget: setupOptions.dailyBudget } : {}), inWorkspace: setupOptions.inWorkspace, alarmContext: setupOptions.alarmContext, ...(setupOptions.reviewContext ? { reviewContext: setupOptions.reviewContext } : {}), ...(setupOptions.afterReview ? { afterReview: setupOptions.afterReview } : {}), ...(setupOptions.partnerSpoke ? { partnerSpoke: setupOptions.partnerSpoke } : {}) });
   let life = make();
   cleanup.push(() => life.stop());
   /** Waits out deliveries and the home turns they start, a few rounds deep. */
@@ -290,6 +290,39 @@ test('her file tools may write today\'s diary but not a closed day\'s; she is to
   await s.start();
   assert.deepEqual(written, [diary('2026-10-23')], 'only today\'s diary was written');
   assert.match(JSON.stringify(s.requests[1]!.messages), /2026-10-22 的日记已经合上了.*今天（2026-10-23）的日记/);
+});
+test('her wiki is written at home only; another of her sessions is told to note it in today\'s diary instead', async t => {
+  const written: string[] = [];
+  const page = () => join(s.worldDir, 'room', '认识', '小林.md');
+  // The home's first turn writes a page; the group session's first request tries the same page.
+  const s = await setup(t, (_request, index) => index === 0 || index === 2 ? toolCall('write', { file_path: page(), content: '几次相处' }, `wiki-${index}`) : textResponse('好'));
+  s.ctx.tools.register(defineTool({ name: 'write', description: 'test', parameters: { file_path: { type: 'string' }, content: { type: 'string' } }, output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] }, execute: async args => { written.push(String((args as { file_path: string }).file_path)); return 'ok'; } }));
+  await s.start();
+  assert.deepEqual(written, [page()], 'her home wrote the page');
+  const group = await createAgent(s.ctx, 'group');
+  group.followup(userMessage('群里说起小林')); await group.whenIdle();
+  assert.deepEqual(written, [page()], 'the group session did not');
+  assert.match(JSON.stringify(s.requests.at(-1)!.messages), /认识页只在家里整理（每晚回顾时）。现在想到的，先记进今天的日记/);
+});
+test('her evening review asks her to tidy her wiki, and is followed by what it is missing, under her own wording too', async t => {
+  const pending = (worldDir: string) => writeFile(join(worldDir, 'life.json'), JSON.stringify({ version: 1, homeSessionId: 'home-0', alarm: { at: '2026-10-25T00:30:00.000Z', note: '睡觉', setAt: '2026-10-23T02:00:00.000Z', source: 'plan' } }));
+  let gaps: string | undefined = '认识页的情况：1 处 [[链接]] 指向还没有的页：小林 → 林子（写那一页，或者改成对的名字）。整理认识时顺手处理。';
+  const shipped = await setup(t, () => textResponse('想想今天'), { before: pending, reviewContext: () => gaps });
+  await createAgent(shipped.ctx, 'home-0'); await shipped.start();
+  shipped.timers.advance(11 * 3_600_000); await shipped.idle();
+  const text = textOf(shipped.requests[0]!);
+  assert.match(text, /\n3\. 认识：用 memory_find 翻一下今天的聊天和日记[^\n]*在 [^ ]*room[\\/]认识[^\n]*最后改 目录\.md/);
+  assert.match(text, /认识页的情况：1 处 \[\[链接\]\] 指向还没有的页：小林 → 林子/);
+  gaps = undefined;
+  shipped.timers.advance(24 * 3_600_000); await shipped.idle();
+  const latest = shipped.requests.at(-1)!.messages.filter(message => message.source?.kind === 'dsh-world-life').at(-1)!;
+  assert.match(JSON.stringify(latest), /回头看看今天吧/, 'the next evening brings its own review');
+  assert.doesNotMatch(JSON.stringify(latest), /认识页的情况/, 'a whole wiki adds nothing');
+  gaps = '认识页的情况：有 2 页，还没有目录.md。整理认识时顺手处理。';
+  const own = await setup(t, () => textResponse('想想今天'), { before: async worldDir => { await pending(worldDir); await writeFile(join(worldDir, 'alarm.md'), '## 每日回顾\n我自己的回顾措辞。\n'); }, reviewContext: () => gaps });
+  await createAgent(own.ctx, 'home-0'); await own.start();
+  own.timers.advance(11 * 3_600_000); await own.idle();
+  assert.match(textOf(own.requests[0]!), /我自己的回顾措辞。[\s\S]*认识页的情况：有 2 页，还没有目录\.md/);
 });
 test('an archived home is replaced, keeps the pending alarm, and the old home loses reach_out', async t => {
   const s = await setup(t, (_request, index) => index === 0 ? toolCall('plan_next', { after_minutes: 30, note: '看书' }) : textResponse('嗯'));

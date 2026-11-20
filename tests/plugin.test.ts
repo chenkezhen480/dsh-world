@@ -9,11 +9,12 @@ import { setImmediate as nextImmediate } from 'node:timers/promises';
 import type { Context } from '@deepseek-ai/cordis';
 import { join } from 'node:path';
 import { createUserMessage, isAgentLoopRequest, LlmAdapter, LlmError, ToolCallId, type GenerateOptions } from '@deepseek-ai/dsh-llm';
-import { SessionId } from '@deepseek-ai/dsh-session';
+import { SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { hostFixture, mountCompaction, textResponse } from './hostFixture.ts';
 import { createWorldRuntime } from '../src/index.ts';
 import * as worldPlugin from '../src/index.ts';
+import { moduleLimits } from '../src/ecosystem/computer/index.ts';
 import { createArchiveStore } from '../src/store.ts';
 import { record } from './fixtures.ts';
 import TokenMeter from '@deepseek-ai/dsh-token-meter';
@@ -21,8 +22,18 @@ import ToolFreeCompaction from '../src/compaction.ts';
 import { WebSocketServer } from 'ws';
 declare module '@deepseek-ai/dsh-llm' { interface MessageSourceMap { 'test-schedule': { kind: 'test-schedule' } } }
 
+// The plugin asks npm for a newer release when it starts; these tests never leave the machine, so npm is not there.
+const realFetch = globalThis.fetch;
+const npmAsked: string[] = [];
+globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+  const url = String(input instanceof Request ? input.url : input);
+  if (!url.startsWith('https://registry.npmjs.org/')) return realFetch(input, init);
+  npmAsked.push(url);
+  return new Response('offline in tests', { status: 503 });
+}) as typeof fetch;
+
 const config = { worldId: 'fish', agentPreset: 'companion', timeZone: 'Asia/Seoul' };
-const user = (text: string) => createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text }] });
+const user =(text: string) => createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text }] });
 const textOf = (request: GenerateOptions) => request.messages.map(m => m.content.filter(b => b.type === 'text').map(b => b.text).join('\n')).join('\n');
 const kinds = (request: GenerateOptions) => request.messages.map(m => m.source?.kind as string | undefined);
 /** Mirrors the host time-context plugin: the outermost pre-step listener appends its snapshot last. */
@@ -187,6 +198,86 @@ for (const scenario of ['restored', 'stale-seq', 'invisible-replacement'] as con
   for (const old of oldEvents) assert.deepEqual(agent.session.eventAt(old.seq), old, 'original log events stay intact');
   agent.followup(user('NEXT_TURN')); await agent.whenIdle();
   assert.deepEqual(requests[1].messages.filter(message => message.source?.kind === 'dsh-world-history'), blocks, 'later turns retain the same block');
+});
+
+for (const restart of ['same', 'other-scope', 'cold'] as const) test(`a DSH restart keeps the block she was given unless it no longer holds (${restart})`, async t => {
+  const requests: GenerateOptions[] = [];
+  const { ctx, root, cleanup, errors } = await hostFixture(t, request => { requests.push(request); return textResponse('ok'); });
+  hostTime(ctx);
+  const options = { provider: 'test', model: 'test' };
+  const store = createArchiveStore({ ...config, root }); cleanup.push(() => store.close());
+  await store.commitRecords([record('kept-seed', { content: 'ARCHIVED_BEFORE_RESTART' })]);
+  const before = createWorldRuntime(ctx, config, store); await before.start();
+  const first = await ctx.agents.create({ sessionId: SessionId('restarted'), meta: { agentPreset: 'companion' }, agentOptions: options });
+  first.agent.followup(user('BEFORE_RESTART')); await first.agent.whenIdle(); await before.flush();
+  const block = requests[0]!.messages.find(message => message.source?.kind === 'dsh-world-history')!;
+  await ctx.sessions.flush(first.agent.session); await before.stop(); await first.dispose();
+  // The next DSH run: a fresh runtime, the same log. `cold` reopens it a day later.
+  const later = restart === 'cold' ? () => Date.now() + 25 * 60 * 60_000 : Date.now;
+  const after = createWorldRuntime(ctx, restart === 'other-scope' ? { ...config, archiveScope: 'home' } : config, store, undefined, undefined, undefined, later);
+  await after.start(); cleanup.push(() => after.stop());
+  const { agent } = await ctx.agents.resume({ resumeSessionId: SessionId('restarted'), agentOptions: options });
+  const logged = agent.session.seq;
+  agent.followup(user('AFTER_RESTART')); await agent.whenIdle();
+  assert.deepEqual(errors, []);
+  const blocks = requests.at(-1)!.messages.filter(message => message.source?.kind === 'dsh-world-history');
+  if (restart === 'same') {
+    assert.deepEqual(blocks.map(message => message.id), [block.id], 'the same block, not a second copy');
+    assert.deepEqual(requests.at(-1)!.messages.slice(0, requests[0]!.messages.length), requests[0]!.messages, 'the conversation before the restart is sent unchanged, so it stays cached');
+    assert.equal(agent.session.snapshotEvents(SessionLogOffset(logged)).filter(event => event.type === 'user/message' && event.data.source.kind === 'dsh-world-history').length, 0);
+  } else {
+    assert.ok(!blocks.some(message => message.id === block.id), 'a block read under another scope, or one the provider has long forgotten, is read again');
+  }
+});
+
+test('a session starts with her wiki catalog before the recent chat, never a page body, and keeps it until the next refresh', async t => {
+  const requests: GenerateOptions[] = [];
+  const { ctx, root, cleanup, errors } = await hostFixture(t, request => { requests.push(request); return textResponse('ok'); });
+  hostTime(ctx);
+  const wikiDir = join(root, 'room', '认识'); await mkdir(wikiDir, { recursive: true });
+  await writeFile(join(wikiDir, '小林.md'), 'PAGE_BODY_SENTINEL 第一次见他觉得有点冷淡');
+  await writeFile(join(wikiDir, '目录.md'), '- [[小林]]｜几次相处');
+  const store = createArchiveStore({ ...config, root });
+  const { createMemory } = await import('../src/memory.ts');
+  const memory = createMemory({ store: store.memory, timeZone: config.timeZone, sources: { wikiDir }, visible: () => true });
+  const world = createWorldRuntime(ctx, config, store, { prompt: { names: { companion: '鱼', partner: '我' } }, isHome: () => true, memory });
+  await world.start(); cleanup.push(() => world.stop().finally(() => store.close()));
+  const open = async (id: string) => (await ctx.agents.create({ sessionId: SessionId(id), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } })).agent;
+  const recall = (request: GenerateOptions) => request.messages.filter(message => message.source?.kind === 'dsh-world-history');
+
+  const first = await open('wiki-first');
+  first.followup(user('小林最近怎么样')); await first.whenIdle();
+  const blocks = recall(requests.at(-1)!);
+  assert.equal(blocks.length, 1, 'nothing archived yet: the catalog alone makes the block');
+  assert.match(textOf({ messages: blocks } as GenerateOptions), /^【我写过的认识】[\s\S]*<目录\.md>\n- \[\[小林\]\]｜几次相处\n<\/目录\.md>$/);
+  assert.doesNotMatch(textOf(requests.at(-1)!), /PAGE_BODY_SENTINEL/, 'a name in her message pulls in no page');
+  await writeFile(join(wikiDir, '目录.md'), '- [[小林]]｜改过的目录');
+  first.followup(user('再说说小林')); await first.whenIdle();
+  assert.deepEqual(recall(requests.at(-1)!).map(message => message.id), blocks.map(message => message.id), 'the same catalog until the next refresh');
+  assert.doesNotMatch(textOf(requests.at(-1)!), /改过的目录/);
+
+  await store.commitRecords([record('wiki-seed', { content: 'CHAT_SEED_LINE' })]);
+  const second = await open('wiki-second');
+  second.followup(user('早')); await second.whenIdle();
+  const both = textOf({ messages: recall(requests.at(-1)!) } as GenerateOptions);
+  assert.ok(both.indexOf('改过的目录') >= 0 && both.indexOf('改过的目录') < both.indexOf('CHAT_SEED_LINE'), 'a new session reads the catalog as it is now, ahead of the chat');
+  assert.deepEqual(world.faults(), []); assert.deepEqual(errors, []);
+});
+
+test('a wiki that cannot be read is a fault and leaves the recent chat in the block', async t => {
+  const requests: GenerateOptions[] = [];
+  const { ctx, root, cleanup } = await hostFixture(t, request => { requests.push(request); return textResponse('ok'); });
+  const store = createArchiveStore({ ...config, root });
+  await store.commitRecords([record('wiki-fault-seed', { content: 'CHAT_STILL_HERE' })]);
+  const { createMemory } = await import('../src/memory.ts');
+  const real = createMemory({ store: store.memory, timeZone: config.timeZone, sources: { wikiDir: join(root, 'wiki') }, visible: () => true });
+  const memory = { ...real, wiki: { ...real.wiki, catalog: async () => { throw new Error('磁盘读不了'); } } };
+  const world = createWorldRuntime(ctx, config, store, { prompt: { names: { companion: '鱼', partner: '我' } }, isHome: () => true, memory });
+  await world.start(); cleanup.push(() => world.stop().finally(() => store.close()));
+  const { agent } = await ctx.agents.create({ sessionId: SessionId('wiki-fault'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } });
+  agent.followup(user('早')); await agent.whenIdle();
+  assert.match(textOf(requests.at(-1)!), /CHAT_STILL_HERE/);
+  assert.ok(world.faults().some(fault => /认识页的目录没能读出来：磁盘读不了/.test(fault)), world.faults().join('|'));
 });
 
 test('memory refresh in a long history lands the fresh block at the tail, not where the old block sat (#21)', async t => {
@@ -459,6 +550,25 @@ test('a memory line that cannot start leaves the plugin up: the console opens an
   await until(async () => routes.some(route => route.path === '/dsh-world/worlds/fish'), 'the console route');
   const snapshot = await consoleGet(routes, '/dsh-world/worlds/fish/console/snapshot');
   assert.ok(snapshot.health.some((fault: string) => /记忆线没能启动：session inventory unreadable/.test(fault)), snapshot.health.join('|'));
+});
+
+test('npm is asked once at start and a failed look is shown as such; with updateCheck off it is never asked', async t => {
+  const { ctx, root, cleanup } = await hostFixture(t, () => textResponse('ok'));
+  isolateHome(t, root);
+  const { routes } = provideLifeHost(ctx);
+  npmAsked.length = 0;
+  const plugin = ctx.plugin(worldPlugin, { ...config, life: true }); cleanup.push(() => plugin.dispose()); await plugin.await();
+  await until(async () => routes.some(route => route.path === '/dsh-world/worlds/fish'), 'the console route');
+  await until(async () => (await consoleGet(routes, '/dsh-world/worlds/fish/console/snapshot')).update?.error !== undefined, 'the first look');
+  assert.deepEqual(npmAsked, ['https://registry.npmjs.org/dsh-world/latest']);
+  const { update } = await consoleGet(routes, '/dsh-world/worlds/fish/console/snapshot');
+  assert.deepEqual([update.newer, update.latest, update.error], [false, undefined, 'npm 回了 503']);
+  plugin.dispose();
+  npmAsked.length = 0;
+  const quiet = ctx.plugin(worldPlugin, { ...config, worldId: 'tata', life: true, updateCheck: false }); cleanup.push(() => quiet.dispose()); await quiet.await();
+  await until(async () => routes.some(route => route.path === '/dsh-world/worlds/tata'), 'the console route');
+  assert.equal((await consoleGet(routes, '/dsh-world/worlds/tata/console/snapshot')).update, null);
+  assert.deepEqual(npmAsked, []);
 });
 
 test('the console workspace permission initializes later room sessions without changing existing sessions', async t => {
@@ -1177,9 +1287,13 @@ test('a module the config does not provide cannot be switched on from the consol
   await until(async () => routes.length === 3, 'console');
   const result = await routeCall(routes, '/dsh-world/worlds/fish', '/dsh-world/worlds/fish/console/modules', { 'x-dsh-world': '1', 'content-type': 'application/json' }, JSON.stringify({ wechat: true }));
   assert.equal(result.status, 400);
-  assert.deepEqual((await consoleGet(routes, '/dsh-world/worlds/fish/console/snapshot')).modules, { wechat: { available: false, enabled: false, running: false }, qq: { available: false, enabled: false, running: false }, computer: { available: false, enabled: false, running: false }, desktop: { available: false, enabled: false, running: false }, foreground: { available: false, enabled: false, running: false } });
+  // Her browser and her use of the computer need nothing in the config: only the console's switches, and what this machine has.
+  const limits = moduleLimits(), row = (why: string | undefined) => ({ available: !why, ...(why ? { reason: why } : {}), enabled: false, running: false });
+  assert.deepEqual((await consoleGet(routes, '/dsh-world/worlds/fish/console/snapshot')).modules, { wechat: { available: false, enabled: false, running: false }, qq: { available: false, enabled: false, running: false }, computer: row(limits.computer), desktop: row(limits.desktop), foreground: { available: false, enabled: false, running: false } });
   assert.equal((await routeCall(routes, '/dsh-world/worlds/fish', '/dsh-world/worlds/fish/console/modules', { 'x-dsh-world': '1', 'content-type': 'application/json' }, JSON.stringify({ qq: true }))).status, 400);
-  assert.equal((await routeCall(routes, '/dsh-world/worlds/fish', '/dsh-world/worlds/fish/console/modules', { 'x-dsh-world': '1', 'content-type': 'application/json' }, JSON.stringify({ computer: true }))).status, 400);
+  const desktopAlone = await routeCall(routes, '/dsh-world/worlds/fish', '/dsh-world/worlds/fish/console/modules', { 'x-dsh-world': '1', 'content-type': 'application/json' }, JSON.stringify({ desktop: true }));
+  assert.equal(desktopAlone.status, 400);
+  assert.match(JSON.stringify(desktopAlone.body), process.platform === 'win32' ? /先打开「她的浏览器」/ : /只支持 Windows/, 'never left waiting with her browser off');
 });
 
 test('QQ stays off until switched on; the off switch survives world restart and plugin reload, and re-enabling opens one connection', async t => {

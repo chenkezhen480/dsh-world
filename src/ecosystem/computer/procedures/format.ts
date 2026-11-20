@@ -1,6 +1,6 @@
 // src/ecosystem/computer/procedures/format.ts
 import { PAGE_KEYS } from '../browser/page.ts';
-import { desktopKey, holdMs } from '../desktop/desktop.ts';
+import { desktopKey, holdMs, type Point } from '../desktop/input.ts';
 
 /** Finds an element by what a person sees: its role and name, text it shows, or a CSS selector; `nth` picks among several. */
 export interface Anchor { role?: string; name?: string; text?: string; css?: string; nth?: number }
@@ -9,7 +9,7 @@ export interface ExtractSpec { list: Anchor; fields: Record<string, Anchor & { a
 export type Target = { ref: number } | { anchor: Anchor };
 export type Step =
   | { open: string }
-  | { click: Anchor; outward?: boolean }
+  | { click: Anchor; outward?: boolean; hold?: number }
   | { type: { into: Anchor; text: string }; outward?: boolean }
   | { press: string; outward?: boolean }
   | { wait: Condition & { seconds?: number } }
@@ -24,8 +24,6 @@ export interface MessageMap {
   /** Evaluates to `true` for her own messages. */
   outgoing?: string;
 }
-/** A pixel on the screenshot `desktop` gives of the current window (long edge about 1280), so it follows the window's size. */
-export interface Point { x: number; y: number }
 export type Direction = 'up' | 'down' | 'left' | 'right';
 /** Steps on the partner's computer, the `desktop` actions written down: nothing to read there, only pictures. */
 export type DesktopStep =
@@ -55,7 +53,7 @@ export const UNSORTED = '未分类';
 const FIELD_NAME = /^[a-zA-Z_][a-zA-Z0-9_]{0,30}$/;
 const TEMPLATE = /\{\{([a-zA-Z_][a-zA-Z0-9_]*)\}\}/g;
 const ACTIONS = ['open', 'click', 'type', 'press', 'wait', 'check', 'extract', 'script'] as const;
-const EXTRAS: Record<(typeof ACTIONS)[number], string[]> = { open: [], click: ['outward'], type: ['outward'], press: ['outward'], wait: [], check: [], extract: ['allowEmpty'], script: ['as', 'outward', 'allowEmpty'] };
+const EXTRAS: Record<(typeof ACTIONS)[number], string[]> = { open: [], click: ['outward', 'hold'], type: ['outward'], press: ['outward'], wait: [], check: [], extract: ['allowEmpty'], script: ['as', 'outward', 'allowEmpty'] };
 const RESERVED = new Set(['__proto__', 'constructor', 'prototype']);
 const ANCHOR_KEYS = ['role', 'name', 'text', 'css', 'nth'];
 const MAX_STEPS = 40, MAX_SCRIPT = 4000, MAX_TEXT = 500;
@@ -136,7 +134,7 @@ function step(value: unknown, path: string, known: ReadonlySet<string>, taken: S
       if (!address.trimStart().startsWith('{{') && !isWebAddress(address)) fail(`${path}.open`, WEB_ONLY);
       return { open: address };
     }
-    case 'click': return { click: anchor(input.click, `${path}.click`, known), ...extra };
+    case 'click': return { click: anchor(input.click, `${path}.click`, known), ...extra, ...held(input.hold, `${path}.hold`) };
     case 'type': { const body = record(input.type, `${path}.type`); only(body, ['into', 'text'], `${path}.type`); return { type: { into: anchor(body.into, `${path}.type.into`, known), text: text(body.text, `${path}.type.text`, 2000, known) }, ...extra }; }
     case 'press': {
       const key = text(input.press, `${path}.press`, 40);

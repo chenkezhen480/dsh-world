@@ -4,6 +4,7 @@ import {
   type FindParams, type MemoryItem, type MemoryKind, type MemoryStatus, type MemoryStore, type ReadResult,
 } from './memoryStore.ts';
 import { errorText } from './faults.ts';
+import { nearTitles, pageNamed, pageRelations, wikiCatalog, wikiGaps, type PageRelations } from './wiki.ts';
 
 export { MEMORY_KINDS, MemoryError } from './memoryStore.ts';
 export { readStable } from './memoryFiles.ts';
@@ -14,11 +15,22 @@ export interface MemoryPage { items: MemoryItem[]; nextCursor?: string; coverage
 export interface MemoryContent {
   ref: string; sourceId: string; kind: MemoryKind; version: string; title: string; time: string; timeBasis: ReadResult['timeBasis']; current: boolean;
   content: string; offset: number; nextOffset?: number; totalChars: number; turnId?: string; origin?: ReadResult['origin'];
+  /** A wiki page's links each way and what they miss. */
+  related?: PageRelations;
 }
 export interface MemoryService {
   find(input: Record<string, unknown>): Promise<MemoryPage>;
   read(input: Record<string, unknown>): Promise<MemoryContent>;
   status(): MemoryStatus;
+  /** Her wiki as a whole: the catalog a session starts with, and the gaps her evening review is told about. */
+  wiki: {
+    dir?: string;
+    /** `failure`: some of the wiki could not be read; what could still is in `text`. */
+    catalog(): Promise<{ text?: string; failure?: string }>;
+    gaps(): Promise<string | undefined>;
+    /** One page by its name, with its relations; a name that fits none is refused with the names close to it. */
+    open(input: Record<string, unknown>): Promise<MemoryContent>;
+  };
 }
 export interface MemoryDeps {
   store: MemoryStore;
@@ -73,6 +85,11 @@ export function normalizeRead(input: Record<string, unknown>): { ref: string; of
   if (!ref) throw new MemoryError('invalidQuery', 'ref 必须是 memory_find 给出的引用');
   return { ref, offset: whole(input, 'offset', 0, 0, Number.MAX_SAFE_INTEGER), limit: whole(input, 'limit', DEFAULT_READ_LIMIT, 1, MAX_READ_LIMIT) };
 }
+export function normalizeOpen(input: Record<string, unknown>): { title: string; offset: number; limit: number } {
+  const title = text(input, 'title', 200);
+  if (!title?.trim()) throw new MemoryError('invalidQuery', 'title 写认识页的页名，就是目录里 [[ ]] 中间的字');
+  return { title, offset: whole(input, 'offset', 0, 0, Number.MAX_SAFE_INTEGER), limit: whole(input, 'limit', DEFAULT_READ_LIMIT, 1, MAX_READ_LIMIT) };
+}
 
 /** A hit of either source, before it becomes an item: what the filters and the ordering need. */
 interface Candidate { item: MemoryItem; content: string; timeMs: number }
@@ -88,7 +105,8 @@ function accepts(candidate: Candidate, params: FindParams): boolean {
 function authorItem(doc: AuthorDoc, query: string | undefined): MemoryItem {
   return { ref: doc.ref, sourceId: doc.sourceId, kind: doc.kind, title: doc.title, time: doc.time, timeBasis: doc.timeBasis, current: true, excerpt: excerptOf(doc.content, query) };
 }
-const authorCandidate = (doc: AuthorDoc, query: string | undefined): Candidate => ({ item: authorItem(doc, query), content: doc.content, timeMs: doc.timeMs });
+/** A wiki page is also found by its title, its file name, which the page itself need not repeat. */
+const authorCandidate = (doc: AuthorDoc, query: string | undefined): Candidate => ({ item: authorItem(doc, query), content: doc.kind === 'wiki' ? `${doc.title}\n${doc.content}` : doc.content, timeMs: doc.timeMs });
 
 /** The state a page cursor was taken in: it applies only while nothing it depends on has changed. */
 interface CursorState { hash: string; upTo: number; revisions: number; files: string; offset: number }
@@ -123,20 +141,68 @@ export function createMemory(deps: MemoryDeps): MemoryService {
   }
   const cursorOf = (state: CursorState) => Buffer.from(JSON.stringify(state)).toString('base64url');
 
+  /**
+   * What a ref points at now: her file as it is, or a chat line she may see; `unseen` for a line out of her sight,
+   * which is not hers to judge; nothing when it no longer finds the text it cited.
+   */
+  function resolve(ref: string, all: readonly AuthorDoc[]): { file: AuthorDoc } | { record: NonNullable<ReturnType<MemoryStore['byRecordId']>> } | 'unseen' | undefined {
+    let decoded: ReturnType<typeof decodeRef>;
+    try { decoded = decodeRef(ref); } catch { return undefined; }
+    if (decoded.kind === 'a') { const file = all.find(doc => doc.ref === ref); return file ? { file } : undefined; }
+    const record = store.byRecordId(decoded.recordId);
+    if (!record) return undefined;
+    if (!canSee(record.sourceSessionId)) return 'unseen';
+    return chatRef(record.recordId, record.content) === ref ? { record } : undefined;
+  }
   /** What a link-following query looks at: the files that cite the ref and what the ref's own file cites, never a line she may not see. */
   function linked(ref: string, all: readonly AuthorDoc[], query: string | undefined): Candidate[] {
     const found = new Map<string, Candidate>();
     for (const doc of all) if (doc.links.includes(ref)) found.set(doc.ref, authorCandidate(doc, query));
     for (const target of all.find(doc => doc.ref === ref)?.links ?? []) {
-      let decoded: ReturnType<typeof decodeRef>;
-      try { decoded = decodeRef(target); } catch { continue; }
-      const file = decoded.kind === 'a' ? all.find(doc => doc.ref === target) : undefined;
-      if (file) { found.set(file.ref, authorCandidate(file, query)); continue; }
-      const record = decoded.kind === 'c' ? store.byRecordId(decoded.recordId) : undefined;
-      if (record && canSee(record.sourceSessionId) && chatRef(record.recordId, record.content) === target) found.set(target, { item: store.item(record, query), content: record.content, timeMs: Date.parse(record.occurredAt) });
+      const now = resolve(target, all);
+      if (typeof now !== 'object') continue;
+      if ('file' in now) found.set(now.file.ref, authorCandidate(now.file, query));
+      else found.set(target, { item: store.item(now.record, query), content: now.record.content, timeMs: Date.parse(now.record.occurredAt) });
     }
     return [...found.values()];
   }
+
+  const wikiPages = (all: readonly AuthorDoc[]) => all.filter(doc => doc.kind === 'wiki');
+  /** Her `引用：` refs that no longer find the text they cited. */
+  const staleRefs = (doc: AuthorDoc, all: readonly AuthorDoc[]) => doc.links.filter(ref => resolve(ref, all) === undefined);
+  function relationsOf(doc: AuthorDoc, all: readonly AuthorDoc[]): PageRelations {
+    const stale = staleRefs(doc, all);
+    return { ...pageRelations(doc, wikiPages(all)), ...(stale.length ? { staleRefs: stale.slice(0, 5) } : {}) };
+  }
+  /** A wiki page comes back with its relations; any other item as it is. */
+  function withRelations(item: MemoryItem, all: readonly AuthorDoc[]): MemoryItem {
+    const doc = item.kind === 'wiki' ? all.find(each => each.sourceId === item.sourceId) : undefined;
+    return doc ? { ...item, related: relationsOf(doc, all) } : item;
+  }
+  const wikiFailure = () => authors.failures().filter(({ sourceId }) => sourceId === 'dir:wiki' || sourceId.startsWith('wiki:')).map(({ message }) => message).join('；') || undefined;
+  const wiki: MemoryService['wiki'] = {
+    ...(deps.sources.wikiDir ? { dir: deps.sources.wikiDir } : {}),
+    async catalog() {
+      if (!deps.sources.wikiDir) return {};
+      const text = wikiCatalog(wikiPages(await docs()), deps.sources.wikiDir), failure = wikiFailure();
+      return { ...(text ? { text } : {}), ...(failure ? { failure } : {}) };
+    },
+    async gaps() {
+      if (!deps.sources.wikiDir) return undefined;
+      const all = await docs();
+      return wikiGaps(wikiPages(all), page => staleRefs(page, all));
+    },
+    async open(input) {
+      const { title, offset, limit } = normalizeOpen(input);
+      if (!deps.sources.wikiDir) throw new MemoryError('notFound', '这个世界没有认识页');
+      const all = await docs(), pages = wikiPages(all), page = pageNamed(pages, title);
+      if (!page) {
+        const near = nearTitles(pages, title);
+        throw new MemoryError('notFound', near.length ? `没有叫「${title}」的认识页；有的页：${near.join('、')}` : '还没有写过认识页');
+      }
+      return contentPage(fileFound(page), offset, limit, relationsOf(page, all));
+    },
+  };
 
   async function find(input: Record<string, unknown>): Promise<MemoryPage> {
     const started = performance.now();
@@ -166,7 +232,7 @@ export function createMemory(deps: MemoryDeps): MemoryService {
     for (const { item } of page) if (item.kind === 'conversation' && item.origin?.sessionId && !canSee(item.origin.sessionId)) throw new MemoryError('scopeChanged', '查询期间可读范围变了，请重新查询');
     const more = candidates.length > offset + params.limit;
     return {
-      items: page.map(candidate => candidate.item),
+      items: page.map(candidate => withRelations(candidate.item, all)),
       ...(more ? { nextCursor: cursorOf({ hash, upTo, revisions: store.snapshot().revisions, files, offset: offset + params.limit }) } : {}),
       coverage: status(), search: { method: params.query ? 'scan' : 'browse', elapsedMs: Math.round((performance.now() - started) * 10) / 10 },
     };
@@ -175,23 +241,32 @@ export function createMemory(deps: MemoryDeps): MemoryService {
   async function read(input: Record<string, unknown>): Promise<MemoryContent> {
     const { ref, offset, limit } = normalizeRead(input);
     const decoded = decodeRef(ref);
-    let found: ReadResult;
+    let found: ReadResult, related: PageRelations | undefined;
     if (decoded.kind === 'c') {
       found = store.read(ref, canSee);
       if (found.origin?.sessionId && !canSee(found.origin.sessionId)) throw new MemoryError('scopeChanged', '读取期间可读范围变了，请重新读取');
     } else {
-      const doc = (await docs()).find(candidate => candidate.sourceId === decoded.sourceId);
+      const all = await docs(), doc = all.find(candidate => candidate.sourceId === decoded.sourceId);
       if (!doc) throw new MemoryError('notFound', '这条引用对应的文件不存在');
       if (doc.ref !== ref) throw new MemoryError('sourceChanged', '这个文件在引用之后被改过，旧版正文没有保留（sourceChanged）');
-      found = { ref, sourceId: doc.sourceId, kind: doc.kind, version: decoded.hash, title: doc.title, time: doc.time, timeBasis: doc.timeBasis, current: true, content: doc.content };
+      found = fileFound(doc);
+      if (doc.kind === 'wiki') related = relationsOf(doc, all);
     }
-    const chars = Array.from(found.content);
-    const end = Math.min(chars.length, offset + limit);
-    return {
-      ref: found.ref, sourceId: found.sourceId, kind: found.kind, version: found.version, title: found.title, time: found.time, timeBasis: found.timeBasis, current: found.current,
-      content: chars.slice(offset, end).join(''), offset, ...(end < chars.length ? { nextOffset: end } : {}), totalChars: chars.length,
-      ...(found.turnId ? { turnId: found.turnId } : {}), ...(found.origin ? { origin: found.origin } : {}),
-    };
+    return contentPage(found, offset, limit, related);
   }
-  return { find, read, status };
+  return { find, read, status, wiki };
+}
+
+function fileFound(doc: AuthorDoc): ReadResult {
+  return { ref: doc.ref, sourceId: doc.sourceId, kind: doc.kind, version: decodeRef(doc.ref).hash, title: doc.title, time: doc.time, timeBasis: doc.timeBasis, current: true, content: doc.content };
+}
+/** One stretch of a text she reads, `offset` to `offset + limit` characters, saying where the rest begins. */
+function contentPage(found: ReadResult, offset: number, limit: number, related?: PageRelations): MemoryContent {
+  const chars = Array.from(found.content);
+  const end = Math.min(chars.length, offset + limit);
+  return {
+    ref: found.ref, sourceId: found.sourceId, kind: found.kind, version: found.version, title: found.title, time: found.time, timeBasis: found.timeBasis, current: found.current,
+    content: chars.slice(offset, end).join(''), offset, ...(end < chars.length ? { nextOffset: end } : {}), totalChars: chars.length,
+    ...(found.turnId ? { turnId: found.turnId } : {}), ...(found.origin ? { origin: found.origin } : {}), ...(related ? { related } : {}),
+  };
 }

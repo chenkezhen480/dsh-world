@@ -64,6 +64,17 @@ export function toolFreeMessages(messages: readonly Message[]): Message[] {
   return kept;
 }
 
+export const TOOLS_LEAD = '【压缩前用过的工具】';
+/**
+ * The tools she called in the span a compaction removes, by name only, the way Claude Code lists them after its own
+ * summary: enough to know there was work besides the talk. What came of it is in her files, and the recent talk comes
+ * back with her memory block. Measured: a line of what each call did helped no more than this (she re-reads her files).
+ */
+export function toolsUsed(messages: readonly Message[]): string | undefined {
+  const names = new Set(messages.flatMap(message => message.role === 'assistant' ? message.content.flatMap(block => block.type === 'tool-call' ? [block.name] : []) : []));
+  return names.size ? `${TOOLS_LEAD}${[...names].sort().join('、')}` : undefined;
+}
+
 function hasConversation(messages: readonly Message[]): boolean {
   return messages.some(message => (message.role === 'user' || message.role === 'assistant') && !injectedSources.has(message.source.kind) && !(message.role === 'user' && isCompactCheckpointSource(message.source)) && visibleText(message.content).trim());
 }
@@ -296,6 +307,7 @@ export default class ToolFreeCompaction extends CompactionEngine {
     const rawOutput: ContentBlock[] = assembler.blocks();
     const text = rawOutput.flatMap(block => block.type === 'text' ? [block.text.trim()] : []).join(' ').replace(/\s*\r?\n\s*/g, ' ').trim().replace(leadEcho, '').trim();
     if (!text) throw new Error('dsh-world: summarizer returned no paragraph');
-    return { summary: [{ type: 'text', text }], rawOutput, provider, model, maxTokens, ...(assembler.usage ? { usage: assembler.usage } : {}) };
+    const tools = toolsUsed(messages);
+    return { summary: [{ type: 'text', text: tools ? `${text}\n\n${tools}` : text }], rawOutput, provider, model, maxTokens, ...(assembler.usage ? { usage: assembler.usage } : {}) };
   }
 }

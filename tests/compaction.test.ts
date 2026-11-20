@@ -5,7 +5,7 @@ import { SessionId } from '@deepseek-ai/dsh-session';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import TokenMeter from '@deepseek-ai/dsh-token-meter';
 import { hostFixture, textResponse } from './hostFixture.ts';
-import ToolFreeCompaction, { compactionThreshold, toolFreeMessages } from '../src/compaction.ts';
+import ToolFreeCompaction, { compactionThreshold, toolFreeMessages, TOOLS_LEAD, toolsUsed } from '../src/compaction.ts';
 
 test('compaction replays the conversation prefix minus tool calls and results, then commits one paragraph with no tool tail', async t => {
   const summaries: GenerateOptions[] = []; const conversation: GenerateOptions[] = []; let conversationCalls = 0;
@@ -41,7 +41,8 @@ test('compaction replays the conversation prefix minus tool calls and results, t
   assert.ok(firstTool > 0); assert.deepEqual(request.messages.slice(0, firstTool), last.slice(0, firstTool));
   assert.deepEqual(request.tools, conversation.at(-1)!.tools);
   assert.equal(request.messages.filter(message => message.role === 'assistant').length, 1, 'text around a removed call is rejoined');
-  assert.deepEqual(result.summary, [{ type: 'text', text: '第一段 第二段' }]);
+  // The tool is named after the summary, without its arguments or its result.
+  assert.deepEqual(result.summary, [{ type: 'text', text: '第一段 第二段\n\n【压缩前用过的工具】work' }]);
   assert.match(JSON.stringify(request.messages.at(-1)), /执行上下文压缩.*当前时间：.*时区：Asia\/Seoul/);
   const context = handle.agent.session.deriveMessages();
   assert.ok(!context.some(message => message.role === 'tool' || message.content.some(block => block.type === 'tool-call')));
@@ -134,6 +135,18 @@ test('a later compaction replays the earlier paragraph for merging instead of th
   const context = handle.agent.session.deriveMessages().filter(message => message.role !== 'system');
   assert.equal(context.length, 1); assert.match(JSON.stringify(context[0].content), /摘要2/);
 });
+test('the tools she used in the compacted span are named once after the summary, each once, without arguments or results', () => {
+  let n = 0;
+  const call = (name: string, args: object) => ({ type: 'tool-call' as const, id: ToolCallId(`c${++n}`), name, arguments: JSON.stringify(args) });
+  const step = (...calls: ReturnType<typeof call>[]) => ({ id: `s${n}`, role: 'assistant', source: { kind: 'model' }, content: [{ type: 'text', text: '好' }, ...calls] }) as never;
+  const outcome = (of: ReturnType<typeof call>) => ({ id: `r${of.id}`, role: 'tool', toolCallId: of.id, source: { kind: 'tool' }, content: [{ type: 'text', text: 'PRIVATE_RESULT' }] }) as never;
+  const sent = call('wechat_send', { text: 'PRIVATE_TEXT' }), again = call('wechat_send', { text: '再说一句' }), diary = call('edit', { file_path: 'PRIVATE_PATH' });
+  const line = toolsUsed([step(sent), outcome(sent), step(diary, call('set_mood', {})), outcome(diary), step(again), outcome(again)])!;
+  assert.equal(line, `${TOOLS_LEAD}edit、set_mood、wechat_send`);
+  assert.doesNotMatch(line, /PRIVATE/);
+  assert.equal(toolsUsed([step()]), undefined, 'nothing called, nothing said');
+});
+
 test('reasoning-only steps left by a removed tool call are dropped, and an echoed summary lead is not doubled', async t => {
   const call = { type: 'tool-call' as const, id: ToolCallId('c'), name: 'send_sticker', arguments: '{}' };
   const user = (text: string) => createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text }] });

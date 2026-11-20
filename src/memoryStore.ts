@@ -3,7 +3,8 @@ import type { DatabaseSync } from 'node:sqlite';
 import { formatLocalTime } from './timeContext.ts';
 import type { ConversationRecord } from './types.ts';
 
-export const MEMORY_KINDS = ['conversation', 'diary'] as const;
+/** `wiki`: her pages of what she has come to understand about someone or something (`<room>/认识/`). */
+export const MEMORY_KINDS = ['conversation', 'diary', 'wiki'] as const;
 export type MemoryKind = typeof MEMORY_KINDS[number];
 /** `message`: when the line was said. `diaryDate`: the day in a diary's file name. `fileObserved`: when the file last changed. */
 export type TimeBasis = 'message' | 'diaryDate' | 'fileObserved';
@@ -25,6 +26,8 @@ export interface MemoryOrigin {
 export interface MemoryItem {
   ref: string; sourceId: string; kind: MemoryKind; title: string; time: string; timeBasis: TimeBasis; current: boolean; excerpt: string;
   turnId?: string; origin?: MemoryOrigin; version?: number;
+  /** A wiki page's links each way and what they miss. */
+  related?: import('./wiki.ts').PageRelations;
 }
 export interface FindParams {
   query?: string; kinds?: readonly MemoryKind[]; fromMs?: number; toMs?: number; sourceId?: string; turnId?: string; linkedTo?: string;
@@ -62,6 +65,19 @@ export function extractLinks(content: string): string[] {
   const found = new Set<string>();
   for (const line of content.matchAll(/^引用[：:][ \t]*(.+)$/gm)) {
     for (const token of line[1]!.matchAll(/memory:(m1\.[A-Za-z0-9_-]+)/g)) { found.add(token[1]!); if (found.size >= MAX_LINKS_PER_DOC) return [...found]; }
+  }
+  return [...found];
+}
+/**
+ * The pages one of her wiki pages names, as `[[标题]]`: by title, not by ref, since a ref is bound to the text it showed
+ * and a page is meant to be revised. The title is the page's file name without `.md`.
+ */
+export function extractPageLinks(content: string): string[] {
+  const found = new Set<string>();
+  for (const match of content.matchAll(/\[\[([^[\]\r\n]{1,80})\]\]/g)) {
+    const title = match[1]!.trim();
+    if (title) found.add(title);
+    if (found.size >= MAX_LINKS_PER_DOC) break;
   }
   return [...found];
 }

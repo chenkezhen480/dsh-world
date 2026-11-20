@@ -31,6 +31,8 @@ export interface CompactionRecord { time: string; sessionId: string; ok: boolean
 export interface DailySchedule { review: string; wake: string }
 export interface LifeOptions {
   worldDir: string; roomDir: string; diaryDir: string; selfFile: string; timeZone: string;
+  /** Her wiki (`<room>/认识`): only her home writes it, so two of her sessions never write one page at once. */
+  wikiDir?: string;
   /** Local HH:MM of the evening look back and of the morning wake when nothing is pending; read each time, since the console can change them. */
   schedule(): DailySchedule;
   /** Her alarm wording; the shipped `templates/alarm.md` when absent or missing. */

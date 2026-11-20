@@ -56,6 +56,12 @@ test('a click goes to the point the page reports, and says what covers a target'
   const mice = ok.sent.filter(item => item.method === 'Input.dispatchMouseEvent');
   assert.deepEqual(mice.map(item => item.params.type), ['mouseMoved', 'mousePressed', 'mouseReleased']);
   assert.ok(mice.every(item => item.params.x === 10 && item.params.y === 20));
+  // A long press: the button stays down for the time asked before it is let go.
+  const held = fakeCdp(method => method === 'Runtime.evaluate' ? value({ x: 10, y: 20 }) : {});
+  const started = Date.now();
+  await createPage(held.cdp).click({ ref: 1 }, 80);
+  assert.deepEqual(held.sent.filter(item => item.method === 'Input.dispatchMouseEvent').map(item => item.params.type), ['mouseMoved', 'mousePressed', 'mouseReleased']);
+  assert.ok(Date.now() - started >= 75, 'released only after the hold');
   const covered = fakeCdp(() => value({ covered: true, by: 'div 同意条款' }));
   await assert.rejects(createPage(covered.cdp).click({ anchor: { name: '提交' } }), /被别的东西挡住了（div 同意条款）/);
   assert.equal(covered.sent.filter(item => item.method === 'Input.dispatchMouseEvent').length, 0);
