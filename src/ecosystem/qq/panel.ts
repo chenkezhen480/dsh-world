@@ -76,11 +76,12 @@ export function createPanelSecrets(worldDir: string) {
     read,
     remember(username: string, password: string): void {
       stored = { ...stored, snowluma: { username: username.trim() || DEFAULT_USERNAME, password } };
-      durableWrite(file, JSON.stringify(stored, null, 2));
+      // 这里躺着 SnowLuma 的面板密码：只给自己读。
+      durableWrite(file, JSON.stringify(stored, null, 2), undefined, 0o600);
     },
     forget(): void {
       stored = {};
-      durableWrite(file, '{}');
+      durableWrite(file, '{}', undefined, 0o600);
     },
   };
 }
