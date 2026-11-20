@@ -15,6 +15,7 @@ import type { DailySchedule } from '../life/types.ts';
 import type { MemoryService } from '../memory.ts';
 import type { compactionPresetOverride } from '../compactionSwap.ts';
 import { moodView } from '../mood.ts';
+import { readMoodLedger } from '../moodLedger.ts';
 
 const SNAPSHOT_TTL_MS = 5000;
 export function estimateTokens(text: string): number {
@@ -93,7 +94,7 @@ export function consoleSources(deps: SnapshotDeps): ConsoleSources & { invalidat
       wechat: deps.wechat?.() ?? null,
       compactions: lifeStore?.compactions().slice(-5).reverse() ?? [],
       diaryDates: diary.dates(), activityDays: lifeStore?.activityDays() ?? [],
-      mood: deps.moodFile ? moodView(deps.moodFile) : null,
+      mood: deps.moodFile ? { ...moodView(deps.moodFile), trend: readMoodLedger(deps.moodFile) } : null,
       native,
       update: deps.update?.() ?? null,
       modules: deps.modules?.() ?? null,

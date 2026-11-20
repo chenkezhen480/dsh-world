@@ -809,7 +809,20 @@
           list(mood.outside).length ? h('div', { key: 'o', className: 'dw-muted' }, list(mood.outside).join('、') + ' 不在固定的心情里，没有算进去') : null,
           mood.unread ? h('div', { key: 'u', className: 'dw-muted' }, '有 ' + mood.unread + ' 行没读懂，她在快照里能看到') : null,
           h('div', { key: 'at', className: 'dw-muted', style: { marginTop: 8 } }, mood.updatedAt ? '她最后改于 ' + local(mood.updatedAt, props.zone) : ''),
+          h(MoodTrend, { key: 'trend', trend: mood.trend, zone: props.zone }),
         ]
+    }
+    // The ledger of accepted changes, oldest last; shows how her mood moved, not just where it stands.
+    function MoodTrend(props) {
+      var trend = list(props.trend).slice(-8)
+      if (trend.length < 2) return null
+      return h('div', { style: { marginTop: 8 } },
+        h('div', { className: 'dw-muted' }, '最近的变化：'),
+        trend.map(function (row, i) {
+          var top = list(Object.keys(row.values)).filter(function (k) { return row.values[k] }).map(function (k) { return k + ' ' + row.values[k] }).join(' · ')
+          return h('div', { key: row.at + i, className: 'dw-muted' },
+            local(row.at, props.zone) + '　' + (top || '（没有数值）') + (row.trivia && row.trivia.length ? ' · 「' + row.trivia.join('；') + '」' : ''))
+        }))
     }
     // Her mood sits with the plugin's faults: one place to see how things are with her.
     function Health(props) {
