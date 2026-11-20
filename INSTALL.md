@@ -127,6 +127,7 @@ node <pnpm.cjs 路径> add @snowluma/sdk@^2.2.1
           autoReply: true                       # false = 只看不回
           contextMessages: 6                    # 每轮带上最近的几条
           groupTrigger: mention                 # 群里被叫到才接（@ / 被引用 / 命中 groupKeywords）；all = 每句都接
+          groupTriggers: {}                     # 每个群自己的规矩：{ '681528723': all }；没写的群照 groupTrigger
           groupKeywords: []
           bindHomeSession: none                 # owner = 群各自独立、主人私聊用她的家会话；all = 都用家会话；none = 各建一个
           snowlumaHome: 'D:\SnowLuma'           # 去哪儿读 SnowLuma 的 config/runtime.json（控制台那扇门要用）；不填按 D:\SnowLuma、C:\SnowLuma、E:\SnowLuma、~/SnowLuma、~/snowluma 挨个认
@@ -210,6 +211,7 @@ node <pnpm.cjs 路径> add @snowluma/sdk@^2.2.1
           autoReply: true
           contextMessages: 6
           groupTrigger: mention
+          groupTriggers: {}                     # 哪个群想句句都接，就写它的群号：{ '681528723': all }
           groupKeywords: [ '小鱼' ]
           bindHomeSession: owner
           snowlumaHome: 'D:\SnowLuma'
@@ -247,6 +249,15 @@ node <pnpm.cjs 路径> add @snowluma/sdk@^2.2.1
 写 `all` 就是群里每句都接 —— 那意味着群里每一条消息都会让她跑完一轮、还往群里冒一条，没人说话的时候也一样。**除非那个群本来就是你和她两个人的地方，否则别写 `all`。**
 
 `contextMessages` 控制每轮带几条最近的上下文（默认 6）——群里那些没叫她的消息，价值就在这里：她看得见，但不接。
+
+`groupTrigger` 是所有群的默认值。想某个群单独算（比如她和你两个人的那个群句句都接、别的群照旧只接被叫到的），用 `groupTriggers` 按群号写，没写的群继续照 `groupTrigger` 走：
+
+```yaml
+          groupTrigger: mention
+          groupTriggers: { '681528723': all }   # 只有这个群每句都接
+```
+
+控制台「QQ」页的白名单下面，每个群一行下拉（跟着默认／只接被叫到的／每句都接），改完点「存群的规矩」就生效，不用重启通道。群号写成数字、值只认 `mention` 和 `all`；写错的当没写，那个群照默认走——一个填坏的群号不该让那个群从此不开口。
 
 ### 她自己开口
 

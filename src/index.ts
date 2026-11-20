@@ -87,6 +87,9 @@ export const Config = z.object({
     // 群里什么时候接话。量出来的事实是：不做这个判断的话，群里每句都会让她跑完一轮、还往群里冒一条
     // （她自己会在话里写「这句不接」，但那句话本身也发到群里了）。默认只接被叫到的。
     groupTrigger: z.union([z.const('mention').description('只接被叫到的（被 @ / 被引用她的话 / 命中关键词）'), z.const('all').description('每句都接')]).default('mention'),
+    // 每个群自己那条规矩，键是群号：{ '681528723': 'all' }。没写的群照上面的 groupTrigger 走。
+    // 面板上每个群一行，改完不用重启通道；群号填错的、值认不出的，都当没写 —— 不能让一个填坏的群从此不开口。
+    groupTriggers: z.dict(z.union([z.const('mention').description('只接被叫到的'), z.const('all').description('每句都接')])).default({}),
     groupKeywords: z.array(z.string()).default([]),
     // 只停嘴不停耳：这个时间之前照收、照记，但不回，到点自己醒。ISO 时间，如 2026-10-28T08:00:00+08:00。
     mutedUntil: z.string().default(''),
@@ -384,6 +387,7 @@ export function apply(ctx: Context, config: Config): void {
             contextMessages: q.contextMessages ?? 6,
             batchQuietMs: q.batchQuietMs ?? 10_000,
             groupTrigger: q.groupTrigger ?? 'mention',
+            groupTriggers: q.groupTriggers ?? {},
             groupKeywords: q.groupKeywords ?? [],
             mutedUntil: q.mutedUntil ?? '',
             snowlumaHome: discoverSnowlumaHome(q.snowlumaHome ?? ''),

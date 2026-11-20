@@ -43,6 +43,8 @@ export interface WorldConfig {
   qqNative?: { enabled?: boolean; wsUrl?: string; accessToken?: string; allowPrivate?: string[]; ownerQQ?: string; allowGroups?: string[]; autoReply?: boolean; batchQuietMs?: number; contextMessages?: number; bindHomeSession?: 'owner' | 'all' | 'none' | '';
     /** 群里什么时候接话：mention 只接被叫到的（被 @ / 被引用她的话 / 命中关键词），all 每句都接。 */
     groupTrigger?: 'mention' | 'all';
+    /** 每个群自己的规矩，键是群号；没写的群照 groupTrigger 走。 */
+    groupTriggers?: Record<string, 'mention' | 'all'>;
     /** 群里命中这些词也算在叫她。 */
     groupKeywords?: string[];
     /** 只停嘴不停耳：这个时间（ISO）之前照收、照记上下文，但一句都不回；到点自己醒。空着就是没静默。 */

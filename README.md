@@ -212,6 +212,7 @@ DSH 设置里的「世界控制台」：
       contextMessages: 6         # 每轮带上最近的几条
       batchQuietMs: 10000        # 同一会话这几毫秒内的话攒成一条问她；0 = 一条一问
       groupTrigger: mention      # mention：@ 她／引用她／命中关键词才接；all：每句都接
+      groupTriggers: {}          # 每个群自己的规矩，键是群号：{ '681528723': all }；没写的群照 groupTrigger
       groupKeywords: []          # groupTrigger: mention 时算「在叫她」的词
       mutedUntil: ''             # 静默到这个时间（ISO）：只收不回，到点自己醒
       bindHomeSession: owner     # owner：主人私聊用家会话、群各自独立；all：都用；none：各建一个

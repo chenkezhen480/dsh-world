@@ -68,6 +68,21 @@ test('面板的白名单、静默和拉起 SnowLuma 校验后一起交给通道'
   ]);
 });
 
+test('每个群自己的接话规矩：只认纯数字群号 + mention/all，别的写法一律拒', async () => {
+  const patches: unknown[] = [];
+  const route = qqRoute('/dsh-world/worlds/fish', [], doors(), native, patch => { patches.push(patch); return { ok: true }; });
+  const post = (body: unknown) => call(route, request('POST', '/native', { headers: WRITE, body }));
+  assert.equal((await post({ groupTriggers: ['681528723'] })).status, 400, '要是对象');
+  assert.match(String((await post({ groupTriggers: { abc: 'all' } })).body.error), /不是群号：abc/);
+  assert.match(String((await post({ groupTriggers: { '681528723': 'bogus' } })).body.error), /只能是 mention 或 all/);
+  assert.equal((await post({ groupTriggers: { ' 681528723 ': 'all', '700700700': 'mention' } })).status, 200);
+  assert.equal((await post({ groupTriggers: {} })).status, 200, '空对象就是全部回到全局默认');
+  assert.deepEqual(patches, [
+    { groupTriggers: { '681528723': 'all', '700700700': 'mention' } },
+    { groupTriggers: {} },
+  ]);
+});
+
 test('合批窗口只收 0 到 30 秒的整数毫秒：一批从第一句起最多等 30 秒，再长也没用', async () => {
   const patches: unknown[] = [];
   const route = qqRoute('/dsh-world/worlds/fish', [], doors(), native, patch => { patches.push(patch); return { ok: true }; });

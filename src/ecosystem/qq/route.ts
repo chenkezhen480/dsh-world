@@ -40,7 +40,7 @@ function allowed(req: IncomingMessage, allowedHosts: readonly string[]): boolean
  * What the panel may change about her own channel: replying, the balcony's port, staying quiet until a time
  * (`null` speaks again at once), who may talk to her, and starting SnowLuma once by hand.
  */
-export interface NativePatch { autoReply?: boolean; bridge?: { port: number }; mutedUntil?: string | null; allowPrivate?: string[]; allowGroups?: string[]; batchQuietMs?: number; startSnowluma?: true }
+export interface NativePatch { autoReply?: boolean; bridge?: { port: number }; mutedUntil?: string | null; allowPrivate?: string[]; allowGroups?: string[]; batchQuietMs?: number; groupTriggers?: Record<string, 'mention' | 'all'>; startSnowluma?: true }
 type SetNative = (patch: NativePatch) => unknown;
 
 /** A whitelist from the panel: QQ numbers as strings or numbers, blanks dropped; an empty list lets nobody in. */
@@ -55,6 +55,22 @@ function qqNumbers(raw: unknown, key: string): string[] | string {
     list.push(id);
   }
   return list;
+}
+
+/**
+ * 每个群自己的接话规矩，从面板过来：键是群号、值是 mention 或 all。
+ * 只认「键是纯数字群号、值是 mention 或 all」；别的写法一律拒，免得面板上填错一个就悄悄失效。
+ */
+function groupTriggers(raw: unknown, key: string): Record<string, 'mention' | 'all'> | string {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return `${key} 要是一个对象，键是群号`;
+  const map: Record<string, 'mention' | 'all'> = {};
+  for (const [rawId, value] of Object.entries(raw as Record<string, unknown>)) {
+    const id = String(rawId).trim();
+    if (!/^[0-9]+$/.test(id)) return `${key} 里有个不是群号：${id || '(空)'}`;
+    if (value !== 'mention' && value !== 'all') return `${key} 里 ${id} 的规矩只能是 mention 或 all`;
+    map[id] = value;
+  }
+  return map;
 }
 
 async function write(doors: ConsoleDoors | undefined, path: string, body: Record<string, unknown> | undefined, setNative?: SetNative): Promise<JsonResult | undefined> {
@@ -80,6 +96,11 @@ async function write(doors: ConsoleDoors | undefined, path: string, body: Record
         if (typeof ms !== 'number' || !Number.isInteger(ms) || ms < 0 || ms > MAX_BATCH_MS) return bad(`batchQuietMs 要是 0 到 ${MAX_BATCH_MS} 之间的整数（毫秒）`);
         patch.batchQuietMs = ms;
       }
+      if (body?.groupTriggers !== undefined) {
+        const map = groupTriggers(body.groupTriggers, 'groupTriggers');
+        if (typeof map === 'string') return bad(map);
+        patch.groupTriggers = map;
+      }
       if (body?.startSnowluma === true) patch.startSnowluma = true;
       // 阳台：外面那条线开在哪个端口。换端口会打断已经连上的线，所以只认一个整数，别的一律拒。
       const rawBridge = body?.bridge;
@@ -90,7 +111,7 @@ async function write(doors: ConsoleDoors | undefined, path: string, body: Record
         if (typeof port !== 'number' || !Number.isInteger(port) || port < 0 || port > 65535) return bad('bridge.port 要是 0 到 65535 之间的整数');
         patch.bridge = { port };
       }
-      if (!Object.keys(patch).length) return bad('autoReply、bridge、mutedUntil、allowPrivate、allowGroups、batchQuietMs、startSnowluma 至少要给一个');
+      if (!Object.keys(patch).length) return bad('autoReply、bridge、mutedUntil、allowPrivate、allowGroups、batchQuietMs、groupTriggers、startSnowluma 至少要给一个');
       return ok(setNative(patch));
     }
     case '/open': {
