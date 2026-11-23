@@ -7,7 +7,15 @@ import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual, parseArgs, promisify } from 'node:util';
 
 const execute = promisify(execFile);
-const command = (file, args, options = {}) => execute(file, args, { windowsHide: true, maxBuffer: 16 * 1024 * 1024, ...options });
+async function command(file, args, options = {}) {
+  try { return await execute(file, args, { windowsHide: true, maxBuffer: 16 * 1024 * 1024, ...options }); }
+  catch (error) {
+    // pnpm prints why it failed to stdout, which the error message leaves out: without it a failure names only the command.
+    const said = String(error.stdout ?? '').trim();
+    if (said) error.message += `\n${said.slice(-2000)}`;
+    throw error;
+  }
+}
 // GNU tar (the one Git Bash puts first) reads the `C:` of an archive path as a remote host; naming the archive from its own folder works with every tar.
 const readArchive = (run, archive, args, options = {}) => run('tar', [args[0], basename(archive), ...args.slice(1)], { ...options, cwd: dirname(archive) });
 const json = async file => JSON.parse((await readFile(file, 'utf8')).replace(/^\uFEFF/, ''));
@@ -44,20 +52,33 @@ async function fingerprint(root, excluded = []) {
   return files;
 }
 
-/** Require a normal exit; never kill a host or an adapter with an unfinished turn. */
+/** The pnpm major that laid out the profile's node_modules, from pnpm's own record (JSON or YAML); undefined when it has none. */
+async function layoutMajor(profile) {
+  const record = join(profile, 'node_modules', '.modules.yaml');
+  if (!await exists(record)) return undefined;
+  const match = /packageManager["']?\s*:\s*["']?pnpm@(\d+)\./.exec(await readFile(record, 'utf8'));
+  return match ? Number(match[1]) : undefined;
+}
+
+/**
+ * Require a normal exit; never kill a host or an adapter with an unfinished turn. Her own browser keeps running after
+ * DSH exits and holds files in her world, which the backup could not read: its main process, not each helper of it.
+ */
 export async function runningProcesses(run = command) {
   if (process.platform === 'win32') {
     const query = String.raw`$ErrorActionPreference = 'Stop'; Get-CimInstance Win32_Process | Where-Object {
       $_.ProcessId -ne [int]$env:DSH_WORLD_UPDATE_PID -and (
         $_.Name -eq 'DeepSeek Harness.exe' -or
-        $_.CommandLine -match '(dsh-desktop-host[\\/].*index\.js|dsh-world[\\/].*adapter\.py)'
+        $_.CommandLine -match '(dsh-desktop-host[\\/].*index\.js|dsh-world[\\/].*adapter\.py)' -or
+        ($_.CommandLine -match 'user-data-dir="?[^"]*[\\/]worlds[\\/][^\\/"]+[\\/]browser' -and $_.CommandLine -notmatch '--type=')
       )
     } | ForEach-Object { "$($_.Name) pid $($_.ProcessId)" }`;
     const { stdout } = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(query, 'utf16le').toString('base64')], { env: { ...process.env, DSH_WORLD_UPDATE_PID: String(process.pid) } });
     return stdout.trim().split(/\r?\n/).filter(Boolean);
   }
   const { stdout } = await run('ps', ['-axo', 'pid=,args=']);
-  return stdout.split('\n').filter(line => Number(line.trim().split(/\s+/)[0]) !== process.pid && /dsh-desktop-host[/\\]|deepseek[- ]harness|dsh-world[/\\].*adapter\.py/i.test(line));
+  const herBrowser = (line) => /user-data-dir=\S*[/\\]worlds[/\\][^/\\]+[/\\]browser/.test(line) && !/--type=/.test(line);
+  return stdout.split('\n').filter(line => Number(line.trim().split(/\s+/)[0]) !== process.pid && (/dsh-desktop-host[/\\]|deepseek[- ]harness|dsh-world[/\\].*adapter\.py/i.test(line) || herBrowser(line)));
 }
 
 export async function updateWorld({ profile: profilePath, archive: archivePath, pnpm: pnpmPath }, { run = command, processes = runningProcesses, log = console.log } = {}) {
@@ -72,7 +93,7 @@ export async function updateWorld({ profile: profilePath, archive: archivePath, 
   if (!/\.(?:c|m)?js$/i.test(pnpm)) throw new Error('--pnpm must point to the DSH pnpm.cjs or pnpm.mjs entry');
   const stopped = async () => {
     const active = await processes();
-    if (active.length) throw new Error(`Please exit DSH and its WeChat adapter normally before updating: ${active.join(', ')}`);
+    if (active.length) throw new Error(`Please exit DSH, its WeChat adapter and her own browser window normally before updating: ${active.join(', ')}`);
   };
   await stopped();
   const { stdout: listing } = await readArchive(run, archive, ['-tzf']);
@@ -81,6 +102,12 @@ export async function updateWorld({ profile: profilePath, archive: archivePath, 
   const { stdout: manifestText } = await readArchive(run, archive, ['-xOzf', 'package/package.json']);
   const target = JSON.parse(manifestText.replace(/^\uFEFF/, ''));
   if (target.name !== 'dsh-world' || !/^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(target.version) || target.main !== 'lib/index.js') throw new Error('The archive must be a compiled dsh-world package');
+  // node_modules laid out by another pnpm major is linked from that major's store, and DSH's pnpm then refuses to add
+  // anything (ERR_PNPM_UNEXPECTED_STORE): profiles first installed by an older DSH, or by a pnpm found on PATH.
+  const laidOutBy = await layoutMajor(profile);
+  const pnpmMajor = laidOutBy === undefined ? undefined : Number((await run(process.execPath, [pnpm, '--version'])).stdout.trim().split('.')[0]);
+  if (pnpmMajor < laidOutBy) throw new Error(`This profile's node_modules was installed by pnpm ${laidOutBy}, but --pnpm is pnpm ${pnpmMajor}. Point --pnpm at the pnpm of the DSH you run now (its startup log names it)`);
+  const relayout = pnpmMajor > laidOutBy;
 
   const lockPath = join(dirname(profile), `.dsh-world-update-${basename(profile)}.lock`);
   let lock;
@@ -115,6 +142,11 @@ export async function updateWorld({ profile: profilePath, archive: archivePath, 
     await writeFile(join(backup, 'manifest.json'), JSON.stringify({ profile, archive: savedArchive, archiveSha256, version: target.version, protectedFiles: Object.fromEntries(protectedFiles) }, null, 2));
     await stopped();
     installing = true;
+    if (relayout) {
+      // The same packages from the lockfile, linked anew; the checks below still require every other plugin unchanged.
+      log(`node_modules was installed by pnpm ${laidOutBy}; reinstalling it with pnpm ${pnpmMajor} first`);
+      await run(process.execPath, [pnpm, 'install', '--ignore-scripts', '--config.confirm-modules-purge=false'], { cwd: profile });
+    }
     log(`Installing compiled dsh-world ${target.version} into ${profile}`);
     const install = await run(process.execPath, [pnpm, 'add', savedArchive, '--ignore-scripts'], { cwd: profile });
     if (install.stdout?.trim()) log(install.stdout.trim());

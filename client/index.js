@@ -256,25 +256,89 @@
           h('button', { className: 'dw-btn primary', disabled: !dirty || busy, onClick: save }, busy ? '保存中…' : '保存人设'),
           h('span', { className: msg.indexOf('失败') >= 0 ? 'dw-bad' : 'dw-muted' }, msg || (dirty ? '有改动还没保存' : ''))))
     }
-    /** 世界提示词模板：自己的一份，或插件自带的。 */
-    function PromptEditor() {
+    /** 她自己的模板和插件自带的差在哪：只提醒，不往她读到的东西里加；每条附上自带那一段的原文，想要就自己贴过去。 */
+    function TemplateGaps(props) {
+      var gaps = list(props.gaps)
+      return h(Card, { title: props.title, delay: 60 },
+        props.error ? h('div', { className: 'dw-bad' }, props.error)
+          : !gaps.length ? h('div', { className: 'dw-muted' }, '和插件自带的没有差距。')
+            : [h('div', { key: 'note', className: 'dw-muted' }, props.note)].concat(gaps.map(function (gap) {
+              var id = props.kind + ':' + gap.heading
+              return h('div', { key: gap.heading, style: { marginTop: 10 } },
+                props.onPick ? h('input', { type: 'checkbox', 'aria-label': '交给她融「' + gap.heading + '」', checked: props.picked(id), onChange: function (e) { props.onPick(id, e.target.checked) } }) : null,
+                h('b', null, '「' + gap.heading + '」'),
+                h('span', { className: 'dw-muted' }, gap.missing ? ' 自带的用到了 ' + gap.missing.map(function (name) { return '{{' + name + '}}' }).join('、') + '，你的没有'
+                  : gap.renamed ? ' 改了名，你的还叫「' + gap.renamed.from + '」：' + gap.renamed.note : ' 自带有这一段，你的没有'),
+                h('pre', { className: 'dw-diary' }, gap.text))
+            })))
+    }
+    var MERGE_STATUS = { waiting: '等她手上这一轮做完就交给她…', merging: '她在融…' }
+    var CHANGE_KIND = { added: '新加', changed: '改了', removed: '删了' }
+    /**
+     * 交给她融：勾上的差距发到家里，她按你的写法融进模板；插件事先留底稿，事后只查格式，读不通就换回去。
+     * 融完列出她改了哪几处，可以一键撤销（换回底稿）。
+     */
+    function PromptMerge(props) {
+      var m = props.merge || { status: 'idle' }, ids = props.ids, chosen = ids.filter(props.picked)
+      var busy = m.status === 'waiting' || m.status === 'merging'
+      var msgState = useState(''), msg = msgState[0], setMsg = msgState[1]
+      function ask() {
+        setMsg('')
+        post('prompt-merge', { items: chosen }).then(function () { if (props.onSent) props.onSent() }, failedTo(setMsg))
+      }
+      function undo() {
+        if (!window.confirm('把两份模板和她的「我」换回融合之前的样子？融合之后再改过的也会一起没了。')) return
+        post('prompt-merge/undo', {}).then(function () { if (props.onSent) props.onSent() }, failedTo(setMsg))
+      }
+      return h(Card, { title: '交给她融', delay: 90 },
+        h('div', { className: 'dw-muted' }, '把上面勾上的几处交给她：她读你的模板，按你的写法融进去，然后自动压缩家会话。改之前插件把两份模板和她的「我」各留一份底稿（她要是跟着改名去改「我」里的小标题，也在底稿里）；改完只检查模板的格式（开关成对、没有不认识的变量），读不通就都换回去。内容由她来写，「大事先问」这类规矩她也能改到，改完请看一眼下面列出的改动。'),
+        h('div', { className: 'dw-bar' },
+          h('button', { className: 'dw-btn primary', disabled: busy || !chosen.length || !props.running, onClick: ask }, '交给她融进去（' + chosen.length + ' 处）'),
+          m.undoable && !busy ? h('button', { className: 'dw-btn', onClick: undo }, '撤销这次融合') : null,
+          h('span', { className: m.status === 'failed' || msg ? 'dw-bad' : 'dw-muted' }, msg || (!props.running ? '世界开始后才能交给她。' : MERGE_STATUS[m.status] || m.message || ''))),
+        list(m.changes).map(function (file) {
+          return h('div', { key: file.file, style: { marginTop: 8 } }, h('b', null, file.file),
+            list(file.sections).map(function (change, i) {
+              return h('details', { key: i }, h('summary', null, (CHANGE_KIND[change.kind] || change.kind) + '「' + change.heading + '」'),
+                change.before != null ? h('pre', { className: 'dw-diary' }, '原来：\n' + change.before) : null,
+                change.after != null ? h('pre', { className: 'dw-diary' }, '现在：\n' + change.after) : null)
+            }))
+        }))
+    }
+    /** 世界提示词模板：自己的一份，或插件自带的；自己的那份和 alarm.md 各和自带的对照一下，差的可以交给她融。 */
+    function PromptEditor(props) {
       var state = useState(null), prompt = state[0], setPrompt = state[1]
+      var alarmState = useState(null), alarm = alarmState[0], setAlarm = alarmState[1]
       var textState = useState(''), text = textState[0], setText = textState[1]
       var msgState = useState(''), msg = msgState[0], setMsg = msgState[1]
-      function load() { api('prompts').then(function (b) { setPrompt(b.worldPrompt); setText(b.worldPrompt.text) }, function (e) { setMsg('读取失败：' + (e.message || e)) }) }
+      // 没勾掉的都算勾上：默认把差的都交给她，故意删掉的那段自己去掉勾。
+      var offState = useState({}), off = offState[0], setOff = offState[1]
+      function load() { api('prompts').then(function (b) { setPrompt(b.worldPrompt); setAlarm(b.alarm || null); setText(b.worldPrompt.text) }, function (e) { setMsg('读取失败：' + (e.message || e)) }) }
       useEffect(load, [])
+      // 她融完、撤销完，模板变了，对照要重新算。
+      var mergeStatus = props.merge && props.merge.status, seenStatus = useRef(mergeStatus)
+      useEffect(function () {
+        if (seenStatus.current === mergeStatus) return
+        seenStatus.current = mergeStatus
+        if (mergeStatus === 'done' || mergeStatus === 'idle' || mergeStatus === 'failed') load()
+      }, [mergeStatus])
       if (!prompt) return h('div', { className: 'dw-muted' }, msg || '读取中…')
       function save(value, done) {
         post('world-prompt', { text: value }).then(function () { setMsg(done); load() }, failedTo(setMsg))
       }
+      var picked = function (id) { return !off[id] }
+      var pick = function (id, on) { var next = Object.assign({}, off); next[id] = !on; setOff(next) }
+      var ids = (prompt.custom ? list(prompt.gaps).map(function (gap) { return 'world:' + gap.heading }) : [])
+        .concat(alarm && alarm.custom ? list(alarm.gaps).map(function (gap) { return 'alarm:' + gap.heading }) : [])
+      var merge = props.merge || {}
       return h('div', { className: 'dw-pane' },
         h(Card, { title: '世界提示词' },
           h('div', { style: { marginBottom: 8 } }, h('span', { className: 'dw-chip' }, prompt.custom ? '你自己的一份' : '插件自带'), ' ',
-            h('span', { className: 'dw-muted' }, '可用 {{name}} {{partner}} {{homeTitle}} {{roomDir}} {{diaryDir}} {{selfFile}} {{self}} 和 {{#home}}…{{/home}} 等，见 README')),
+            h('span', { className: 'dw-muted' }, '可用 {{name}} {{partner}} {{homeTitle}} {{roomDir}} {{diaryDir}} {{wikiDir}} {{selfFile}} {{self}} 和 {{#home}}…{{/home}} 等，见 README')),
           h('textarea', { className: 'dw-code', value: text, onChange: function (e) { setText(e.target.value); setMsg('') } })),
-        prompt.memory && list(prompt.memory.missing).length ? h(Card, { title: '这份提示词还没提到新的记忆能力' },
-          h('div', { className: 'dw-muted' }, '你自己的这份没有用到：' + list(prompt.memory.missing).join('、') + '。工具照样可用，但她在提示里读不到它们的来历。想加的话，把下面这段贴进去；插件不会自动改你的模板。'),
-          h('pre', { className: 'dw-diary' }, prompt.memory.snippet)) : null,
+        prompt.custom ? h(TemplateGaps, { title: '和插件自带的世界提示词对照', kind: 'world', gaps: prompt.gaps, picked: picked, onPick: pick, note: '按标题对照：下面这几段自带的有、你的这份没有（改过标题的也算在这里）。她读不到这几段，工具照样能用。插件不会自己改你的模板：可以自己贴进去，也可以勾上交给她融。' }) : null,
+        alarm && alarm.custom ? h(TemplateGaps, { title: '你的 alarm.md 和自带的对照', kind: 'alarm', gaps: alarm.gaps, error: alarm.error, picked: picked, onPick: pick, note: '你自己写过的这几段，没用到自带那段里的变量，多半是写完以后插件才加的能力。没写的段落本来就用自带的，不算差距。插件不会自己改你的 alarm.md：可以照自带的那段自己改，也可以勾上交给她融。' }) : null,
+        ids.length || list(merge.changes).length || merge.undoable ? h(PromptMerge, { merge: props.merge, running: props.running, ids: ids, picked: picked, onSent: props.refresh }) : null,
         h('div', { className: 'dw-bar' },
           h('button', { className: 'dw-btn primary', disabled: text === prompt.text, onClick: function () { save(text, '已保存。新会话或下次压缩后生效，也可点击「应用并压缩家会话」。') } }, '保存'),
           prompt.custom ? h('button', { className: 'dw-btn', onClick: function () { if (window.confirm('删掉你自己的这份，换回插件自带的模板？')) save('', '已换回插件自带的模板。') } }, '恢复默认') : null,
@@ -407,7 +471,7 @@
         h('div', { key: 's', className: 'dw-setting' },
           h('input', { type: 'text', inputMode: 'numeric', 'aria-label': '记忆带最近几轮', placeholder: '最近几轮，留空为 200', value: draft, onChange: function (e) { setDraft(e.target.value); setMsg('') } }),
           h('button', { className: 'dw-btn', onClick: save }, '保存')),
-        h('div', { key: 'cd', className: 'dw-muted' }, '一个窗口隔这么久再开口，就重新读一遍记忆块、人设和「我是谁」；正在聊的窗口不受影响。'),
+        h('div', { key: 'cd', className: 'dw-muted' }, '一个窗口隔这么久再开口，就重新读一遍记忆块、人设和「我」；正在聊的窗口不受影响。'),
         h('div', { key: 'c', className: 'dw-setting' },
           h('input', { type: 'text', inputMode: 'numeric', 'aria-label': '久未开口后重新读取（小时）', placeholder: '小时，留空为 24', value: cold, onChange: function (e) { setCold(e.target.value); setMsg('') } }),
           h('button', { className: 'dw-btn', onClick: saveCold }, '保存')),
@@ -440,27 +504,28 @@
         selected && selected.description ? h('div', { className: 'dw-muted' }, selected.description) : null,
         h(Status, { msg: msg }))
     }
-    /** 回顾之后是否自动应用她改过的“我是谁”：开关即存，不需要再点保存。 */
+    /** 回顾之后是否自动应用她改过的「我」：开关即存，不需要再点保存。 */
     function CompactAfterReview(props) {
       var msgState = useState(''), msg = msgState[0], setMsg = msgState[1]
       var busyState = useState(false), busy = busyState[0], setBusy = busyState[1]
       function toggle(on) {
         setBusy(true)
         post('compact-after-review', { on: on }).then(function () {
-          setMsg(on ? '已开启。每晚回顾后会自动压缩家会话。' : '已关闭。“我是谁”要等下一次压缩才生效。')
+          setMsg(on ? '已开启。每晚回顾后会自动压缩家会话。' : '已关闭。她改过的「我」要等下一次压缩才生效。')
           if (props.onSaved) props.onSaved()
         }, failedTo(setMsg)).then(function () { setBusy(false) })
       }
       return h(Card, { title: '回顾后自动压缩' },
-        h('div', { className: 'dw-muted' }, '每晚回顾结束、家空闲后，自动压缩一次家会话，换上她刚改写的“我是谁”，并重读近期聊天。'),
+        h('div', { className: 'dw-muted' }, '每晚回顾结束、家空闲后，自动压缩一次家会话，换上她刚改写的「我」，并重读近期聊天。'),
         h('label', { className: 'dw-setting' },
           h('input', { type: 'checkbox', checked: props.on, disabled: busy, 'aria-label': '回顾后自动压缩', onChange: function (e) { toggle(e.target.checked) } }),
           ' ', props.on ? '已开启' : '已关闭'),
         h(Status, { msg: msg }))
     }
     /** 每日回顾和早上兜底的时间：留空恢复默认；保存后已排好的回顾和早上闹钟立刻改到新时间。 */
+    /** Shown whether or not the life line runs; with `life: false` in the config there is nothing to schedule, so nothing to press. */
     function Schedule(props) {
-      var s = props.schedule
+      var s = props.schedule, off = s.life === false
       var reviewState = useState(s.review), review = reviewState[0], setReview = reviewState[1]
       var wakeState = useState(s.wake), wake = wakeState[0], setWake = wakeState[1]
       var msgState = useState(''), msg = msgState[0], setMsg = msgState[1]
@@ -476,10 +541,10 @@
       return h(Card, { title: '作息' },
         h('div', { className: 'dw-muted' }, '每日回顾：她回头看一天、写日记的时间，定在中午以前就回顾前一天。早上：她没定闹钟时醒来的时间。留空恢复默认（回顾 ' + s.defaults.review + '，早上 ' + s.defaults.wake + '）。'),
         h('div', { className: 'dw-setting' },
-          h('label', null, '每日回顾 ', h('input', { type: 'time', 'aria-label': '每日回顾时间', value: review, onChange: function (e) { setReview(e.target.value); setMsg('') } })),
-          h('label', null, '早上 ', h('input', { type: 'time', 'aria-label': '早上醒来时间', value: wake, onChange: function (e) { setWake(e.target.value); setMsg('') } })),
-          h('button', { className: 'dw-btn', onClick: save }, '保存')),
-        h('div', { className: 'dw-muted' }, '她看到的工具说明里写的早上时间，要等新开的会话或重启 DSH 后才更新。'),
+          h('label', null, '每日回顾 ', h('input', { type: 'time', 'aria-label': '每日回顾时间', value: review, disabled: off, onChange: function (e) { setReview(e.target.value); setMsg('') } })),
+          h('label', null, '早上 ', h('input', { type: 'time', 'aria-label': '早上醒来时间', value: wake, disabled: off, onChange: function (e) { setWake(e.target.value); setMsg('') } })),
+          h('button', { className: 'dw-btn', disabled: off, onClick: save }, '保存')),
+        h('div', { className: 'dw-muted' }, off ? '配置里写了 life: false，生活线没开：不会回顾，也不会叫醒她。在 cordis.patch.yml 里删掉这一行或改成 true，重启 DSH 后这里就能改。' : '她看到的工具说明里写的早上时间，要等新开的会话或重启 DSH 后才更新。'),
         h(Status, { msg: msg }))
     }
     /** 微信：适配器每约 2 秒来问一次，最近一次来问的时间就是连接状态；两个读取参数在它下次来问时同步。 */
@@ -863,12 +928,57 @@
           h('button', { className: 'dw-btn', disabled: busy, onClick: signIn }, busy ? '……' : '登录并打开'),
           h('button', { className: 'dw-btn', style: { marginLeft: 10 }, onClick: function () { if (props.onClose) props.onClose() } }, '取消')))
     }
+    /**
+     * 信箱不理会的程序：每点一下就存，信箱下一次看任务栏就照新的来，所以不留一份会过期的草稿名单。
+     * 「最近报过」是她这次启动以来听到的名字，点一下就不再报。她用电脑关着时名单照样能改，打开后照它来。
+     */
+    function Inbox(props) {
+      var inbox = props.inbox, names = inbox.ignore
+      var msgState = useState(''), msg = msgState[0], setMsg = msgState[1]
+      var busyState = useState(false), busy = busyState[0], setBusy = busyState[1]
+      var draftState = useState(''), draft = draftState[0], setDraft = draftState[1]
+      var has = function (name) { return names.some(function (each) { return each.toLowerCase() === name.toLowerCase() }) }
+      var told = inbox.told.filter(function (name) { return !has(name) })
+      function save(next, done) {
+        setBusy(true); setMsg('')
+        post('inbox-ignore', { names: next }).then(function () { setBusy(false); setMsg(done); if (props.onSaved) props.onSaved() },
+          function (e) { setBusy(false); setMsg('保存失败：' + (e.message || e)) })
+      }
+      function add(name) {
+        name = name.trim()
+        if (!name) return
+        if (has(name)) { setMsg('「' + name + '」已经在名单里'); return }
+        save(names.concat([name]), '存好了：信箱不再报「' + name + '」')
+        setDraft('')
+      }
+      return h(Card, { title: '信箱', delay: 60 },
+        h('div', { className: 'dw-muted', style: { marginBottom: 8 } }, props.listening
+          ? '她用电脑开着时，信箱替她看任务栏：有程序在闪或弹通知，等安静 10 秒告诉她一句。微信、QQ 有自己的通道，不算。'
+          : '她用电脑关着，信箱现在没在听。名单先存着，在概览的「接入」里打开她用电脑后照它来。'),
+        h('div', { className: 'dw-setting', style: { flexWrap: 'wrap' } }, [
+          h('div', { key: 'note', style: { flexBasis: '100%' } }, '信箱不理会这些程序（写她听到的名字，或程序的 exe 名）：'),
+          names.length ? names.map(function (name) {
+            return h('span', { key: name }, [
+              h('span', { key: 'w' }, name),
+              h('button', { key: 'x', onClick: function () { save(names.filter(function (each) { return each !== name }), '存好了：信箱又会报「' + name + '」') }, title: '让信箱再报它', disabled: busy }, '×'),
+            ])
+          }) : h('span', { key: 'none', className: 'dw-muted' }, '（一个都没有，什么都报）'),
+          h('input', { key: 'add', value: draft, placeholder: '加一个程序', 'aria-label': '信箱不理会的程序', disabled: busy,
+            onChange: function (e) { setDraft(e.target.value) }, onKeyDown: function (e) { if (e.key === 'Enter') add(draft) } }),
+          h('button', { key: 'save', className: 'dw-btn', disabled: busy || !draft.trim(), onClick: function () { add(draft) } }, '加上'),
+          inbox.custom ? h('button', { key: 'reset', className: 'dw-btn', disabled: busy, onClick: function () { save(null, '存好了：回到默认名单') } }, '恢复默认') : null,
+          told.length ? h('div', { key: 'told', style: { flexBasis: '100%' } }, ['最近报过：'].concat(told.map(function (name) {
+            return h('button', { key: name, className: 'dw-btn', disabled: busy, onClick: function () { add(name) } }, '不再报「' + name + '」')
+          }))) : null,
+          h('div', { key: 'about', className: 'dw-muted', style: { flexBasis: '100%' } }, '默认的是 Windows 自己的程序，它们不会是有人在叫她：控制台窗口（conhost、OpenConsole）、远程桌面（msrdc、mstsc）、资源管理器（explorer），以及 Windows 自己的通知（Windows.SystemToast、Microsoft.Windows）。不分大小写；写「Microsoft.Windows」也算上以「Microsoft.Windows.」开头的。DSH 自己（DeepSeek Harness，她的家）不在名单里，也永远不报：那是她自己的话。'),
+        ]),
+        msg ? h('div', { className: msg.indexOf('失败') >= 0 ? 'dw-bad' : 'dw-muted', role: 'status' }, msg) : null)
+    }
     /** 接入：微信、QQ、她的浏览器、她用电脑、她住进小屋各一个开关，关闭即撤下，状态记在 world.json。 */
     function Modules(props) {
       var m = props.modules
       var msgState = useState(''), msg = msgState[0], setMsg = msgState[1]
       var busyState = useState(''), busy = busyState[0], setBusy = busyState[1]
-      var draftState = useState(''), draft = draftState[0], setDraft = draftState[1]
       function flip(name, value) {
         var body = {}; body[name] = value
         steps(name, [body])
@@ -909,62 +1019,28 @@
           h('span', { className: 'dw-seg', role: 'group', 'aria-label': '她用电脑的模式' }, [['off', '关闭'], ['back', '后台'], ['front', '前台']].map(function (option) {
             return h('button', { key: option[0], className: mode === option[0] ? 'on' : '', disabled: !!busy, 'aria-pressed': mode === option[0], onClick: function () { choose(option[0]) } }, option[1])
           })),
-          h('div', { className: 'dw-muted', style: { flexBasis: '100%' } }, about + (mode === 'off' ? '' : '她操作时屏幕顶上有提示，连按两下 Esc 或点「停下」就能叫停。开着时她的信箱也在听：任务栏上有程序在闪或弹通知，等安静 10 秒告诉她一句（微信、QQ 有自己的通道，不算；下面列的程序也不算）。')))
+          h('div', { className: 'dw-muted', style: { flexBasis: '100%' } }, about + (mode === 'off' ? '' : '她操作时屏幕顶上有提示，连按两下 Esc 或点「停下」就能叫停。开着时她的信箱也在听：任务栏上有程序在闪或弹通知，等安静 10 秒告诉她一句（微信、QQ 有自己的通道，不算；不理会哪些程序在「她的电脑」页里改）。')))
       }
       /**
-       * 信箱不理会的程序：每点一下就存，信箱下一次看任务栏就照新的来，所以不留一份会过期的草稿名单。
-       * 「最近报过」是她这次启动以来听到的名字，点一下就不再报。
+       * Every row is always listed; only its button follows what the config and this machine allow. `setup` says what is
+       * missing and how to get it, `missing` names that state (the config, by default).
        */
-      function inboxRow() {
-        var inbox = m.desktop.inbox, names = inbox.ignore
-        var has = function (name) { return names.some(function (each) { return each.toLowerCase() === name.toLowerCase() }) }
-        var told = inbox.told.filter(function (name) { return !has(name) })
-        function save(next, done) {
-          setBusy('inbox'); setMsg('')
-          post('inbox-ignore', { names: next }).then(function () { setBusy(''); setMsg(done); if (props.onSaved) props.onSaved() },
-            function (e) { setBusy(''); setMsg('保存失败：' + (e.message || e)) })
-        }
-        function add(name) {
-          name = name.trim()
-          if (!name) return
-          if (has(name)) { setMsg('「' + name + '」已经在名单里'); return }
-          save(names.concat([name]), '存好了：信箱不再报「' + name + '」')
-          setDraft('')
-        }
-        var busyNow = busy === 'inbox'
-        return h('div', { key: 'inbox', className: 'dw-setting', style: { flexWrap: 'wrap' } }, [
-          h('div', { key: 'note', style: { flexBasis: '100%' } }, '信箱不理会这些程序（写她听到的名字，或程序的 exe 名）：'),
-          names.length ? names.map(function (name) {
-            return h('span', { key: name }, [
-              h('span', { key: 'w' }, name),
-              h('button', { key: 'x', onClick: function () { save(names.filter(function (each) { return each !== name }), '存好了：信箱又会报「' + name + '」') }, title: '让信箱再报它', disabled: busyNow }, '×'),
-            ])
-          }) : h('span', { key: 'none', className: 'dw-muted' }, '（一个都没有，什么都报）'),
-          h('input', { key: 'add', value: draft, placeholder: '加一个程序', 'aria-label': '信箱不理会的程序', disabled: busyNow,
-            onChange: function (e) { setDraft(e.target.value) }, onKeyDown: function (e) { if (e.key === 'Enter') add(draft) } }),
-          h('button', { key: 'save', className: 'dw-btn', disabled: busyNow || !draft.trim(), onClick: function () { add(draft) } }, '加上'),
-          inbox.custom ? h('button', { key: 'reset', className: 'dw-btn', disabled: busyNow, onClick: function () { save(null, '存好了：回到默认名单') } }, '恢复默认') : null,
-          told.length ? h('div', { key: 'told', style: { flexBasis: '100%' } }, ['最近报过：'].concat(told.map(function (name) {
-            return h('button', { key: name, className: 'dw-btn', disabled: busyNow, onClick: function () { add(name) } }, '不再报「' + name + '」')
-          }))) : null,
-          h('div', { key: 'about', className: 'dw-muted', style: { flexBasis: '100%' } }, '默认的是 Windows 自己的程序，它们不会是有人在叫她：控制台窗口（conhost、OpenConsole）、远程桌面（msrdc、mstsc）、资源管理器（explorer），以及 Windows 自己的通知（Windows.SystemToast、Microsoft.Windows）。不分大小写；写「Microsoft.Windows」也算上以「Microsoft.Windows.」开头的。DSH 自己（DeepSeek Harness，她的家）不在名单里，也永远不报：那是她自己的话。'),
-        ])
-      }
-      function row(name, label, info, onText, offText) {
+      function row(name, label, info, onText, offText, setup, missing) {
         // Unavailable for a reason this machine gives (no browser) or because the config does not have it.
-        var state = busy === name ? (name === 'qq' ? '正在检查或安装 SDK…' : '切换中…') : !info.available ? (info.reason ? '这台电脑用不了' : '未配置') : info.restartRequired ? 'SDK 已安装，请重启 DSH' : !info.enabled ? '已关闭' : info.running ? '运行中' : props.running ? '启动中' : '已开启，世界启动后生效'
+        var state = busy === name ? (name === 'qq' ? '正在检查或安装 SDK…' : '切换中…') : !info.available ? (info.reason ? '这台电脑用不了' : missing || '未配置') : info.restartRequired ? 'SDK 已安装，请重启 DSH' : !info.enabled ? '已关闭' : info.running ? '运行中' : props.running ? '启动中' : '已开启，世界启动后生效'
         return h('div', { key: name, className: 'dw-setting' },
           h('span', null, h('b', null, label), h('span', { className: 'dw-muted' }, ' · ' + state)),
           h('button', { className: 'dw-btn', disabled: !info.available || busy === name, onClick: function () { flip(name, !info.enabled) } }, info.enabled ? '关闭' : '开启'),
-          h('div', { className: 'dw-muted', style: { flexBasis: '100%' } }, !info.available && info.reason ? info.reason : info.enabled ? onText : offText))
+          h('div', { className: 'dw-muted', style: { flexBasis: '100%' } }, !info.available ? info.reason || setup : info.enabled ? onText : offText))
       }
       return h(Card, { title: '接入', delay: 270 },
-        row('wechat', '微信', m.wechat, '已注册 wechat_chats、wechat_history、wechat_send、wechat_delivery，可先看群聊再发言，并随之启动适配器。关闭会撤掉它们并停掉适配器。', '工具未注册，适配器已停。开启后立即注册，无需重启。'),
-        row('qq', 'QQ', m.qq, '插件自己直连 OneBot：状态和设置在 QQ 页面。关闭就断开这条通道。', '开启时检查 SDK；缺少时按需安装并提示重启 DSH。'),
+        row('wechat', '微信', m.wechat, '已注册 wechat_chats、wechat_history、wechat_send、wechat_delivery，可先看群聊再发言，并随之启动适配器。关闭会撤掉它们并停掉适配器。', '工具未注册，适配器已停。开启后立即注册，无需重启。',
+          '配置里还没允许微信：在 profile 的 cordis.patch.yml 里，dsh-world 的 config 下写 wechat: true，重启 DSH 后这里就能开。微信还要另外准备 Windows 适配器，见 README 的微信一节。'),
+        row('qq', 'QQ', m.qq, '插件自己直连 OneBot：状态和设置在 QQ 页面。关闭就断开这条通道。', '开启时检查 SDK；缺少时按需安装并提示重启 DSH。',
+          '配置里还没允许 QQ：在 profile 的 cordis.patch.yml 里，dsh-world 的 config 下写 qqNative（enabled: true，再填 OneBot 的 wsUrl 和 accessToken，见 INSTALL.md），重启 DSH 后这里就能开。'),
         m.computer ? row('computer', '她的浏览器', m.computer, '她有一个自己的 Edge 浏览器，是单独的窗口，登录的是她自己的账号，不用你的鼠标键盘；她学会的操作也存在这里，可以直接再跑。只在她的家里能用。', '她没有自己的浏览器。开启后她下一步就能用；她用电脑也要先开这一项。') : null,
         m.desktop ? desktopRow() : null,
-        m.desktop && m.desktop.enabled && m.desktop.inbox ? inboxRow() : null,
-        m.cottage && m.cottage.available ? row('cottage', '她住进小屋', m.cottage, '她有一个 cottage 工具：在小屋和院子里走动、做饭、晾衣服、种菜种花；锅里的好了、衣服干了、菜熟了或缺水了，她下一次醒着时会在「别处的动静」里看到（不会叫醒她）。她在哪、在忙什么，小屋里看得到。只在她的家里能用。', '小屋只是画面，她自己看不到也用不了。开启后她才住进去，她的小屋记在这个世界的 cottage.json 里，关掉也留着。') : null,
+        m.cottage ? row('cottage', '她住进小屋', m.cottage, '她有一个 cottage 工具：在小屋和院子里走动、做饭、晾衣服、种菜种花；锅里的好了、衣服干了、菜熟了或缺水了，她下一次醒着时会在「别处的动静」里看到（不会叫醒她）。她在哪、在忙什么，小屋里看得到。只在她的家里能用。', '小屋只是画面，她自己看不到也用不了。开启后她才住进去，她的小屋记在这个世界的 cottage.json 里，关掉也留着。', '小屋还没装：先在顶部「小屋」标签里安装，装好这里就能开。', '未安装') : null,
         msg ? h('div', { className: msg.indexOf('失败') >= 0 ? 'dw-bad' : 'dw-muted', role: 'status' }, msg) : null)
     }
     /** 她的浏览器：Edge 在不在、她按分类学会了哪些操作、各自最近一次结果；按钮把窗口拿到前面来扫码。 */
@@ -1067,7 +1143,8 @@
           snap.workspace ? h(WorkspacePermission, { workspace: snap.workspace, onSaved: props.refresh }) : null,
           typeof snap.compactAfterReview === 'boolean' ? h(CompactAfterReview, { on: snap.compactAfterReview, onSaved: props.refresh }) : null,
           snap.schedule ? h(Schedule, { schedule: snap.schedule, onSaved: props.refresh }) : null,
-          snap.modules && (snap.modules.wechat.available || snap.modules.qq.available || (snap.modules.computer && snap.modules.computer.available) || (snap.modules.cottage && snap.modules.cottage.available)) ? h(Modules, { modules: snap.modules, running: snap.running, onSaved: props.refresh }) : null))
+          // Always listed, even with nothing allowed yet: a missing card leaves a new user nowhere to start.
+          snap.modules ? h(Modules, { modules: snap.modules, running: snap.running, onSaved: props.refresh }) : null))
     }
     function Records(props) {
       var snap = props.snap, zone = snap.timeZone, life = snap.life, compactions = list(snap.compactions)
@@ -1237,7 +1314,7 @@
         room.life ? h(Weather, { now: room.life.weather && room.life.weather.kind, refresh: props.refresh }) : null)
     }
 
-    var TABS = [['overview', '概览'], ['room', '小屋'], ['persona', '人设'], ['prompt', '世界提示词'], ['records', '记录'], ['archive', '档案'], ['photos', '相册'], ['qq', 'QQ'], ['wechat', '微信'], ['computer', '她的浏览器']]
+    var TABS = [['overview', '概览'], ['room', '小屋'], ['persona', '人设'], ['prompt', '世界提示词'], ['records', '记录'], ['archive', '档案'], ['photos', '相册'], ['qq', 'QQ'], ['wechat', '微信'], ['computer', '她的电脑']]
     /** 一份快照的画面；life 为 null（停着，或生活线没能启动）或缺了哪一块都不会崩。 */
     function View(props) {
       var snap = props.snap, error = props.error
@@ -1245,7 +1322,7 @@
       var panelState = useState(null), panel = panelState[0], setPanel = panelState[1]
       var busyState = useState(false), busy = busyState[0], setBusy = busyState[1]
       var failState = useState(null), fail = failState[0], setFail = failState[1]
-      var running = snap.running === true
+      var running = snap.running === true, desktop = snap.modules && snap.modules.desktop
       var name = snap.name && snap.name !== 'TA' ? snap.name : ''
       var addingState = useState(false), adding = addingState[0], setAdding = addingState[1]
       var newIdState = useState(''), newId = newIdState[0], setNewId = newIdState[1]
@@ -1286,7 +1363,7 @@
         h('nav', { className: 'dw-tabs' }, TABS.map(function (t) { return h('button', { key: t[0], className: 'dw-tab' + (tab === t[0] ? ' on' : ''), onClick: function () { setTab(t[0]) } }, t[1]) })),
         tab === 'persona' || tab === 'prompt' ? h('div', { className: 'dw-pane' },
           h(HomeApply, { snap: snap, refresh: props.refresh }),
-          tab === 'persona' ? h(PersonaEditor, { onSaved: props.refresh }) : h(PromptEditor)) : null,
+          tab === 'persona' ? h(PersonaEditor, { onSaved: props.refresh }) : h(PromptEditor, { merge: snap.promptMerge, running: running, refresh: props.refresh })) : null,
         tab === 'overview' ? h(Overview, { snap: snap, refresh: props.refresh }) : null,
         tab === 'room' ? h(Room, { name: name, room: snap.room, refresh: props.refresh }) : null,
         tab === 'records' ? h(Records, { snap: snap, tick: props.tick }) : null,
@@ -1300,7 +1377,9 @@
           : h(Card, { title: '微信' }, h('div', { className: 'dw-muted' }, '微信通道未开启，请在概览的「接入」中检查配置和开关。'))) : null,
         tab === 'computer' ? h('div', { className: 'dw-pane' }, snap.computer
           ? h(Computer, { computer: snap.computer, zone: snap.timeZone })
-          : h(Card, { title: '她的浏览器' }, h('div', { className: 'dw-muted' }, '她的浏览器没有开启，请在概览的「接入」中检查配置和开关。'))) : null,
+          : h(Card, { title: '她的浏览器' }, h('div', { className: 'dw-muted' }, '她的浏览器没有开启，请在概览的「接入」中检查配置和开关。')),
+          // The inbox exists only where she can use the computer (Windows); its list can be set before that is on.
+          desktop && desktop.available && desktop.inbox ? h(Inbox, { inbox: desktop.inbox, listening: desktop.running === true, onSaved: props.refresh }) : null) : null,
           panel ? h(Panel, { kind: panel, onClose: function () { setPanel(null) } }) : null)
     }
 
@@ -1338,7 +1417,7 @@
       return h(View, { snap: snap, error: error, tick: tick, refresh: function () { if (loadRef.current) loadRef.current() } })
     }
 
-    return { Console: Console, test: { UpdateNotice: UpdateNotice, Room: Room, Budget: Budget, Health: Health, Memory: Memory, MemorySearch: MemorySearch, latest: latest, searchMemory: searchMemory, memoryQuery: memoryQuery, dayStartIso: dayStartIso, WorkspacePermission: WorkspacePermission, CompactAfterReview: CompactAfterReview, Schedule: Schedule, Modules: Modules, Computer: Computer, HomeApply: HomeApply, PhotoAlbum: PhotoAlbum, Wechat: Wechat, Activity: Activity, Diary: Diary, Qq: Qq, Panel: Panel, View: View, Overview: Overview, PersonaEditor: PersonaEditor, PromptEditor: PromptEditor, loadSnapshot: loadSnapshot, renderPersona: renderPersona } }
+    return { Console: Console, test: { UpdateNotice: UpdateNotice, Inbox: Inbox, TemplateGaps: TemplateGaps, PromptMerge: PromptMerge, Room: Room, Budget: Budget, Health: Health, Memory: Memory, MemorySearch: MemorySearch, latest: latest, searchMemory: searchMemory, memoryQuery: memoryQuery, dayStartIso: dayStartIso, WorkspacePermission: WorkspacePermission, CompactAfterReview: CompactAfterReview, Schedule: Schedule, Modules: Modules, Computer: Computer, HomeApply: HomeApply, PhotoAlbum: PhotoAlbum, Wechat: Wechat, Activity: Activity, Diary: Diary, Qq: Qq, Panel: Panel, View: View, Overview: Overview, PersonaEditor: PersonaEditor, PromptEditor: PromptEditor, loadSnapshot: loadSnapshot, renderPersona: renderPersona } }
   }
 
   async function loadWorldIds() {

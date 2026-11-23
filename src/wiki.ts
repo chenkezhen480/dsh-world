@@ -55,7 +55,7 @@ export function nearTitles(pages: readonly AuthorDoc[], title: string, count = 8
 
 const HEAD = (dir: string) => `【我写过的认识】页面在 ${dir}，一个主题一个文件，页和页用 [[标题]] 互相链接。想看哪一页，用 wiki_open 写页名打开；想查哪一页提到过某件事，用 memory_find（kinds 写 wiki）。`;
 /**
- * What she sees of her wiki when a session starts: her own `目录.md`, cut like her 我是谁; before she has written one,
+ * What she sees of her wiki when a session starts: her own `目录.md`, cut like her 「我」; before she has written one,
  * the page names, newest first, as many as fit. Nothing of a page's body. Undefined when she has no page.
  */
 export function wikiCatalog(pages: readonly AuthorDoc[], dir: string): string | undefined {

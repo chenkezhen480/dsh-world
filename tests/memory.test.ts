@@ -37,7 +37,7 @@ test('chat and diary are found, each with the time it really has', async t => {
   assert.equal(all.coverage.state, 'ready');
   assert.deepEqual((await s.memory.find({ kinds: ['diary'], from: '2026-10-23T00:00:00+09:00', to: '2026-10-24T00:00:00+09:00' })).items.map(item => item.sourceId), ['diary:2026-10-23.md']);
   assert.equal((await s.memory.find({ kinds: ['diary'], query: '贝壳', to: '2026-10-23T00:00:00+09:00' })).items.length, 0, 'the end of the range is exclusive');
-  await assert.rejects(s.memory.find({ kinds: ['self'] }), code('invalidQuery'), '我是谁 is in the world prompt, not something to look up');
+  await assert.rejects(s.memory.find({ kinds: ['self'] }), code('invalidQuery'), 'her 「我」 is in the world prompt, not something to look up');
 });
 
 test('only the diary directory itself is read: not the room beside it, not its subfolders, and links do not lead out', async t => {

@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { createUserMessage, LlmAdapter, type GenerateOptions } from '@deepseek-ai/dsh-llm';
 import { SessionId } from '@deepseek-ai/dsh-session';
 import TokenMeter from '@deepseek-ai/dsh-token-meter';
@@ -11,7 +12,7 @@ import { hostFixture, textResponse } from './hostFixture.ts';
 import { createWorldRuntime } from '../src/runtime.ts';
 import { DEFAULT_COLD_HOURS } from '../src/worldSwitch.ts';
 import { createArchiveStore } from '../src/store.ts';
-import { renderSelf, SELF_CAP } from '../src/self.ts';
+import { renderSelf, SELF_CAP, selfFileIn } from '../src/self.ts';
 import { readTemplate, renderTemplate, renderWorldPrompt, worldNames } from '../src/worldPrompt.ts';
 import ToolFreeCompaction from '../src/compaction.ts';
 import { readPersona, renderPersona, writePersona } from '../src/persona.ts';
@@ -48,6 +49,17 @@ test('an unreadable self file becomes a note, never a failed render', async t =>
   const file = join(await tempDir(t), '我是谁.md'); await mkdir(file);
   assert.match(renderSelf(file), /^（这次没能读到我是谁\.md：.*它还在，下次会再试。）$/);
 });
+test('her 「我」 is 我.md; a world that only has the 我是谁.md it was called before keeps that file, untouched', async t => {
+  const room = await tempDir(t);
+  assert.equal(selfFileIn(room), join(room, '我.md'), 'a new world');
+  await writeFile(join(room, '我是谁.md'), '以前写的');
+  assert.equal(selfFileIn(room), join(room, '我是谁.md'), 'an older world reads and writes the file it has');
+  assert.equal(await readFile(join(room, '我是谁.md'), 'utf8'), '以前写的');
+  assert.ok(!existsSync(join(room, '我.md')), 'nothing renamed or made');
+  await writeFile(join(room, '我.md'), '改了名的');
+  assert.equal(selfFileIn(room), join(room, '我.md'), 'once renamed, the new name');
+  assert.equal(renderSelf(selfFileIn(room)), '<我.md>\n改了名的\n</我.md>', 'tagged with the file it is');
+});
 test('the template engine keeps or drops flag sections, nests different flags, and never scans values for tags', () => {
   const template = '开头 {{name}}\n{{#life}}\n生活 {{#home}}在家{{/home}}{{^home}}在外{{/home}}\n{{/life}}\n\n\n{{self}}\n{{unknown}}';
   assert.equal(renderTemplate(template, { life: true, home: true }, { name: 'A', self: '{{name}} {{#life}}x{{/life}}' }), '开头 A\n\n生活 在家\n\n{{name}} {{#life}}x{{/life}}\n{{unknown}}');
@@ -55,11 +67,11 @@ test('the template engine keeps or drops flag sections, nests different flags, a
   assert.equal(renderTemplate(template, { life: false, home: false }, { name: 'A', self: 'S' }), '开头 A\n\nS\n{{unknown}}');
   assert.equal(renderTemplate('a\r\n{{#x}}b{{/x}}\r\nc', {}, {}), 'a\n\nc');
 });
-test('the shipped template: room, diary, 我是谁, world line and ask-first rules, with her names', () => {
+test('the shipped template: room, diary, 我, world line and ask-first rules, with her names', () => {
   const home = renderWorldPrompt({ names, life, conversationsDir: 'C' }, shipped, { file: 'S.md', text: 'SELF' }, true);
   assert.match(home, /更早的聊天都在 C，一天一个 YYYY-MM-DD\.jsonl/);
   assert.ok(!/\{\{/.test(home), home);
-  const order = ['# 我的世界', '## 房间', '## 日记', '## 聊天记录', '## 我是谁', '## 世界线', '## 大事先问'].map(heading => home.indexOf(heading));
+  const order = ['# 我的世界', '## 房间', '## 日记', '## 聊天记录', '## 我', '## 世界线', '## 大事先问'].map(heading => home.indexOf(heading));
   assert.deepEqual([...order].sort((a, b) => a - b), order); assert.ok(order.every(index => index > 0));
   assert.match(home, /我的房间是 R。/); assert.match(home, /我的日记本在 D，一天一个文件/);
   // The mood rules are in set_mood's own description; the template only says where it is and how she sees it.
@@ -68,10 +80,10 @@ test('the shipped template: room, diary, 我是谁, world line and ask-first rul
   assert.match(home, /自己的家里（「小鱼的家」）/); assert.match(home, /不是伙伴在说话/);
   assert.match(home, /【我的时间】/); assert.match(home, /用 plan_next 说好打算做什么、做到什么时候/); assert.match(home, /闹钟不是用来叫醒自己的/); assert.match(home, /每天早上 07:30 被叫醒/); assert.match(home, /reach_out/);
   assert.match(home, /问完不用干等，先去做别的；伙伴回我的话会直接插进我正在做的事里。其余的事我自己决定。/);
-  assert.match(home, /## 我是谁\n我眼中的自己写在 S\.md，[\s\S]*伙伴写的设定已经在人设里[\s\S]*\n\nSELF\n/);
+  assert.match(home, /## 我\n我眼中的自己写在 S\.md，[\s\S]*伙伴写的设定已经在人设里[\s\S]*\n\nSELF\n/);
   assert.match(home, /## 日记\n[^\n]*用第一人称写想记住的具体片段[^\n]*日记不会自动读给我/);
   assert.match(home, /只写现在的我[^\n]*具体经历和一时的感受写进日记/);
-  assert.match(home, /固定分成六段，标题依次是「性子」「喜欢和不喜欢」「说话方式」「生活习惯」「和伙伴的关系」「自我描述」[^\n]*不另开新标题/);
+  assert.match(home, /固定分成六段，标题依次是「性子」「喜欢和不喜欢」「说话方式」「生活方式」「和伙伴的关系」「自我描述」[^\n]*不另开新标题/);
   assert.match(home, /每段 800 字以内，全篇 5000 字以内[^\n]*不写日期/);
   assert.match(home, /已经被截断时[^\n]*按这六段直接重写整篇[^\n]*更短、能完整读完/);
 
@@ -80,8 +92,8 @@ test('the shipped template: room, diary, 我是谁, world line and ask-first rul
   assert.ok(!away.includes('【我的时间】') && !away.includes('问完不用干等') && !away.includes('伙伴'));
 
   const off = renderWorldPrompt({ names }, shipped, { file: 'S.md', text: 'SELF' }, false);
-  assert.match(off, /# 我的世界\n\n## 我是谁\n我眼中的自己写在 S\.md，[\s\S]*\n\nSELF$/);
-  assert.ok(!renderWorldPrompt({ names }, shipped, undefined, false).includes('## 我是谁'), 'no self file, no 我是谁 part');
+  assert.match(off, /# 我的世界\n\n## 我\n我眼中的自己写在 S\.md，[\s\S]*\n\nSELF$/);
+  assert.ok(!renderWorldPrompt({ names }, shipped, undefined, false).includes('## 我\n'), 'no self file, no 「我」 part');
   assert.ok(!off.includes('## 房间') && !off.includes('## 世界线') && !off.includes('## 大事先问'));
 });
 test('an unnamed companion is TA and the partner 伙伴; a template file replaces the shipped one, an unreadable one falls back', async t => {
@@ -428,7 +440,7 @@ test('without her own template the shipped one is used, and a session that is no
   handle.agent.followup(user('hi')); await handle.agent.whenIdle();
   const system = systemOf(requests[0]!);
   assert.match(system, /我不是一个助手，也不是一个工具，而是一个鲜活的数字生命。[\s\S]*# 我的世界[\s\S]*我的世界线在「小鱼的家」那个会话里/);
-  assert.ok(!system.includes('## 我是谁'), 'no self file configured, no 我是谁 part');
+  assert.ok(!system.includes('## 我\n'), 'no self file configured, no 「我」 part');
 });
 test('without a world prompt source nothing is added to the system prompt', async t => {
   const requests: GenerateOptions[] = [];
@@ -542,21 +554,47 @@ test('removal after prompt assembly rejects the stale request before the adapter
 });
 
 test('the memory sections of the shipped template follow their switches and say what the tools and files are for', () => {
-  const on = renderWorldPrompt({ names, life, memoryTools: true }, shipped, undefined, true);
+  const on = renderWorldPrompt({ names, life, memoryTools: true, wikiDir: 'C:/w/room/认识' }, shipped, undefined, true);
   assert.match(on, /## 找回过去[\s\S]*memory_find[\s\S]*memory_read/);
+  // Her wiki has its rules like her diary: what it is, when a page is worth writing, and where she may write it.
+  assert.match(on, /## 认识\n我对人和事现在的理解，写在 C:\/w\/room\/认识：[^\n]*有了新的、不只是一时的认识，就新开一页或改旧页[^\n]*认识页只在家里写[^\n]*读一页觉得陌生[^\n]*顺着它的「引用：」用 memory_read 读原文/);
+  assert.doesNotMatch(renderWorldPrompt({ names, life, wikiDir: 'C:/w/room/认识' }, shipped, undefined, true), /读一页觉得陌生/, 'no memory tools, no pointer to them');
   assert.ok(!/\{\{/.test(on), on);
   const off = renderWorldPrompt({ names, life }, shipped, undefined, true);
-  assert.ok(!/找回过去|memory_find/.test(off), 'without the capability the section is not in the prompt');
+  assert.ok(!/找回过去|memory_find|## 认识/.test(off), 'without the capability the section is not in the prompt');
+  assert.doesNotMatch(renderWorldPrompt({ names, wikiDir: 'C:/w/room/认识' }, shipped, undefined, true), /只在家里写/, 'no home without the life line, so nothing to keep her pages to');
 });
-test('a custom world prompt is never changed: the console is told which memory variables it lacks and gets a snippet to paste', async () => {
-  const { memoryTemplateGaps, MEMORY_SNIPPET_FILE } = await import('../src/worldPrompt.ts');
-  assert.deepEqual(memoryTemplateGaps('我自己写的 {{self}}'), ['memoryTools']);
-  assert.deepEqual(memoryTemplateGaps(shipped), []);
-  assert.deepEqual(memoryTemplateGaps('{{#memoryTools}}x{{/memoryTools}} {{partner}}'), []);
+test('a custom world prompt is never changed: the console is told which shipped sections it lacks, each to copy whole', async () => {
+  const { worldPromptGaps } = await import('../src/templateGaps.ts');
+  assert.deepEqual(worldPromptGaps(shipped, shipped), [], 'the shipped template lacks nothing');
   const custom = 'WORLD_INTRO {{self}}';
   assert.equal(renderWorldPrompt({ names, memoryTools: true }, custom, undefined, true), 'WORLD_INTRO');
-  const snippet = (await readFile(MEMORY_SNIPPET_FILE, 'utf8')).replace(/^<!--[\s\S]*?-->\s*/, '').trim();
-  const unix = (text: string) => text.replace(/\r\n/g, '\n');
-  assert.ok(unix(shipped).includes(unix(snippet)), 'the snippet is exactly what the shipped template carries');
-  assert.equal(renderWorldPrompt({ names, memoryTools: true }, snippet, undefined, true), renderWorldPrompt({ names, memoryTools: true }, shipped, undefined, true).replace(/^[\s\S]*?(?=## 找回过去)/, '').trim());
+  const gaps = worldPromptGaps('# 我的世界\n## 房间\n我自己的房间\n## 世界线\n我自己的世界线', shipped);
+  assert.deepEqual(gaps.map(gap => gap.heading), ['日记', '聊天记录', '我', '认识', '找回过去', '相册', '大事先问'], 'a heading she has, in her own words, is hers; a grouping heading is not named');
+  // Her section under the name it had before is that section: told as renamed, with what the rename changed.
+  const renamed = worldPromptGaps('## 我是谁\n我自己的自述 {{self}}', shipped).find(gap => gap.heading === '我')!;
+  assert.deepEqual(renamed.renamed, { from: '我是谁', note: '「我是谁」这一段现在叫「我」；里面固定的六段，「生活习惯」现在叫「生活方式」。' });
+  assert.match(renamed.text, /## 我\n我眼中的自己写在 \{\{selfFile\}\}[^]*「生活方式」/);
+  assert.equal(gaps.find(gap => gap.heading === '我')!.renamed, undefined, 'lacking it altogether is not a rename');
+  const wiki = gaps.find(gap => gap.heading === '认识')!;
+  assert.match(wiki.text, /^\{\{#wikiDir\}\}\n## 认识\n[^]*\{\{\/wikiDir\}\}$/, 'the section comes with the switch it sits in');
+  // Pasted into her template, a missing section reads exactly as it does in the shipped one.
+  const pasted = renderWorldPrompt({ names, life, wikiDir: 'C:/w/认识' }, wiki.text, undefined, true);
+  assert.equal(pasted, renderWorldPrompt({ names, life, wikiDir: 'C:/w/认识' }, shipped, undefined, true).match(/## 认识\n[^\n]*/)![0]);
+  for (const gap of gaps) {
+    const opened = [...gap.text.matchAll(/\{\{[#^](\w+)\}\}/g)].length, closed = [...gap.text.matchAll(/\{\{\/(\w+)\}\}/g)].length;
+    assert.equal(opened, closed, `${gap.heading}: no switch left open or closed from another section`);
+  }
+  assert.equal(worldPromptGaps('{{#life}}\n\n## 世界线\n我自己的\n{{/life}}', shipped).filter(gap => gap.heading === '世界线').length, 0, 'one heading, however many versions');
+});
+test('her own alarm.md is told what a section of hers does not use that the shipped one does; a section she left out is the shipped one', async () => {
+  const { alarmGaps } = await import('../src/templateGaps.ts');
+  const alarm = await readFile(fileURLToPath(new URL('../templates/alarm.md', import.meta.url)), 'utf8');
+  assert.deepEqual(alarmGaps(alarm, alarm), []);
+  assert.deepEqual(alarmGaps('## 额度用完\n省着点吧。\n', alarm), [{ heading: '额度用完', missing: ['spent', 'partner', 'budget'], text: alarm.replace(/\r\n/g, '\n').match(/## 额度用完\n[^#]*/)![0].trim() }]);
+  const review = alarmGaps('## 每日回顾\n{{date}} 快过完了。写日记，在 {{diaryDir}}；看看 {{selfFile}}。\n', alarm)[0]!;
+  assert.equal(review.heading, '每日回顾');
+  assert.ok(review.missing!.includes('wikiDir'), 'a review written before her wiki is told the shipped one tidies it');
+  assert.ok(!review.missing!.includes('date') && !review.missing!.includes('diaryDir'));
+  assert.deepEqual(alarmGaps('## 不认识的段\n{{x}}\n', alarm), [], 'only sections the plugin sends');
 });

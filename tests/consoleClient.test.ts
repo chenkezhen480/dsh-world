@@ -117,6 +117,10 @@ test('WeChat and QQ controls open on separate pages and stay out of the overview
   };
   const overview = nodes(ui.Overview({ snap, refresh }));
   assert.ok(!overview.some(node => node.type === ui.Wechat || node.type === ui.Qq));
+  // A first install: nothing allowed in the config and no browser found (a Mac); the switches are still there to say so.
+  const nothing = { available: false, enabled: false, running: false };
+  const fresh = nodes(ui.Overview({ snap: { ...snap, modules: { wechat: nothing, qq: nothing, computer: { ...nothing, reason: '这台电脑上找不到 Edge 或 Chrome' }, desktop: { ...nothing, reason: '她用电脑目前只支持 Windows。' }, cottage: nothing, foreground: nothing } }, refresh }));
+  assert.ok(fresh.some(node => node.type === ui.Modules), 'the 接入 card is shown with nothing configured');
   const wechat = open('微信').find(node => node.type === ui.Wechat);
   assert.ok(wechat);
   assert.equal(wechat.props!.wechat, snap.wechat);
@@ -134,6 +138,18 @@ test('WeChat and QQ controls open on separate pages and stay out of the overview
   at = 0;
   states[0] = 'qq';
   assert.match(text(ui.View({ snap: stopped, refresh })), /QQ.*未开启/);
+  // Her computer page: the browser card, and below it the inbox settings, even before her use of the computer is on.
+  const inbox = { ignore: ['conhost'], custom: false, told: [] };
+  const modules = { wechat: nothing, qq: nothing, computer: nothing, desktop: { available: true, enabled: false, running: false, inbox }, cottage: nothing, foreground: nothing };
+  at = 0;
+  states[0] = 'computer';
+  const page = nodes(ui.View({ snap: { ...stopped, modules }, refresh }));
+  assert.ok(page.some(node => node.type === 'button' && text(node) === '她的电脑'), 'the tab is named for the whole computer');
+  const card = page.find(node => node.type === ui.Inbox);
+  assert.ok(card, 'the inbox settings live on her computer page');
+  assert.deepEqual([card.props!.inbox, card.props!.listening, card.props!.onSaved], [inbox, false, refresh]);
+  at = 0;
+  assert.ok(!nodes(ui.View({ snap: { ...stopped, modules: { ...modules, desktop: { ...modules.desktop, available: false, reason: '她用电脑目前只支持 Windows。' } } }, refresh })).some(node => node.type === ui.Inbox), 'no inbox where she cannot use the computer');
 });
 
 test('workspace permissions render host options, preserve dirty drafts on polls and save the selected value with errors shown', async () => {
@@ -285,7 +301,7 @@ test('the compact-after-review switch saves at once, says what it does and shows
   const render = () => { at = 0; tree = expand(component({ on, onSaved: () => { refreshed++; } })); };
   const box = () => tree.find(el => el.type === 'input')!;
   render();
-  assert.equal(box().props!.checked, false); assert.match(text(tree), /自动压缩一次家会话，换上她刚改写的“我是谁”/); assert.match(text(tree), /已关闭/);
+  assert.equal(box().props!.checked, false); assert.match(text(tree), /自动压缩一次家会话，换上她刚改写的「我」/); assert.match(text(tree), /已关闭/);
   box().props!.onChange({ target: { checked: true } }); render(); assert.equal(box().props!.disabled, true, 'busy while saving');
   await new Promise(setImmediate); render();
   assert.equal(requests.length, 1); assert.equal(requests[0].url, '/dsh-world/worlds/fish/console/compact-after-review');
@@ -339,6 +355,11 @@ test('the schedule card saves the review and morning times, refuses a bad one an
   await save();
   assert.deepEqual(JSON.parse(requests.at(-1)!.options.body), { review: null, wake: '07:00' });
   assert.equal(input('每日回顾时间').props!.value, '23:00', 'empty goes back to the default and shows it');
+  // `life: false` in the config: the card is still there, with nothing to press and what to change to get it.
+  states.length = 0; at = 0;
+  tree = expand(component({ schedule: { ...schedule, life: false } }));
+  assert.deepEqual([input('每日回顾时间').props!.disabled, input('早上醒来时间').props!.disabled, tree.find(el => el.type === 'button')!.props!.disabled], [true, true, true]);
+  assert.match(text(tree), /配置里写了 life: false[^]*重启 DSH 后这里就能改/);
 });
 
 test('the memory card saves the cold-session hours, refuses a bad one and empties back to 24 (#36)', async () => {
@@ -483,7 +504,9 @@ test('the module switches say what is on, what is off and what the config does n
   assert.match(desktop({ available: true, enabled: true, running: true }), /她用电脑 · 后台模式关闭后台前台后台模式：她每次只看一个窗口的截图[^]*连按两下 Esc/);
   assert.match(desktop({ available: true, enabled: true, running: true }, { available: true, enabled: true, running: true }), /她用电脑 · 前台模式[^]*前台模式：你把电脑交给她[^]*确认一次管理员权限/);
   assert.doesNotMatch(desktop({ available: true, enabled: true, running: true }, { available: true, enabled: true, running: true }), /前台模式 · /, 'no second row for it');
-  assert.match(on, /微信 · 运行中/); assert.match(on, /wechat_send/); assert.match(on, /QQ · 未配置/);
+  assert.match(on, /微信 · 运行中/); assert.match(on, /wechat_send/); assert.match(on, /QQ · 未配置关闭配置里还没允许 QQ：[^]*qqNative[^]*重启 DSH 后这里就能开/);
+  assert.match(render({ wechat: { available: false, enabled: false, running: false }, qq: { available: true, enabled: false, running: false } }), /微信 · 未配置开启配置里还没允许微信：[^]*wechat: true/, 'not configured: what to write, not what the switch would do');
+  assert.match(render({ wechat: { available: false, enabled: false, running: false }, qq: { available: false, enabled: false, running: false }, cottage: { available: false, enabled: false, running: false } }), /她住进小屋 · 未安装开启小屋还没装：先在顶部「小屋」标签里安装/, 'the cottage row is listed before the room is installed');
   const off = render({ wechat: { available: true, enabled: false, running: false }, qq: { available: true, enabled: false, running: false } });
   assert.match(off, /微信 · 已关闭/); assert.match(off, /QQ · 已关闭/); assert.match(off, /工具未注册/);
   assert.match(render({ wechat: { available: true, enabled: true, running: false }, qq: { available: true, enabled: true, running: false } }, false), /已开启，世界启动后生效/);
@@ -552,7 +575,7 @@ test('the archive tab builds its query in the configured zone, drops a late answ
   assert.ok(!seen.some(entry => entry.startsWith('read:')));
 });
 
-test('the inbox list under her use of the computer saves each change at once and offers the names she was told (#61)', async () => {
+test('the inbox list on her computer page saves each change at once and offers the names she was told (#61)', async () => {
   type El = { type: unknown; props: Record<string, any> | null; children: unknown[] };
   const states: unknown[] = [];
   let at = 0, refreshed = 0, error = '';
@@ -562,12 +585,12 @@ test('the inbox list under her use of the computer saves each change at once and
     useState(init: unknown) { const index = at++; if (!(index in states)) states[index] = init; return [states[index], (value: unknown) => { states[index] = typeof value === 'function' ? (value as (old: unknown) => unknown)(states[index]) : value; }]; },
     useEffect: () => {}, useRef: (current: unknown) => ({ current }),
   };
-  let loaded: { factory: (require: (name: string) => unknown) => { __test: (worldId: string) => { Modules: (props: unknown) => unknown } } } | undefined;
+  let loaded: { factory: (require: (name: string) => unknown) => { __test: (worldId: string) => { Modules: (props: unknown) => unknown; Inbox: (props: unknown) => unknown } } } | undefined;
   runInNewContext(await readFile('client/index.js', 'utf8'), {
     window: { __ModuleLoader__: { load: (entry: typeof loaded) => { loaded = entry; } } },
     fetch: async (url: string, options: { body: string }) => { requests.push({ url, body: JSON.parse(options.body) }); return { ok: !error, status: error ? 400 : 200, json: async () => error ? { error } : { ok: true } }; },
   });
-  const { Modules } = loaded!.factory(() => react).__test('fish');
+  const { Modules, Inbox } = loaded!.factory(() => react).__test('fish');
   const expand = (value: unknown): El[] => {
     if (Array.isArray(value)) return value.flatMap(expand);
     if (!value || typeof value !== 'object') return [];
@@ -577,10 +600,15 @@ test('the inbox list under her use of the computer saves each change at once and
   const text = (value: unknown): string => Array.isArray(value) ? value.map(text).join('') : value && typeof value === 'object' ? text((value as El).children) : value == null || typeof value === 'boolean' ? '' : String(value);
   const off = { available: false, enabled: false, running: false };
   let inbox = { ignore: ['conhost', 'msrdc'], custom: false, told: ['远程桌面', 'MSRDC', 'Microsoft Edge'] }, enabled = true, tree: El[] = [];
-  const render = () => { at = 0; tree = expand(Modules({ running: true, onSaved: () => { refreshed++; }, modules: { wechat: off, qq: off, computer: { available: true, enabled: true, running: true }, desktop: { available: true, enabled, running: enabled, inbox }, foreground: off } })); };
+  const render = () => { at = 0; tree = expand(Inbox({ inbox, listening: enabled, onSaved: () => { refreshed++; } })); };
   const button = (label: string | RegExp) => tree.find(el => el.type === 'button' && (typeof label === 'string' ? text(el) === label : label.test(text(el))))!;
   const settle = async () => { await new Promise(setImmediate); render(); };
+  at = 0;
+  const switches = text(expand(Modules({ running: true, modules: { wechat: off, qq: off, computer: { available: true, enabled: true, running: true }, desktop: { available: true, enabled: true, running: true, inbox }, foreground: off } })));
+  assert.match(switches, /她用电脑 · 后台模式[^]*不理会哪些程序在「她的电脑」页里改/);
+  assert.doesNotMatch(switches, /信箱不理会这些程序/, 'the 接入 card keeps the switches only');
   render();
+  assert.match(text(tree), /^信箱她用电脑开着时，信箱替她看任务栏/);
   assert.match(text(tree), /信箱不理会这些程序[^]*conhost×msrdc×[^]*最近报过：不再报「远程桌面」不再报「Microsoft Edge」[^]*默认的是 Windows 自己的程序/, 'a told name already left out, in any case, is not offered');
   assert.equal(tree.some(el => el.type === 'button' && text(el) === '恢复默认'), false, 'nothing to go back to while it is the default');
   button('不再报「远程桌面」').props!.onClick(); await settle();
@@ -603,5 +631,56 @@ test('the inbox list under her use of the computer saves each change at once and
   error = 'names 必须是名字列表'; button('恢复默认').props!.onClick(); await settle();
   assert.match(text(tree), /保存失败：names 必须是名字列表/);
   enabled = false; render();
-  assert.doesNotMatch(text(tree), /信箱不理会/, 'no list while her use of the computer is off');
+  assert.match(text(tree), /她用电脑关着，信箱现在没在听[^]*信箱不理会这些程序/, 'off: it says the inbox is not listening, and the list can still be set');
+});
+
+test('her own templates are compared with the shipped ones: a section she lacks, a variable hers does not use, and the shipped words to copy', async () => {
+  const source = await readFile('client/index.js', 'utf8');
+  let loaded: { factory: (require: (name: string) => unknown) => { __test: (worldId: string) => { TemplateGaps: unknown } } } | undefined;
+  const react = { createElement: (type: unknown, props: unknown, ...children: unknown[]) => ({ type, props, children }), useState: (value: unknown) => [value, () => {}], useEffect: () => {}, useRef: (current: unknown) => ({ current }) };
+  runInNewContext(source, { fetch: () => Promise.reject(new Error('no fetch')), window: { __ModuleLoader__: { load: (entry: typeof loaded) => { loaded = entry; } } } });
+  const { TemplateGaps } = loaded!.factory(() => react).__test('fish');
+  type El = { type: unknown; props: Record<string, unknown> | null; children: unknown[] };
+  const text = (node: unknown): string => {
+    if (node == null || typeof node === 'boolean') return '';
+    if (Array.isArray(node)) return node.map(text).join('');
+    if (typeof node !== 'object') return String(node);
+    const el = node as El;
+    if (typeof el.type === 'function') return text((el.type as (p: unknown) => unknown)({ ...el.props, children: el.children }));
+    return text(el.children);
+  };
+  const render = (props: object) => text(react.createElement(TemplateGaps, { title: '对照', note: '只是提醒', ...props }));
+  assert.match(render({ gaps: [{ heading: '认识', text: '{{#wikiDir}}\n## 认识\n…\n{{/wikiDir}}' }] }), /^对照只是提醒「认识」 自带有这一段，你的没有\{\{#wikiDir\}\}\n## 认识/);
+  assert.match(render({ gaps: [{ heading: '每日回顾', missing: ['wikiDir', 'activity'], text: '## 每日回顾\n…' }] }), /「每日回顾」 自带的用到了 \{\{wikiDir\}\}、\{\{activity\}\}，你的没有## 每日回顾/);
+  assert.match(render({ gaps: [{ heading: '我', renamed: { from: '我是谁', note: '「我是谁」这一段现在叫「我」。' }, text: '## 我\n…' }] }), /「我」 改了名，你的还叫「我是谁」：「我是谁」这一段现在叫「我」。## 我/);
+  assert.equal(render({ gaps: [] }), '对照和插件自带的没有差距。');
+  assert.equal(render({ error: '读不了 alarm.md：坏了' }), '对照读不了 alarm.md：坏了', 'an unreadable file says so, never "no gaps"');
+});
+
+test('handing the gaps to her: a button for what is ticked, nothing while she is away, and what she changed with a way back', async () => {
+  const source = await readFile('client/index.js', 'utf8');
+  let loaded: { factory: (require: (name: string) => unknown) => { __test: (worldId: string) => { PromptMerge: unknown } } } | undefined;
+  const react = { createElement: (type: unknown, props: unknown, ...children: unknown[]) => ({ type, props, children }), useState: (value: unknown) => [value, () => {}], useEffect: () => {}, useRef: (current: unknown) => ({ current }) };
+  runInNewContext(source, { fetch: () => Promise.reject(new Error('no fetch')), window: { __ModuleLoader__: { load: (entry: typeof loaded) => { loaded = entry; } } } });
+  const { PromptMerge } = loaded!.factory(() => react).__test('fish');
+  type El = { type: unknown; props: Record<string, unknown> | null; children: unknown[] };
+  const expand = (value: unknown): El[] => {
+    if (Array.isArray(value)) return value.flatMap(expand);
+    if (!value || typeof value !== 'object') return [];
+    const el = value as El;
+    return typeof el.type === 'function' ? expand((el.type as (p: unknown) => unknown)({ ...el.props, children: el.children })) : [el, ...el.children.flatMap(expand)];
+  };
+  const text = (value: unknown): string => Array.isArray(value) ? value.map(text).join('') : value && typeof value === 'object' ? text((value as El).children) : value == null || typeof value === 'boolean' ? '' : String(value);
+  const render = (props: object) => expand(react.createElement(PromptMerge, { ids: ['world:认识', 'alarm:每日回顾'], picked: (id: string) => id !== 'alarm:每日回顾', running: true, ...props }));
+  const ask = (tree: El[]) => tree.find(el => el.type === 'button' && /交给她融进去/.test(text(el)))!;
+  const idle = render({ merge: { status: 'idle' } });
+  assert.equal(text(ask(idle)), '交给她融进去（1 处）'); assert.equal(ask(idle).props!.disabled, false);
+  assert.match(text(idle), /「大事先问」这类规矩她也能改到/, 'the risk of the choice made is said where it is pressed');
+  const away = render({ merge: { status: 'idle' }, running: false });
+  assert.equal(ask(away).props!.disabled, true); assert.match(text(away), /世界开始后才能交给她/);
+  assert.equal(ask(render({ merge: { status: 'merging' } })).props!.disabled, true);
+  const done = render({ merge: { status: 'done', message: '她改了 1 处', undoable: true, changes: [{ file: 'W/world-prompt.md', sections: [{ heading: '认识', kind: 'added', after: '## 认识\n…' }] }] } });
+  assert.match(text(done), /她改了 1 处[^]*W\/world-prompt\.md新加「认识」现在：\n## 认识/);
+  assert.ok(done.some(el => el.type === 'button' && text(el) === '撤销这次融合'));
+  assert.ok(!render({ merge: { status: 'failed', message: '读不通' } }).some(el => el.type === 'button' && text(el) === '撤销这次融合'), 'a failed merge was put back already');
 });

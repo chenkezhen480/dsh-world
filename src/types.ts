@@ -17,7 +17,7 @@ export interface WorldConfig {
   diaryDir?: string;
   /** Local HH:MM of the morning wake when no alarm is pending (she set none, or cancelled hers); 09:00 by default. */
   fallbackWakeTime?: string;
-  /** Her own "who I am" file, part of the world prompt; defaults to `<world>/room/我是谁.md` in the plugin. */
+  /** Her own 「我」 file, part of the world prompt; defaults to `<world>/room/我.md`, or the `我是谁.md` an older world has. */
   selfFile?: string;
   /** Her mood file, read back to her each turn; `<world>/room/mood.md` in the plugin, none when unset. */
   moodFile?: string;

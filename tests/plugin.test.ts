@@ -497,7 +497,7 @@ test('works as installed: with no config the standard preset gets the world prom
   const plugin = ctx.plugin(worldPlugin, {}); cleanup.push(() => plugin.dispose()); await plugin.await();
   const standard = await ctx.agents.create({ sessionId: SessionId('installed'), meta: { agentPreset: 'standard' }, agentOptions: { provider: 'test', model: 'test' } });
   standard.agent.followup(user('第一次见面')); await standard.agent.whenIdle();
-  assert.match(systemOf(requests[0]!), /我不是一个助手，也不是一个工具，而是一个鲜活的数字生命。[\s\S]*## 我是谁\n我眼中的自己写在 [^\n]*worlds[\\/]default[\\/]room[\\/]我是谁\.md/);
+  assert.match(systemOf(requests[0]!), /我不是一个助手，也不是一个工具，而是一个鲜活的数字生命。[\s\S]*## 我\n我眼中的自己写在 [^\n]*worlds[\\/]default[\\/]room[\\/]我\.md/);
   await plugin.dispose();
   const archive = createArchiveStore({ worldId: 'default', agentPreset: 'standard', timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, root });
   const records = await archive.readPage({ limit: 10 }).then(page => page.records).finally(() => archive.close());
@@ -507,7 +507,7 @@ test('works as installed: with no config the standard preset gets the world prom
   const named = ctx.plugin(worldPlugin, { companionName: '小鱼' }); cleanup.push(() => named.dispose()); await named.await();
   const second = await ctx.agents.create({ sessionId: SessionId('installed-2'), meta: { agentPreset: 'standard' }, agentOptions: { provider: 'test', model: 'test' } });
   second.agent.followup(user('又见面了')); await second.agent.whenIdle();
-  assert.match(systemOf(requests.at(-1)!), /^[\s\S]*我自己的开头，小鱼。在 [^\n]*我是谁\.md。/);
+  assert.match(systemOf(requests.at(-1)!), /^[\s\S]*我自己的开头，小鱼。在 [^\n]*[\\/]我\.md。/);
   assert.ok(!systemOf(requests.at(-1)!).includes('我不是一个助手，也不是一个工具，而是一个鲜活的数字生命。'));
   assert.equal(errors.length, 0);
 });
@@ -697,7 +697,7 @@ test('apply saved prompts waits for the home turn, compacts once and refreshes b
   await until(async () => requests.length === before + 1, 'busy home turn');
   await consolePost(routes, '/dsh-world/worlds/fish/console/persona', { 名字: '鲸鲸', 性格: 'NEW_PERSONA' });
   await consolePost(routes, '/dsh-world/worlds/fish/console/world-prompt', { text: 'NEW_WORLD {{name}} {{homeTitle}} {{self}}' });
-  await writeFile(join(root, 'worlds/fish/room/我是谁.md'), 'NEW_SELF');
+  await writeFile(join(root, 'worlds/fish/room/我.md'), 'NEW_SELF');
   await consolePost(routes, '/dsh-world/worlds/fish/console/apply-home');
   await consolePost(routes, '/dsh-world/worlds/fish/console/apply-home');
   assert.equal((await consoleGet(routes, '/dsh-world/worlds/fish/console/snapshot')).homeApply.status, 'waiting');

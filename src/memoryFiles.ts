@@ -6,7 +6,7 @@ import { extractLinks, extractPageLinks, fileRef, localDayStart, type MemoryKind
 
 /**
  * Where she keeps what she writes for memory to find: her diary directory and her wiki (`认识`), markdown and text
- * files one level deep. 我是谁 is not here; it is placed whole in the world prompt.
+ * files one level deep. Her 「我」 is not here; it is placed whole in the world prompt.
  */
 export interface MemorySources { diaryDir?: string; wikiDir?: string }
 export type AuthorKind = Exclude<MemoryKind, 'conversation'>;

@@ -16,6 +16,7 @@ import { installedRoom, ROOM_PACKAGE, roomRoute, roomStatus } from './console/ro
 import { createCottageModule, loadLayout, type CottageModule } from './cottage/index.ts';
 import { consoleSources } from './console/snapshot.ts';
 import { compactionFor, createHomeApply } from './console/homeApply.ts';
+import { createPromptMerge } from './console/promptMerge.ts';
 import { errorText, Faults } from './faults.ts';
 import { compactionPresetOverride, hasAgentPresets, repairCopiedPresets, restoreCompactionPreset, swapCompactionOnce, type ConfigEditor } from './compactionSwap.ts';
 import { hostLife } from './life/host.ts';
@@ -37,7 +38,9 @@ import { createMemory } from './memory.ts';
 import { createWorldRuntime, guardWorldContext } from './runtime.ts';
 import { createArchiveStore } from './store.ts';
 import type { WorldConfig } from './types.ts';
-import { DEFAULT_TEMPLATE_FILE, MEMORY_SNIPPET_FILE, memoryTemplateGaps, roomTitle, worldNames } from './worldPrompt.ts';
+import { DEFAULT_TEMPLATE_FILE, roomTitle, worldNames } from './worldPrompt.ts';
+import { alarmTemplate, worldPromptGaps } from './templateGaps.ts';
+import { selfFileIn } from './self.ts';
 import { createWorldSwitch, type LegacyModuleConfig } from './worldSwitch.ts';
 import { CLOCK_TIME, DEFAULT_REVIEW_TIME } from './life/alarm.ts';
 import { createWechatModule, type WechatModule } from './ecosystem/wechat/index.ts';
@@ -179,13 +182,13 @@ export function apply(ctx: Context, config: Config): void {
   const updates = config.updateCheck ? createUpdateCheck({ current: ownPackage.version, repository: ownPackage.repository.url }) : undefined;
   ctx.effect(() => { updates?.start(); return () => updates?.stop(); }, 'dsh-world update check');
   // Her self-description lives in her room whether or not the life line runs; she writes it with her file tools.
-  const selfFile = config.selfFile || join(worldDir, 'room', '我是谁.md');
+  const selfFile = config.selfFile || selfFileIn(roomDir);
   const moodFile = join(roomDir, MOOD_FILE);
   /** Every source of news from where she is not registers here; the world runtime tells her sessions. */
   const elsewhere = createElsewhere();
   const personaFile = config.personaFile || join(worldDir, 'persona.md');
   const worldPromptFile = config.worldPromptFile || join(worldDir, 'world-prompt.md');
-  // Her wiki is hers like 我是谁: a folder in her room, made empty when missing so she and her partner can find it.
+  // Her wiki is hers like her 「我」: a folder in her room, made empty when missing so she and her partner can find it.
   const wikiDir = join(roomDir, WIKI_FOLDER);
   try { mkdirSync(wikiDir, { recursive: true }); faults.clear('wiki-dir'); }
   catch (error) { faults.set('wiki-dir', `认识页的文件夹建不出来：${errorText(error)}`); }
@@ -220,7 +223,7 @@ export function apply(ctx: Context, config: Config): void {
   async function startMemory(fresh: boolean): Promise<void> {
     if (memory || disposed) return;
     try {
-      const prompt = { file: worldPromptFile, persona: personaFile, conversationsDir: join(worldDir, 'conversations'), names: names(), memoryTools: true, ...(config.life ? { life: options } : {}) };
+      const prompt = { file: worldPromptFile, persona: personaFile, conversationsDir: join(worldDir, 'conversations'), names: names(), memoryTools: true, wikiDir, ...(config.life ? { life: options } : {}) };
       memory = createWorldRuntime(ctx, { ...memoryConfig, selfFile, moodFile }, store, { prompt, names, isHome: id => isHome(id), archiveSession, inWorkspace, memory: memoryService, elsewhere }, power.memoryTurns, power.coldHours);
       await memory.start({ fresh }); faults.clear('memory');
     } catch (error) { memory = undefined; faults.set('memory', `记忆线没能启动：${errorText(error)}`); ctx.logger.error(error); }
@@ -291,6 +294,16 @@ export function apply(ctx: Context, config: Config): void {
       refresh: session => { if (!memory) throw new Error('世界记忆线已停止'); memory.refreshPrompt(session); },
       changed: () => sources.invalidate(),
       fault: message => { if (message) faults.set('home-apply', message); else faults.clear('home-apply'); },
+    });
+    // The partner's request to have her merge the shipped prompts into their own templates; applied like the button above.
+    const promptMerge = createPromptMerge({
+      ctx: lifeCtx, worldPromptFile, alarmFile: options.alarmFile, selfFile, historyDir: join(worldDir, 'prompt-history'),
+      home: async () => { if (!life) throw new Error('请先启动世界生活线'); return life.home(); },
+      inWorld: inWorldSession,
+      partner: () => names().partner,
+      apply: () => homeApply.request(),
+      changed: () => sources.invalidate(),
+      fault: message => { if (message) faults.set('prompt-merge', message); else faults.clear('prompt-merge'); },
     });
     let bridge: Bridge | undefined;
     let wechat: WechatModule | undefined;
@@ -474,7 +487,7 @@ export function apply(ctx: Context, config: Config): void {
       stopComputer();
       stopCottage();
       bridge = undefined; life = undefined;
-      return lifeStop = Promise.all([lifeStop, closingWechat, homeApply.cancel()]).then(() => {});
+      return lifeStop = Promise.all([lifeStop, closingWechat, homeApply.cancel(), promptMerge.cancel()]).then(() => {});
     }
     stopLifeLine = stopLife;
     lifeCtx.effect(() => () => {
@@ -486,7 +499,7 @@ export function apply(ctx: Context, config: Config): void {
     if (config.bridge) lifeCtx.effect(() => webServer.register(compactRoute(prefix, () => bridge, () => !power.running() || !life ? '请先启动世界生活线' : homeApply.request(), config.allowedHosts)), 'dsh-world compact route');
 
     // Her album lives in her room, so the console shows it whether or not the life line is running.
-    const sources = consoleSources({ ctx: lifeCtx, config: memoryConfig, archive: store, moodFile, longTerm: memoryService, names, ...(lifeStore ? { lifeStore } : {}), life: () => life, homeApply: homeApply.snapshot, compactAfterReview: power.compactAfterReview, ...(config.life ? { schedule: () => ({ review: power.reviewTime(), wake: power.wakeTime(), defaults: { review: DEFAULT_REVIEW_TIME, wake: config.fallbackWakeTime } }) } : {}), photos, diaryDir: options.diaryDir, running: power.running, dailyBudget: power.dailyBudget, memoryTurns: power.memoryTurns, coldHours: power.coldHours, selectedArchiveScope: power.selectedArchiveScope, workspacePermissions: permissions.snapshot, wechat: () => wechat ? { ...wechat.status(), adapter: adapter?.status() ?? null } : undefined, archiveSession, native: () => qqNative?.status() ?? null,
+    const sources = consoleSources({ ctx: lifeCtx, config: memoryConfig, archive: store, moodFile, longTerm: memoryService, names, ...(lifeStore ? { lifeStore } : {}), life: () => life, homeApply: homeApply.snapshot, promptMerge: promptMerge.snapshot, compactAfterReview: power.compactAfterReview, schedule: () => ({ review: power.reviewTime(), wake: power.wakeTime(), defaults: { review: DEFAULT_REVIEW_TIME, wake: config.fallbackWakeTime }, life: Boolean(config.life) }), photos, diaryDir: options.diaryDir, running: power.running, dailyBudget: power.dailyBudget, memoryTurns: power.memoryTurns, coldHours: power.coldHours, selectedArchiveScope: power.selectedArchiveScope, workspacePermissions: permissions.snapshot, wechat: () => wechat ? { ...wechat.status(), adapter: adapter?.status() ?? null } : undefined, archiveSession, native: () => qqNative?.status() ?? null,
       compactionPreset: () => configEditor ? compactionPresetOverride(configEditor, config.agentPreset, profileDir()) : null,
       update: () => updates?.status(upgradeTools(profile())),
       modules: () => ({ ...computerRows(moduleLimits()), wechat: { available: config.wechat, enabled: power.wechatEnabled(), running: wechat !== undefined }, qq: { available: Boolean(config.qqNative?.enabled), enabled: power.qqEnabled(), running: qqNative !== undefined, ...(qqSdk.needsRestart() ? { restartRequired: true } : {}) }, cottage: { available: room().current, enabled: power.cottageEnabled(), running: cottage !== undefined }, foreground: { available: computer?.desktopOn() === true, enabled: computer?.foregroundOn() === true, running: computer?.foregroundOn() === true } }), room: () => ({ ...room(), ...(cottage ? { life: cottage.view() } : {}) }), computer: () => computer?.status(), faults: () => [...faults.list(), ...(adapter?.status().error ? [`微信适配器：${adapter.status().error}`] : []), ...(memory?.faults() ?? []), ...(bridge?.faults() ?? []), ...memoryHealth()] });
@@ -503,6 +516,8 @@ export function apply(ctx: Context, config: Config): void {
         finally { await stopMemory().finally(() => sources.invalidate()); }
       }),
       applyHome: () => !power.running() || !life ? '请先启动世界生活线' : homeApply.request(),
+      mergePrompts: items => !power.running() || !life ? '请先启动世界生活线' : promptMerge.request(items),
+      undoPromptMerge: () => promptMerge.undo(),
       restoreCompactionPreset: () => editProfile(async () => {
         const dir = profileDir();
         if (!configEditor || !dir) throw new Error('宿主配置编辑服务不可用');
@@ -510,7 +525,8 @@ export function apply(ctx: Context, config: Config): void {
       }).finally(sources.invalidate),
       prompts: () => ({
         persona: readPersona(personaFile),
-        worldPrompt: existsSync(worldPromptFile) ? (text => ({ text, custom: true, memory: { missing: memoryTemplateGaps(text), snippet: readFileSync(MEMORY_SNIPPET_FILE, 'utf8') } }))(readFileSync(worldPromptFile, 'utf8')) : { text: readFileSync(DEFAULT_TEMPLATE_FILE, 'utf8'), custom: false },
+        worldPrompt: existsSync(worldPromptFile) ? (text => ({ text, custom: true, gaps: worldPromptGaps(text) }))(readFileSync(worldPromptFile, 'utf8')) : { text: readFileSync(DEFAULT_TEMPLATE_FILE, 'utf8'), custom: false },
+        alarm: alarmTemplate(options.alarmFile),
       }),
       savePersona: persona => { writePersona(personaFile, { ...readPersona(personaFile), ...persona }); sources.invalidate(); },
       setDailyBudget: yuan => { power.setDailyBudget(yuan); sources.invalidate(); },

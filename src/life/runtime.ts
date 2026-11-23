@@ -287,7 +287,7 @@ export function createLifeRuntime(deps: LifeDeps) {
     return days;
   }
   /**
-   * The evening look back on her day; her 我是谁 is kept as it was, so she can rewrite it freely. What her wiki is
+   * The evening look back on her day; her 「我」 is kept as it was, so she can rewrite it freely. What her wiki is
    * missing (links to pages not written, pages her catalog leaves out) follows the text her template gives, whatever
    * the template says, for her to mend while she tidies her pages.
    */
@@ -297,7 +297,7 @@ export function createLifeRuntime(deps: LifeDeps) {
     const take = () => {
       reviewing = review.day;
       try { snapshot = keepSelfCopy(options.selfFile, review.day); faults.clear('snapshot'); }
-      catch (error) { faults.set('snapshot', `我是谁没能留底：${errorText(error)}`); ctx.logger.error(error); }
+      catch (error) { faults.set('snapshot', `「我」没能留底：${errorText(error)}`); ctx.logger.error(error); }
       state.review = nextReview(clock(), timeZone, options.schedule().review);
     };
     const existing = (dir: string) => { const file = join(options.worldDir, dir, `${review.day}.jsonl`); return existsSync(file) ? file : undefined; };

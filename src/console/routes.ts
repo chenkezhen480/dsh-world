@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { jsonObject, knownHost, readBody, sendJson, type JsonResult } from '../http.ts';
 import { PERSONA_LAYERS, type Persona } from '../persona.ts';
+import type { TemplateGap } from '../templateGaps.ts';
 import { validColdHours, validTurns, validWechatBuffer, MAX_COLD_HOURS, validWechatContext, validWorkspacePermission, MAX_WECHAT_BUFFER_SECONDS, MAX_WECHAT_CONTEXT, validInboxIgnore, MAX_INBOX_IGNORE, MAX_INBOX_NAME } from '../worldSwitch.ts';
 import { validArchiveScope, type MemoryArchiveScope } from '../archiveSelection.ts';
 import type { PhotoStore } from '../life/photos.ts';
@@ -29,8 +30,12 @@ export interface ConsoleActions {
   stop(): Promise<void>;
   /** Enqueue one application of saved prompts and idle-home compaction; returns a refusal, if any. */
   applyHome(): string | undefined;
+  /** Asks her to merge the chosen shipped sections (`world:<标题>`, `alarm:<标题>`) into the partner's own templates; returns a refusal, if any. */
+  mergePrompts(items: string[]): string | undefined;
+  /** Puts the templates back as they were before her last merge; returns a refusal, if any. */
+  undoPromptMerge(): string | undefined;
   restoreCompactionPreset(): Promise<void>;
-  prompts(): { persona: Persona; worldPrompt: { text: string; custom: boolean; memory?: { missing: string[]; snippet: string } } };
+  prompts(): { persona: Persona; worldPrompt: { text: string; custom: boolean; gaps?: TemplateGap[] }; alarm?: { custom: boolean; gaps?: TemplateGap[]; error?: string } };
   savePersona(persona: Partial<Persona>): void;
   /** An empty text goes back to the shipped template. */
   saveWorldPrompt(text: string): void;
@@ -98,6 +103,12 @@ async function write(actions: ConsoleActions, path: string, body: Record<string,
     case '/console/start': await actions.start(); return ok();
     case '/console/stop': await actions.stop(); return ok();
     case '/console/apply-home': { const refused = actions.applyHome(); return refused ? bad(refused) : ok(); }
+    case '/console/prompt-merge': {
+      const items = body?.items;
+      if (!Array.isArray(items) || !items.every(item => typeof item === 'string')) return bad('items 必须是要融的段的列表');
+      const refused = actions.mergePrompts(items); return refused ? bad(refused) : ok();
+    }
+    case '/console/prompt-merge/undo': { const refused = actions.undoPromptMerge(); return refused ? bad(refused) : ok(); }
     case '/console/restore-compaction-preset': {
       try { await actions.restoreCompactionPreset(); return ok(); }
       catch (error) { return bad(errorText(error)); }

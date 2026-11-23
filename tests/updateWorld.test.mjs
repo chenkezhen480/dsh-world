@@ -72,6 +72,43 @@ test('updater backs up the profile and world data and preserves authored files a
   assert.equal((await readdir(join(f.root, 'profiles'))).some(name => name.endsWith('.lock')), false);
 });
 
+test('node_modules from an older pnpm is reinstalled with DSH\'s pnpm before the add, which would otherwise refuse it', async t => {
+  const f = await fixture(t);
+  // pnpm 10 wrote JSON, older ones YAML; both name the pnpm that laid the folder out.
+  for (const record of ['{\n  "packageManager": "pnpm@10.34.9",\n  "storeDir": "C:\\\\pnpm\\\\store\\\\v10"\n}', 'packageManager: pnpm@9.15.0\nstoreDir: /pnpm/store/v3\n']) {
+    await t.test(record.slice(0, 20), async () => {
+      await writeFile(join(f.profile, 'node_modules', '.modules.yaml'), record);
+      const { updateWorld } = await import('../scripts/update-world.mjs');
+      const calls = [];
+      const result = await updateWorld(f.options, {
+        processes: async () => [], log() {},
+        run: async (file, args, settings) => {
+          if (args[0] !== f.options.pnpm) return f.runner(file, args, settings);
+          calls.push(args.slice(1, 2).join());
+          if (args[1] === '--version') return { stdout: '11.28.5\n', stderr: '' };
+          if (args[1] === 'install') { assert.deepEqual(args.slice(1), ['install', '--ignore-scripts', '--config.confirm-modules-purge=false']); assert.equal(settings.cwd, f.profile); return { stdout: '', stderr: '' }; }
+          return f.runner(file, args, settings);
+        },
+      });
+      assert.equal(result.version, '0.6.0');
+      assert.deepEqual(calls, ['--version', 'install', 'add']);
+      await writeFile(join(f.profile, 'package.json'), JSON.stringify(f.manifest));
+    });
+  }
+});
+
+test('a --pnpm older than the one that laid out node_modules is refused before anything is backed up', async t => {
+  const f = await fixture(t);
+  await writeFile(join(f.profile, 'node_modules', '.modules.yaml'), '{ "packageManager": "pnpm@11.28.5" }');
+  const { updateWorld } = await import('../scripts/update-world.mjs');
+  await assert.rejects(updateWorld(f.options, {
+    processes: async () => [], log() {},
+    run: async (file, args, settings) => args[0] === f.options.pnpm ? (args[1] === '--version' ? { stdout: '10.34.9\n', stderr: '' } : assert.fail('nothing is installed')) : f.runner(file, args, settings),
+  }), /installed by pnpm 11, but --pnpm is pnpm 10.*DSH you run now/);
+  assert.equal((await readdir(f.root)).includes('backups'), false);
+  assert.deepEqual(JSON.parse(await readFile(join(f.profile, 'package.json'), 'utf8')), f.manifest);
+});
+
 test('a failed install restores the whole old profile and retains the failed profile for inspection', async t => {
   const f = await fixture(t);
   const { updateWorld } = await import('../scripts/update-world.mjs');
@@ -174,6 +211,11 @@ test('process detection catches standalone hosts and adapters with both path sep
     { ProcessId: 12004, Name: 'node.exe', CommandLine: 'node /opt/dsh/node_modules/@deepseek-ai/dsh-desktop-host/lib/index.js' },
     { ProcessId: 12005, Name: 'node.exe', CommandLine: 'node unrelated-app.js' },
     { ProcessId: process.pid, Name: 'node.exe', CommandLine: 'node /opt/dsh-desktop-host/lib/index.js' },
+    // Her own browser outlives DSH and holds files in her world: its main process is named, its helpers are not.
+    { ProcessId: 12006, Name: 'msedge.exe', CommandLine: '"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe" --user-data-dir=C:\\Users\\o\\.dsh\\worlds\\jingjing\\browser --remote-debugging-port=0' },
+    { ProcessId: 12007, Name: 'msedge.exe', CommandLine: '"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe" --type=renderer --user-data-dir="C:\\Users\\o\\.dsh\\worlds\\jingjing\\browser"' },
+    { ProcessId: 12008, Name: 'msedge.exe', CommandLine: '"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe" --profile-directory=Default' },
+    { ProcessId: 12009, Name: 'chrome', CommandLine: '/usr/bin/google-chrome --user-data-dir=/home/o/.dsh/worlds/w/browser --remote-debugging-port=0' },
   ];
   const found = await runningProcesses(async (file, args, options) => {
     if (process.platform !== 'win32') return { stdout: samples.map(row => `${row.ProcessId} ${row.CommandLine}`).join('\n') };
@@ -182,8 +224,9 @@ test('process detection catches standalone hosts and adapters with both path sep
     const program = `function Get-CimInstance { foreach ($row in (ConvertFrom-Json ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${data}'))))) { $row } }\n` + query;
     return command(file, ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(program, 'utf16le').toString('base64')], options);
   });
-  assert.equal(found.length, 4);
-  for (const id of [12001, 12002, 12003, 12004]) assert.ok(found.some(line => line.includes(String(id))));
+  assert.equal(found.length, 6, found.join('\n'));
+  for (const id of [12001, 12002, 12003, 12004, 12006, 12009]) assert.ok(found.some(line => line.includes(String(id))));
+  for (const id of [12007, 12008]) assert.ok(!found.some(line => line.includes(String(id))), `${id}: a helper, or the partner's own browser`);
 });
 
 test('profile backup and restore preserve internal dependency directory links without following them', async t => {

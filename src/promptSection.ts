@@ -23,7 +23,7 @@ export interface WorldPromptSource {
   /** News from where she is not, told to her world sessions. */
   elsewhere?: import('./elsewhere.ts').Elsewhere;
 }
-/** Her persona, template and 我是谁 as last read for one session. */
+/** Her persona, template and 「我」 as last read for one session. */
 interface Sources { persona: string; names: WorldNames; template: string; self?: { file: string; text: string } }
 interface Entry { text?: string; sources?: Sources; reload: boolean; restart: boolean; disposeSync: () => void; disposePrompt?: () => void }
 

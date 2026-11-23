@@ -31,7 +31,7 @@
 | `DSH_HOME` | Windows 默认 `C:\Users\<用户名>\.dsh`；看目录里有没有 `profiles`、`worlds` |
 | 用哪个 profile | 列 `<DSH_HOME>/profiles/` 下的目录，挑 `package.json` 里 `dependencies` 有你正在跑的那些插件的那个 |
 | node 版本 | `node -v`，必须 ≥ 22.16（dsh-world 的要求） |
-| pnpm 在哪 | 先试 `pnpm -v`；没有就用 DSH 自带的：`<DSH 安装目录>\resources\runtime\x64\primary-runtime\dependencies\pnpm\bin\pnpm.cjs`，用 `node <那个 pnpm.cjs> <命令>` 调用 |
+| pnpm 在哪 | 用 DSH 自带的：桌面版启动日志里写着它的路径，常见是 `<DSH 安装目录>\resources\runtime\primary-runtime\dependencies\pnpm\bin\pnpm.mjs`（旧安装多一层 `x64`、或是 `pnpm.cjs`），用 `node <那个文件> <命令>` 调用。**别用 PATH 里另装的 pnpm**：大版本不一样时，它装出来的 `node_modules` 链接的是它自己那一版的仓库，之后 DSH 的 pnpm 往里装任何东西都会报 `ERR_PNPM_UNEXPECTED_STORE` |
 
 > macOS / Linux 的路径换成对应位置即可，命令不变。
 
@@ -41,8 +41,8 @@
 
 已经装过 `dsh-world` 时，保留原 profile 和世界目录，不要另建 world。0.8.1 起，有新版本时世界控制台「概览」最上面会提示，卡片上的「更新」按钮会复制一段按这台电脑填好的升级命令，就是下面这些步骤，退出 DSH 后粘贴运行即可；下面是手动做的方法。先下载编译好的 `.tgz`：浏览器直接打开 npm 上的安装包地址即可，例如 <https://registry.npmjs.org/dsh-world/-/dsh-world-0.8.0.tgz>，其他版本把地址里的两处版本号一起换掉；也可以从 [CI 运行记录](https://github.com/chenkezhen480/dsh-world/actions) 的 Artifacts 下载（需登录 GitHub，产物会过期）。更新成品无需 Git、npm 或 TypeScript 编译器；需要 Node ≥ 22.16、系统 `tar` 和 DSH 自带 pnpm。
 
-1. 从应用菜单正常退出 DSH，等待微信适配器一并退出。脚本会拒绝在 DSH 或适配器仍运行时更新，不强制结束进程。
-2. 使用仓库的 `scripts/update-world.mjs`，或已安装包的 `node_modules/dsh-world/scripts/update-world.mjs`。老版本尚无此文件时，可从仓库单独下载这个脚本，无需克隆或安装源码依赖。
+1. 从应用菜单正常退出 DSH，等待微信适配器一并退出；开过「她的浏览器」的，把她那个 Edge 窗口也关掉（DSH 退出后它还开着，占着世界目录里的文件，备份会读不了）。脚本会拒绝在 DSH、适配器或她的浏览器仍运行时更新，不强制结束进程。
+2. 用要装的那一版自带的更新脚本：从下载的 `.tgz` 里取出 `package/scripts/update-world.mjs`（`tar -xzf dsh-world-<版本>.tgz package/scripts/update-world.mjs`），或从仓库对应版本的标签下载这个文件，无需克隆或安装源码依赖。已安装包里的 `node_modules/dsh-world/scripts/update-world.mjs` 是旧版的，没有新版对更新脚本的修复。
 3. 执行以下命令，将三个路径替换为实际值。`--pnpm` 指向桌面版启动日志中显示的 `pnpm.cjs` 或 `pnpm.mjs`；常见位置是 `<DSH 安装目录>/resources/runtime/primary-runtime/dependencies/pnpm/bin/pnpm.mjs`，旧安装也可能多一层 `x64`。
 
 ```powershell
@@ -56,7 +56,7 @@ node .\scripts\update-world.mjs `
 
 脚本先检查包名和编译入口，再把整个 profile（含依赖）、`worlds` 和 `sessions` 备份到 `<DSH_HOME>/backups/dsh-world-<profile>-<随机后缀>/`。符号链接保留为链接，不复制链接指向的外部目录。安装包也保存到备份目录，profile 长期引用这份副本，下载文件随后移动或删除不影响启动。**不要删除当前 profile 仍在引用的备份目录。** 完整备份所需空间约为上述目录总大小；首次复制可能较慢。
 
-更新只调用 pnpm 替换插件包，依赖安装脚本禁用，不安装或修补 SnowLuma SDK。随后核对编译入口、更新脚本、profile 配置、其他插件和世界／会话文件摘要。她的人设、日记、提示词、原会话及原模块配置保持原样，不自动迁移旧 QQ 配置，也不解锁微信待核对消息。外置微信状态不在该备份内，更新脚本不操作它。
+更新只调用 pnpm 替换插件包，依赖安装脚本禁用，不安装或修补 SnowLuma SDK。profile 的 `node_modules` 是更旧一个大版本的 pnpm 装的（老版本 DSH 自带的，或 PATH 里另装的）时，DSH 现在的 pnpm 不肯往里加包（`ERR_PNPM_UNEXPECTED_STORE`），脚本会在备份之后先用 `--pnpm` 按 lockfile 把 `node_modules` 重装一遍，再换插件包；其他插件的文件照样要和原来一模一样，不一样就恢复旧 profile。`--pnpm` 比装 `node_modules` 的那个还旧时，脚本什么都不动，直接说明该换哪个 pnpm。pnpm 失败时，它自己给的原因会写在报错里。随后核对编译入口、更新脚本、profile 配置、其他插件和世界／会话文件摘要。她的人设、日记、提示词、原会话及原模块配置保持原样，不自动迁移旧 QQ 配置，也不解锁微信待核对消息。外置微信状态不在该备份内，更新脚本不操作它。
 
 失败会恢复整个旧 profile，保留 `failed-profile` 和备份供排查。若恢复也失败，保持 DSH 关闭，按报错给出的备份路径人工恢复；世界与会话备份不自动覆盖当前目录。检查覆盖包内容、文件摘要和入口语法；桌面版依赖宿主自己的模块加载器，脚本不尝试在普通 Node 中加载宿主人设或会话服务。正常完成后再启动 DSH，检查世界控制台健康状态。脚本不会自动启动 DSH、发消息或改她的自定义提示词。更新过程中请保持 DSH 关闭；若更新进程异常终止后遗留锁文件，先确认没有更新进程，再按报错路径处理锁文件及备份。
 

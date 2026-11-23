@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createArchiveStore } from '../src/store.ts';
 import { createMemory } from '../src/memory.ts';
@@ -31,7 +31,7 @@ test('a page links by title; links each way are worked out from all pages, the c
   assert.deepEqual([hub.missing.length, hub.more], [20, { links: 130, missing: 130 }]);
 });
 
-test('a session starts with her own catalog, cut like her 我是谁; before she writes one, with the page names, newest first', () => {
+test('a session starts with her own catalog, cut like her 「我」; before she writes one, with the page names, newest first', () => {
   const dir = 'C:\\room\\认识';
   assert.equal(wikiCatalog([], dir), undefined, 'no page, nothing at all');
   assert.equal(wikiCatalog([page('目录', '  ')], dir), undefined);
@@ -60,7 +60,8 @@ test('her evening review is told what her wiki is missing, and nothing when it i
 });
 
 test('only her home writes her wiki; other sessions are told to note it in today\'s diary, and nothing else is judged', () => {
-  const wiki = 'C:\\world\\room\\认识', cwd = 'C:\\world\\room';
+  // This machine's own absolute paths: a Windows one is not absolute on Linux, and nothing would be found inside it.
+  const cwd = resolve('world', 'room'), wiki = join(cwd, '认识');
   const write = (path: string) => ({ file_path: path, content: '…' });
   assert.equal(wikiRefusal('write', write(join(wiki, '小林.md')), wiki, cwd, true), undefined, 'at home');
   assert.match(wikiRefusal('write', write(join(wiki, '小林.md')), wiki, cwd, false)!, /认识页只在家里整理.*先记进今天的日记/);

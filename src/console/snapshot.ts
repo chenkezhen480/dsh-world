@@ -56,6 +56,8 @@ export interface SnapshotDeps {
   archiveSession?(id: string): boolean;
   /** Faults outside the life line: the memory line, the bridge, starting and stopping. */
   faults(): string[];
+  /** Her merge of the shipped prompts into the partner's own templates, while it runs and once it is done. */
+  promptMerge?(): unknown;
   /** Whether a newer dsh-world is on npm; absent when the config turned the check off. */
   update?(): unknown;
   /** Which modules the config allows, whether their console switch is on, and whether they are running now. */
@@ -89,6 +91,7 @@ export function consoleSources(deps: SnapshotDeps): ConsoleSources & { invalidat
       schedule: deps.schedule?.() ?? null,
       life: life ? { homeSessionId: life.homeSessionId, status: home ? home.status : 'cold', alarm: life.alarm, review: life.review, recentWakes: lifeStore?.wakes().slice(-5).reverse() ?? [] } : null,
       homeApply: deps.homeApply?.() ?? null,
+      promptMerge: deps.promptMerge?.() ?? null,
       compactionPreset: deps.compactionPreset?.() ?? null,
       health: [...(life?.faults ?? []), ...deps.faults()],
       memory: { index: deps.longTerm?.status() ?? null, turns: turns.length, windowTurns: window, coldHours: deps.coldHours?.() ?? null, archiveScope, selectedArchiveScope, restartRequired: archiveScope !== selectedArchiveScope, approxTokens: estimateTokens(renderHistory(turns, config.timeZone, deps.names(), archiveScope === 'home')), oldest: turns.at(-1)?.messages[0]?.occurredAt, ...archive.stats() },

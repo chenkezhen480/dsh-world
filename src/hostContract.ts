@@ -23,6 +23,8 @@ declare module '@deepseek-ai/dsh-llm' {
     'dsh-world-outside': { kind: 'dsh-world-outside'; form: 'ring' };
     /** QQ 的一轮完成了却没说出能发的话：提醒她对方还在等，不是谁发来的话，不进归档。 */
     'dsh-world-reply-nudge': { kind: 'dsh-world-reply-nudge' };
+    /** 伙伴在控制台请她把新版自带的提示词融进自己的模板：插件转达的请求，不是谁说的话，不进归档。 */
+    'dsh-world-prompt-merge': { kind: 'dsh-world-prompt-merge' };
   }
 }
 export {};

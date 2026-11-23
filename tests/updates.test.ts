@@ -51,25 +51,24 @@ test('the upgrade command is filled in from what DSH says about this machine: it
   const pnpm = 'D:\\DSH\\resources\\runtime\\primary-runtime\\dependencies\\pnpm\\bin\\pnpm.mjs';
   const node = 'D:\\DSH\\resources\\runtime\\primary-runtime\\dependencies\\node\\bin\\node.exe';
   const profile = { dir: "C:\\Users\\o'neil\\.dsh\\profiles\\desktop", name: 'desktop', packageManager: { command: 'D:\\DSH\\DeepSeek Harness.exe', args: ['--expose-internals', pnpm] } };
-  const script = 'C:\\pkg\\scripts\\update-world.mjs';
-  const tools = upgradeTools(profile, script, 'win32', path => path === script || path === node)!;
-  assert.deepEqual(tools, { platform: 'win32', profileDir: profile.dir, pnpm, node, script });
-  assert.equal(upgradeTools(profile, script, 'win32', path => path === script)!.node, 'node', 'without the bundled Node, the one on PATH');
-  assert.equal(upgradeTools({ dir: profile.dir, name: 'desktop' }, script, 'win32', () => true), undefined, 'DSH did not say where its pnpm is');
-  assert.equal(upgradeTools(profile, script, 'win32', () => false), undefined, 'no updater in this install');
+  const tools = upgradeTools(profile, 'win32', path => path === node)!;
+  assert.deepEqual(tools, { platform: 'win32', profileDir: profile.dir, pnpm, node });
+  assert.equal(upgradeTools(profile, 'win32', () => false)!.node, 'node', 'without the bundled Node, the one on PATH');
+  assert.equal(upgradeTools({ dir: profile.dir, name: 'desktop' }, 'win32', () => true), undefined, 'DSH did not say where its pnpm is');
   const { command, shell } = upgradeCommand(tools, '0.8.1', 'https://registry.npmjs.org/dsh-world/-/dsh-world-0.8.1.tgz');
   assert.equal(shell, 'PowerShell');
   assert.match(command, /^# 先从应用菜单正常退出 DSH/);
-  assert.match(command, /Invoke-WebRequest -UseBasicParsing -Uri 'https:\/\/registry\.npmjs\.org\/dsh-world\/-\/dsh-world-0\.8\.1\.tgz' -OutFile \$archive/);
-  assert.match(command, /& 'D:\\DSH\\[^']*node\.exe' \$updater --profile 'C:\\Users\\o''neil\\\.dsh\\profiles\\desktop' --package \$archive --pnpm 'D:\\DSH\\[^']*pnpm\.mjs'/, 'an apostrophe in a path is doubled, not left to end the quote');
-  const posixTools = { platform: 'darwin' as const, profileDir: "/Users/o'neil/.dsh/profiles/desktop", pnpm: '/Applications/DSH/pnpm.mjs', node: '/Applications/DSH/node', script: '/pkg/update-world.mjs' };
+  // The updater that runs is the one inside the release being installed, never the copy in the install it replaces.
+  assert.match(command, /Invoke-WebRequest -UseBasicParsing -Uri 'https:\/\/registry\.npmjs\.org\/dsh-world\/-\/dsh-world-0\.8\.1\.tgz' -OutFile \$archive[^]*Push-Location \$work\n  try \{ tar -xzf 'dsh-world-0\.8\.1\.tgz' package\/scripts\/update-world\.mjs \} finally \{ Pop-Location \}/);  assert.match(command, /& 'D:\\DSH\\[^']*node\.exe' \(Join-Path \$work 'package\/scripts\/update-world\.mjs'\) --profile 'C:\\Users\\o''neil\\\.dsh\\profiles\\desktop' --package \$archive --pnpm 'D:\\DSH\\[^']*pnpm\.mjs'/, 'an apostrophe in a path is doubled, not left to end the quote');
+  assert.doesNotMatch(command, /Copy-Item/);
+  const posixTools = { platform: 'darwin' as const, profileDir: "/Users/o'neil/.dsh/profiles/desktop", pnpm: '/Applications/DSH/pnpm.mjs', node: '/Applications/DSH/node' };
   const sh = upgradeCommand(posixTools, '0.8.1', 'https://registry.npmjs.org/x.tgz');
   assert.equal(sh.shell, '终端');
-  assert.match(sh.command, /--profile '\/Users\/o'\\''neil\/\.dsh\/profiles\/desktop'/);
+  assert.match(sh.command, /curl -fL -o "\$archive" 'https:\/\/registry\.npmjs\.org\/x\.tgz' &&\ntar -xzf "\$archive" -C "\$work" package\/scripts\/update-world\.mjs &&\n'\/Applications\/DSH\/node' "\$work\/package\/scripts\/update-world\.mjs" --profile '\/Users\/o'\\''neil\/\.dsh\/profiles\/desktop'/);
 });
 
 test('a newer release comes with the command, using the address npm gives for it; an older or equal one has none', async () => {
-  const tools = { platform: 'win32' as const, profileDir: 'C:\\p', pnpm: 'C:\\pnpm.mjs', node: 'node', script: 'C:\\u.mjs' };
+  const tools = { platform: 'win32' as const, profileDir: 'C:\\p', pnpm: 'C:\\pnpm.mjs', node: 'node' };
   const release = (version: string, tarball: string) => async () => new Response(JSON.stringify({ version, dist: { tarball } }), { status: 200 });
   const w = world([release('0.8.1', 'https://registry.npmjs.org/dsh-world/-/dsh-world-0.8.1.tgz'), release('0.8.2', 'https://evil.example/x.tgz'), release('0.8.0', 'https://registry.npmjs.org/dsh-world/-/dsh-world-0.8.0.tgz')]);
   w.check.start(); await w.settle();

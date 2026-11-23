@@ -20,6 +20,8 @@ function fakeActions() {
   const actions: ConsoleActions = {
     start: async () => { calls.push('start'); }, stop: async () => { calls.push('stop'); },
     applyHome: () => { calls.push('apply-home'); return undefined; },
+    mergePrompts: items => { calls.push(`merge:${JSON.stringify(items)}`); return undefined; },
+    undoPromptMerge: () => { calls.push('merge-undo'); return undefined; },
     restoreCompactionPreset: async () => { calls.push('restore-compaction-preset'); },
     prompts: () => ({ persona, worldPrompt: { text: 'T', custom: false } }),
     savePersona: layers => { calls.push(`persona:${JSON.stringify(layers)}`); },
@@ -75,6 +77,17 @@ test('applying home prompts requires the write header and reports an unavailable
   assert.deepEqual(calls, ['apply-home']);
   const refused = await run(sources, request, { ...actions, applyHome: () => '请先启动世界生活线' });
   assert.equal(refused.status, 400); assert.equal(JSON.parse(refused.body!).error, '请先启动世界生活线');
+});
+
+test('a merge of the shipped prompts is asked for with the sections chosen, and can be undone; a refusal is said', async () => {
+  const { actions, calls } = fakeActions();
+  const post = (url: string, body: unknown, with_ = actions) => handleConsole('/dsh-world/worlds/fish', sources, with_, { method: 'POST', url: '/dsh-world/worlds/fish/console/' + url, write: true, body: body as Record<string, unknown> });
+  assert.deepEqual(await post('prompt-merge', { items: ['world:认识', 'alarm:每日回顾'] }), { status: 200, body: { ok: true } });
+  for (const bad of [{}, { items: 'world:认识' }, { items: [1] }]) assert.equal((await post('prompt-merge', bad)).status, 400, JSON.stringify(bad));
+  assert.deepEqual(await post('prompt-merge/undo', {}), { status: 200, body: { ok: true } });
+  assert.deepEqual(calls, ['merge:["world:认识","alarm:每日回顾"]', 'merge-undo']);
+  const refused = await post('prompt-merge', { items: ['world:认识'] }, { ...actions, mergePrompts: () => '请先启动世界生活线' });
+  assert.equal(refused.status, 400); assert.deepEqual(refused.body, { error: '请先启动世界生活线' });
 });
 
 test('console reads are JSON views', async () => {

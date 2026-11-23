@@ -412,7 +412,7 @@ test('the world is told when the evening look back has been handed to her, and f
   s.timers.advance(2 * 3_600_000); await s.idle();
   assert.deepEqual(told, ['review'], 'her own alarm ringing afterwards is not a look back either');
 });
-test('every evening at 23:00 she looks back on the day: its records, her diary, and a kept copy of her 我是谁', async t => {
+test('every evening at 23:00 she looks back on the day: its records, her diary, and a kept copy of her 「我」', async t => {
   const s = await setup(t, () => textResponse('想想今天'), { before: async worldDir => {
     await writeFile(join(worldDir, 'life.json'), JSON.stringify({ version: 1, homeSessionId: 'home-0', alarm: { at: '2026-10-24T00:30:00.000Z', note: '睡觉', setAt: '2026-10-23T02:00:00.000Z', source: 'plan' } }));
     await mkdir(join(worldDir, 'room'), { recursive: true }); await writeFile(join(worldDir, 'room', 'self.md'), '我是早上的我');
@@ -426,8 +426,8 @@ test('every evening at 23:00 she looks back on the day: its records, her diary, 
   const text = textOf(s.requests[0]!);
   assert.match(text, /【我的时间】2026-10-23 快过完了，回头看看今天吧。今天的聊天记录在 [^ ]*conversations[\\/]2026-10-23\.jsonl/);
   assert.ok(!text.includes('今天做过的事在'), 'no activity file today, so it is not mentioned');
-  // The diary first, then whether she has changed: what happened goes to the diary, never into 我是谁.
-  assert.match(text, /先写日记，再看自己：\n1\. 日记：[\s\S]*写进今天的日记[\s\S]*\n2\. 我是谁：[^\n]*今天发生的事留在日记里[^\n]*重写整篇/);
+  // The diary first, then whether she has changed: what happened goes to the diary, never into her 「我」.
+  assert.match(text, /先写日记，再看自己：\n1\. 日记：[\s\S]*写进今天的日记[\s\S]*\n2\. 我：[^\n]*今天发生的事留在日记里[^\n]*重写整篇/);
   assert.match(text, /改之前的那份已经留在 [^ ]*self\.history[\\/]2026-10-23\.md/);
   assert.equal(await readFile(join(s.worldDir, 'room', 'self.history', '2026-10-23.md'), 'utf8'), '我是早上的我');
   assert.deepEqual(s.store.read().review, { at: '2026-10-24T14:00:00.000Z', day: '2026-10-24' });
@@ -463,7 +463,7 @@ test('a look back missed while the app was closed comes late, for the day it bel
   await s.start();
   const text = textOf(s.requests[0]!);
   assert.match(text, /2026-10-22 快过完了[\s\S]*今天家里没有聊天记录[\s\S]*（晚了 13 小时/);
-  assert.ok(!text.includes('改之前的那份'), 'no 我是谁 yet, nothing kept');
+  assert.ok(!text.includes('改之前的那份'), 'no 「我」 yet, nothing kept');
   assert.deepEqual(s.store.read().review, { at: '2026-10-23T14:00:00.000Z', day: '2026-10-23' }, 'the next one is tonight');
 });
 test('a late look back keeps its day\'s diary open until that turn ends', async t => {
