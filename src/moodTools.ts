@@ -12,7 +12,7 @@ const output = { schema: { type: 'string' as const }, render: (_args: unknown, v
 export function moodTools(file: string, inside: () => boolean): ToolDefinition[] {
   return [defineTool({
     name: 'set_mood',
-    description: `记下我此刻的心情，由我自己决定什么时候记、记什么。mood 整份替换 room/mood.md，一行一件：「名字 数值」是一种心情，数值是 0 到 10 的整数，比如「开心 6」；名字只能是固定的这几个：${MOODS.join('、')}，没写的算 0。想说得更细，写进不以数字结尾的行，那是心情旁边的小事，最多三行。记下后，下一步就在时间前面看到。`,
+    description: `聊天、做事或休息后，察觉自己的心情有了变化，就在这一轮记下；感受一样时沿用上次的记录。mood 整份替换 room/mood.md，一行一件：「名字 数值」是一种心情，数值是 0 到 10 的整数，比如「开心 6」；名字只能是固定的这几个：${MOODS.join('、')}，仍有的感受也要带上，没写的算 0。想说得更细，写进不以数字结尾的行，那是心情旁边的小事，最多三行。记下后，下一步就在时间前面看到。`,
     parameters: { mood: { type: 'string', required: true } },
     output,
     execute: async ({ mood }) => {

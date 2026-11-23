@@ -429,6 +429,27 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
         state.inScope = true;
         await archiveNow(agent.id); signal.throwIfAborted();
         if (!included(agent.session)) return leave();
+        if (step === 1 && world?.experience) {
+          const old = recallNodes(agent.session, source => source.kind === moodSource && source.worldId === config.worldId);
+          if (old.length) {
+            state.retiring.push(...old);
+            decision = { ...decision, startsRequestSeries: true };
+          }
+          const admitted = () => !stopped && included(agent.session) && !inGroup(agent.session);
+          if (admitted()) {
+            const input = decision.messages;
+            try {
+              const addition = await world.experience(agent.session, input, signal, admitted);
+              faults.clear('experience');
+              if (addition) decision = { ...decision, messages: input.flatMap(m => m.id === addition.before ? [addition.note, m] : [m]) };
+            } catch (error) {
+              signal.throwIfAborted();
+              faults.set('experience', `心情私记暂不可用：${errorText(error)}`);
+            }
+            signal.throwIfAborted();
+            if (stopped || !included(agent.session)) return leave();
+          }
+        }
         const news = elsewhereMessage(agent.session), mood = moodMessage(agent.session);
         const head = news && step === 1 ? [news] : [], tail = [...(news && step > 1 ? [news] : []), ...(mood ? [mood] : [])];
         if (head.length || tail.length) decision = { ...decision, messages: [...head, ...decision.messages, ...tail] };

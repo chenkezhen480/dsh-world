@@ -84,7 +84,7 @@ export function moodAge(updatedAt: number, now: number): string {
 export function moodText(mood: Mood, age?: string): string | undefined {
   if (mood.kind === 'none') return undefined;
   if (mood.kind === 'failed') return '【我的心情值】mood.md 读不出来，之前那条不再算数；可以用 set_mood 重新记。';
-  const lines = [`【我的心情值】${moodValues(mood).map(value => `${value.name} ${value.value}`).join(' · ')}（以最新一条为准，${age ? `${age}，` : ''}用 set_mood 改）`];
+  const lines = [`【我的心情值】${moodValues(mood).map(value => `${value.name} ${value.value}`).join(' · ')}（上次记录${age ? `，${age}` : ''}；此刻感受变了就用 set_mood 更新）`];
   if (mood.trivia.length) lines.push(`旁边：${mood.trivia.join('；')}${mood.cut ? '……后面还有' : ''}`);
   if (mood.outside.length) lines.push(outsideNote(mood.outside));
   if (mood.unread) lines.push(`（mood.md 里有 ${mood.unread} 行没读懂）`);

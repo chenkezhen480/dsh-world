@@ -25,7 +25,8 @@ import { toastSupported, windowsToast, type Notifier } from './life/notify.ts';
 import { createLifeRuntime, type LifeRuntime } from './life/runtime.ts';
 import type { LifeOptions } from './life/types.ts';
 import { createOutlet } from './ecosystem/shared/outlets.ts';
-import { readPersona, writePersona } from './persona.ts';
+import { readPersona, renderPersona, writePersona } from './persona.ts';
+import { createExperience } from './experience/host.ts';
 import { createComputerModule, moduleLimits, type ComputerModule } from './ecosystem/computer/index.ts';
 import type { AttachmentStore } from '@deepseek-ai/dsh-attachment';
 import { MOOD_FILE } from './mood.ts';
@@ -40,7 +41,7 @@ import { createArchiveStore } from './store.ts';
 import type { WorldConfig } from './types.ts';
 import { DEFAULT_TEMPLATE_FILE, roomTitle, worldNames } from './worldPrompt.ts';
 import { alarmTemplate, worldPromptGaps } from './templateGaps.ts';
-import { selfFileIn } from './self.ts';
+import { renderSelf, selfFileIn } from './self.ts';
 import { createWorldSwitch, type LegacyModuleConfig } from './worldSwitch.ts';
 import { CLOCK_TIME, DEFAULT_REVIEW_TIME } from './life/alarm.ts';
 import { createWechatModule, type WechatModule } from './ecosystem/wechat/index.ts';
@@ -68,6 +69,7 @@ const systemTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
 export const Config = z.object({
   worldId: z.string().default('default'), agentPreset: z.string().default('standard'), timeZone: z.string().default(systemTimeZone),
   companionName: z.string(), partnerName: z.string(),
+  experienceMood: z.boolean().default(false).description('用经历和多条牵挂记录心情（DeepSeek / CC Switch）'),
   archiveScope: z.union([z.const('home').description('仅家会话'), z.const('workspace').description('家所在工作区'), z.transform(z.const('world').hidden(), () => 'workspace' as const).hidden()]).default('workspace').description('记忆归档范围，修改后重启生效'),
   // Only a profile-level stock row can be switched automatically. Session presets own their compaction.
   replaceCompaction: z.boolean().default(true),
@@ -183,7 +185,7 @@ export function apply(ctx: Context, config: Config): void {
   ctx.effect(() => { updates?.start(); return () => updates?.stop(); }, 'dsh-world update check');
   // Her self-description lives in her room whether or not the life line runs; she writes it with her file tools.
   const selfFile = config.selfFile || selfFileIn(roomDir);
-  const moodFile = join(roomDir, MOOD_FILE);
+  const moodFile = config.experienceMood ? undefined : join(roomDir, MOOD_FILE);
   /** Every source of news from where she is not registers here; the world runtime tells her sessions. */
   const elsewhere = createElsewhere();
   const personaFile = config.personaFile || join(worldDir, 'persona.md');
@@ -201,6 +203,12 @@ export function apply(ctx: Context, config: Config): void {
     catch (error) { faults.set('life', `生活线没能启动：${errorText(error)}`); ctx.logger.error(error); return undefined; }
   })();
   const storedHome = () => lifeStore?.read().homeSessionId;
+  const experience = config.experienceMood ? createExperience(worldId, worldDir,
+    () => ({ name: names().companion, persona: renderPersona(readPersona(personaFile)), self: renderSelf(selfFile) }),
+    session => {
+      const state = lifeStore?.read(), wake = state?.delivering;
+      return state?.homeSessionId === session.id && wake?.source === 'fallback' ? wake.messageId : undefined;
+    }) : undefined;
   let isHome: (sessionId: string) => boolean = id => id === storedHome();
   /** Where her world reaches: her room's workspace, and in it the sessions of her preset. */
   const inWorkspace = createWorkspaceMembership(ctx, roomDir, () => Array.from(worlds.rooms.values(), room => room.path));
@@ -223,8 +231,8 @@ export function apply(ctx: Context, config: Config): void {
   async function startMemory(fresh: boolean): Promise<void> {
     if (memory || disposed) return;
     try {
-      const prompt = { file: worldPromptFile, persona: personaFile, conversationsDir: join(worldDir, 'conversations'), names: names(), memoryTools: true, wikiDir, ...(config.life ? { life: options } : {}) };
-      memory = createWorldRuntime(ctx, { ...memoryConfig, selfFile, moodFile }, store, { prompt, names, isHome: id => isHome(id), archiveSession, inWorkspace, memory: memoryService, elsewhere }, power.memoryTurns, power.coldHours);
+      const prompt = { file: worldPromptFile, persona: personaFile, conversationsDir: join(worldDir, 'conversations'), names: names(), memoryTools: true, experienceMood: config.experienceMood, wikiDir, ...(config.life ? { life: options } : {}) };
+      memory = createWorldRuntime(ctx, { ...memoryConfig, selfFile, moodFile }, store, { prompt, names, isHome: id => isHome(id), archiveSession, inWorkspace, memory: memoryService, elsewhere, experience }, power.memoryTurns, power.coldHours);
       await memory.start({ fresh }); faults.clear('memory');
     } catch (error) { memory = undefined; faults.set('memory', `记忆线没能启动：${errorText(error)}`); ctx.logger.error(error); }
   }

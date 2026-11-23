@@ -12,6 +12,7 @@ import { MOOD_CLEARED, moodAge, moodText, parseMood, readMood } from '../src/moo
 import { moodTools } from '../src/moodTools.ts';
 import { createWorldRuntime } from '../src/runtime.ts';
 import { createArchiveStore } from '../src/store.ts';
+import { createExperience } from '../src/experience/host.ts';
 
 const config = { worldId: 'fish', agentPreset: 'companion', timeZone: 'Asia/Seoul' };
 const user = (text: string) => createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text }] });
@@ -25,15 +26,36 @@ function hostTime(ctx: Context) {
   }, { prepend: true });
 }
 
+test('experience mode admits one signed note before the current message and retires it next turn', async t => {
+  const requests: GenerateOptions[] = [];
+  const { ctx, root, cleanup } = await hostFixture(t, async function* (request) { requests.push(request); yield* textResponse('嗯'); });
+  const names = { companion: '小鱼', partner: '伙伴' };
+  const experience = createExperience(config.worldId, root, () => ({ name: names.companion, persona: '', self: '' }), () => undefined,
+    () => async () => ({ usage: {}, message: { tool_calls: [{ function: { arguments: JSON.stringify({ route: 'answer', cues: [], answer: '嗯' }) } }] } }));
+  const store = createArchiveStore({ ...config, root });
+  const world = createWorldRuntime(ctx, config, store, { prompt: { names, experienceMood: true }, isHome: () => true, experience });
+  await world.start(); cleanup.push(() => world.stop().finally(() => store.close()));
+  const { agent } = await ctx.agents.create({ sessionId: SessionId('home'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } });
+  for (const text of ['早', '午安']) {
+    const message = user(text);
+    agent.followup(message); await agent.whenIdle();
+    const request = requests.at(-1)!;
+    assert.equal(moods(request).length, 1);
+    assert.match(moods(request)[0]!, /房间私记 · 小鱼 自述/);
+    assert.equal(request.messages[request.messages.findIndex(m => m.id === message.id) - 1]?.source?.kind, 'dsh-world-mood');
+    assert.ok(!request.tools?.some(tool => tool.name === 'set_mood'));
+  }
+});
+
 test('her moods are read with every separator, the later line winning, the fixed set always shown in its order at 0 when unset', () => {
   const mood = parseMood('﻿开心 6\r\n累：7\n紧张:1\n孤单　5\n开心 8\n');
-  assert.equal(moodText(mood), '【我的心情值】开心 8 · 兴奋 0 · 平静 0 · 安心 0 · 烦 0 · 生气 0 · 紧张 1 · 难过 0 · 累 7 · 孤单 5 · 想念 0（以最新一条为准，用 set_mood 改）');
+  assert.equal(moodText(mood), '【我的心情值】开心 8 · 兴奋 0 · 平静 0 · 安心 0 · 烦 0 · 生气 0 · 紧张 1 · 难过 0 · 累 7 · 孤单 5 · 想念 0（上次记录；此刻感受变了就用 set_mood 更新）');
 });
 
 test('a word outside the fixed set is named back to her and never counted, so near-synonyms cannot pile up', () => {
   const mood = parseMood('高兴 7\n开心 2\n困 3\n高兴 8\n');
   assert.equal(moodText(mood), [
-    '【我的心情值】开心 2 · 兴奋 0 · 平静 0 · 安心 0 · 烦 0 · 生气 0 · 紧张 0 · 难过 0 · 累 0 · 孤单 0 · 想念 0（以最新一条为准，用 set_mood 改）',
+    '【我的心情值】开心 2 · 兴奋 0 · 平静 0 · 安心 0 · 烦 0 · 生气 0 · 紧张 0 · 难过 0 · 累 0 · 孤单 0 · 想念 0（上次记录；此刻感受变了就用 set_mood 更新）',
     '（高兴、困 不在固定的心情里，没有算进去；换成最接近的那个，细的写进小事）',
   ].join('\n'));
   assert.equal(parseMood('高兴 7').kind, 'mood', 'a file with only outside words still says so instead of showing nothing');
@@ -42,7 +64,7 @@ test('a word outside the fixed set is named back to her and never counted, so ne
 test('a mood line she got wrong is counted for her, never taken as a small thing, and small things beyond the limits are cut with a mark', () => {
   const mood = parseMood('开心 11\n累 7.5\n烦 -1\n外面在下雨\n楼下的猫今天又来了一次哦\n晚饭吃面\n还有一件\n');
   assert.equal(moodText(mood), [
-    '【我的心情值】开心 0 · 兴奋 0 · 平静 0 · 安心 0 · 烦 0 · 生气 0 · 紧张 0 · 难过 0 · 累 0 · 孤单 0 · 想念 0（以最新一条为准，用 set_mood 改）',
+    '【我的心情值】开心 0 · 兴奋 0 · 平静 0 · 安心 0 · 烦 0 · 生气 0 · 紧张 0 · 难过 0 · 累 0 · 孤单 0 · 想念 0（上次记录；此刻感受变了就用 set_mood 更新）',
     '旁边：外面在下雨；楼下的猫今天又来了一次哦；晚饭吃面……后面还有',
     '（mood.md 里有 3 行没读懂）',
   ].join('\n'));
@@ -119,7 +141,7 @@ test('her snapshot says how long her mood has stood, and the plugin never ages t
   await world.start(); cleanup.push(() => world.stop().finally(() => store.close()));
   const { agent } = await ctx.agents.create({ sessionId: SessionId('home'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } });
   agent.followup(user('在吗')); await agent.whenIdle();
-  assert.match(moods(requests.at(-1)!).join(''), /平静 6[\s\S]*（以最新一条为准，最后改于 2 天 3 小时前，用 set_mood 改）/);
+  assert.match(moods(requests.at(-1)!).join(''), /平静 6[\s\S]*上次记录，最后改于 2 天 3 小时前；此刻感受变了就用 set_mood 更新/);
   assert.equal(await readFile(moodFile, 'utf8'), '平静 6\n');
 });
 
@@ -202,9 +224,10 @@ test('her world sessions have set_mood, and what she records with it shows on th
   await world.start(); cleanup.push(() => world.stop().finally(() => store.close()));
   const { agent } = await ctx.agents.create({ sessionId: SessionId('home'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } });
   agent.followup(user('今天怎么样')); await agent.whenIdle();
-  assert.ok(requests[0]!.tools?.some(tool => tool.name === 'set_mood'), 'her world session has the tool');
+  const tool = requests[0]!.tools?.find(tool => tool.name === 'set_mood');
+  assert.match(tool?.description ?? '', /聊天、做事或休息/);
   assert.equal(await readFile(moodFile, 'utf8'), '开心 7\n累 3\n');
-  assert.match(moods(requests[1]!).at(-1)!, /开心 7[\s\S]*累 3[\s\S]*用 set_mood 改/);
+  assert.match(moods(requests[1]!).at(-1)!, /开心 7[\s\S]*累 3[\s\S]*用 set_mood 更新/);
   const outside = await ctx.agents.create({ sessionId: SessionId('work'), meta: { agentPreset: 'coding' }, agentOptions: { provider: 'test', model: 'test' } });
   outside.agent.followup(user('写代码')); await outside.agent.whenIdle();
   assert.ok(!requests.at(-1)!.tools?.some(tool => tool.name === 'set_mood'), 'a session outside her world never gets it');
