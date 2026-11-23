@@ -164,9 +164,13 @@ export function createArchiveStore(config: WorldConfig & { root: string }) {
   function channelSession(key: string): string | undefined {
     return db.prepare('SELECT sessionId FROM channelSessions WHERE conversationKey=? LIMIT 1').get(key)?.sessionId as string | undefined;
   }
+  /** The conversation a session belongs to (the other direction of `channelSession`); undefined for home and DSH windows. */
+  function channelKey(sessionId: string): string | undefined {
+    return db.prepare('SELECT conversationKey FROM channelSessions WHERE sessionId=? LIMIT 1').get(sessionId)?.conversationKey as string | undefined;
+  }
   /** Whether a session is one of her channel conversations, and which kind; undefined for home and DSH windows. */
   function channelType(sessionId: string): 'private' | 'group' | undefined {
-    const key = db.prepare('SELECT conversationKey FROM channelSessions WHERE sessionId=? LIMIT 1').get(sessionId)?.conversationKey;
+    const key = channelKey(sessionId);
     if (typeof key !== 'string') return undefined;
     return (JSON.parse(key) as unknown[])[2] === 'group' ? 'group' : 'private';
   }
@@ -188,6 +192,6 @@ export function createArchiveStore(config: WorldConfig & { root: string }) {
     });
   }
   return { commitRecords, hasRecord, updateRecord, readPage, readSince, lastSequence, readTurn, progress, forgetProgress, sourcePage, stats, close,
-    channelSession, channelType, bindChannelSession, delivery, registerDelivery, updateDelivery, memory, snapshotTo };
+    channelSession, channelKey, channelType, bindChannelSession, delivery, registerDelivery, updateDelivery, memory, snapshotTo };
 }
 export type ArchiveStore = ReturnType<typeof createArchiveStore>;

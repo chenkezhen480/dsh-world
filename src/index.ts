@@ -316,6 +316,7 @@ export function apply(ctx: Context, config: Config): void {
     let bridge: Bridge | undefined;
     let wechat: WechatModule | undefined;
     let qqNative: QqNativeModule | undefined;
+    let unregisterQqNews: (() => void) | undefined;
     let computer: ComputerModule | undefined;
     /** Her own browser follows the life line and its console switch; a failure to start is a fault, never a broken plugin. */
     function startComputer(): void {
@@ -416,6 +417,7 @@ export function apply(ctx: Context, config: Config): void {
           inWorld: inWorldSession,
           roomDir: options.roomDir,
           isHome: id => current.isHome(id),
+          sessionKey: id => store.channelKey(id),
           // `none` keeps private test traffic out of her real home, as groups are by default.
           home: identity => {
             const bind = q.bindHomeSession ?? 'owner';
@@ -452,13 +454,14 @@ export function apply(ctx: Context, config: Config): void {
           }),
         });
         qqNative.start();
+        unregisterQqNews = elsewhere.register(qqNative.elsewhere);
         faults.clear('qq');
       } catch (error) {
         stopQqNative();
         faults.set('qq', `QQ 模块没能启动：${errorText(error)}`); lifeCtx.logger.error(error);
       }
     }
-    function stopQqNative(): void { qqNative?.stop(); qqNative = undefined; qqChannels?.stop(); qqChannels = undefined; faults.clear('qq'); }
+    function stopQqNative(): void { unregisterQqNews?.(); unregisterQqNews = undefined; qqNative?.stop(); qqNative = undefined; qqChannels?.stop(); qqChannels = undefined; faults.clear('qq'); }
     async function startLife(resumed: boolean): Promise<void> {
       if (!lifeStore || life) return;
       let current: LifeRuntime | undefined;
