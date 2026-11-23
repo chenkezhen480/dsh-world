@@ -2,7 +2,7 @@
 // Kept local so the stock package is used unmodified; selection here always runs to the newest balanced cut.
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
-import { CompactionId, ManualCompactionError, compactCheckpointSource, toolPairingBalancedAfter, toolPairingBalancedBefore, type CompactionResult } from '@deepseek-ai/dsh-compaction';
+import { CompactionId, ManualCompactionError, compactCheckpointSource, isCompactCheckpointSource, toolPairingBalancedAfter, toolPairingBalancedBefore, type CompactionResult } from '@deepseek-ai/dsh-compaction';
 import type { CommandId } from '@deepseek-ai/dsh-commands/brand';
 import { createUserMessage, errorChain, type ContentBlock, type Message, type TokenUsage, type UserMessage } from '@deepseek-ai/dsh-llm';
 import { SessionSeq, type Session } from '@deepseek-ai/dsh-session';
@@ -29,7 +29,12 @@ function eventAt(session: Session, seq: SessionSeq) {
 
 class SurfaceChangedError extends Error {}
 
-/** Everything after the system head through the newest cut that splits no tool call from its result. */
+/** A span shorter than this that is mostly the checkpoint it replaced has nothing to shrink; the floor only applies to such spans. */
+const MIN_COMPACT_TOKENS = 4096;
+/** Share of a short span that must come from earlier checkpoints before compaction would only rewrite them. */
+const CHECKPOINT_SHARE = 3 / 4;
+
+/** Everything after the system head through the newest cut that splits no tool call from its result; `null` when it is only the last summary. */
 export function selectWholeRange(session: Session, measurement: TokenMeasurement): { start: SessionSeq; end: SessionSeq } | null {
   const nodes = session.surface.nodes;
   if (!nodes.length) return null;
@@ -37,7 +42,22 @@ export function selectWholeRange(session: Session, measurement: TokenMeasurement
   const firstIdx = eventAt(session, nodes[0]).type === 'system/message' ? 1 : 0;
   let endIdx = nodes.length - 1;
   while (endIdx >= firstIdx && !toolPairingBalancedAfter(session, nodes[endIdx])) endIdx -= 1;
-  return endIdx < firstIdx ? null : { start: nodes[firstIdx], end: nodes[endIdx] };
+  if (endIdx < firstIdx) return null;
+  const span = measurement.nodes.slice(firstIdx, endIdx + 1);
+  const tokens = span.reduce((total, node) => total + node.tokens, 0);
+  // Below the floor, a span that is mostly made of the last checkpoint cannot summarize into anything smaller: skip instead of rewriting it.
+  const onlyLastSummary = tokens < MIN_COMPACT_TOKENS && checkpointTokens(session, span) >= tokens * CHECKPOINT_SHARE;
+  return onlyLastSummary ? null : { start: nodes[firstIdx], end: nodes[endIdx] };
+}
+
+/** Tokens the span carries from earlier compaction checkpoints; a summary of them can only reproduce them. */
+function checkpointTokens(session: Session, span: readonly TokenSurfaceNode[]): number {
+  let total = 0;
+  for (const node of span) {
+    const message = session.deriveEventMessage(eventAt(session, node.seq));
+    if (message !== null && isCompactCheckpointSource(message.source)) total += node.tokens;
+  }
+  return total;
 }
 
 export async function compactSurfaceRegion(deps: RegionDependencies, agent: RegionAgent, start: SessionSeq, end: SessionSeq, options: RegionOptions, signal?: AbortSignal): Promise<CompactionResult> {
