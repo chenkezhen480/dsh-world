@@ -834,6 +834,30 @@ test('joining a world after prompt assembly blocks the old host prompt until the
   assert.match(textOf(requests[0]!), /我的世界/);
   assert.doesNotMatch(textOf(requests[0]!), /DeepSeek Harness/);
 });
+test('a reloaded runtime keeps serving a session that already lives in her world', { timeout: 5000 }, async t => {
+  const requests: GenerateOptions[] = [];
+  const { ctx, root, cleanup } = await hostFixture(t, request => { requests.push(request); return textResponse('reply'); });
+  isolateHome(t, root);
+  const room = join(root, 'worlds/fish/room');
+  await mkdir(room, { recursive: true });
+  const sessionIds: string[] = [];
+  ctx.provide('workspaceRegistry', { list: () => [{ path: room, sessionIds }] });
+  const { routes } = provideLifeHost(ctx);
+  let plugin = ctx.plugin(worldPlugin, { ...config, life: false });
+  cleanup.push(() => plugin.dispose()); await plugin.await();
+  await consolePost(routes, '/dsh-world/worlds/fish/console/start');
+  const { agent } = await ctx.agents.create({ sessionId: SessionId('reload-late'), meta: { agentPreset: config.agentPreset, cwd: room }, agentOptions: { provider: 'test', model: 'test' } });
+  sessionIds.push(agent.id);
+  agent.followup(user('first turn inside the world')); await agent.whenIdle();
+  assert.equal(requests.length, 1);
+  assert.match(textOf(requests[0]!), /\u6211\u7684\u4e16\u754c/);
+  await plugin.dispose();
+  plugin = ctx.plugin(worldPlugin, { ...config, life: false }); await plugin.await();
+  agent.followup(user('after the reload')); await agent.whenIdle();
+  const refused = agent.session.snapshotEvents().filter(event => event.type === 'turn/end' && event.data.reason.kind === 'error' && event.data.reason.error.code === 'DSH_WORLD_SCOPE_CHANGED');
+  assert.equal(refused.length, 0, 'a reload is not a scope change: the turn goes through instead of asking for a resend');
+  assert.equal(requests.length, 2);
+});
 test('a persisted in-history session restores its host prompt after leaving the world while closed', async t => {
   const requests: GenerateOptions[] = [];
   const stream = (request: GenerateOptions) => {
