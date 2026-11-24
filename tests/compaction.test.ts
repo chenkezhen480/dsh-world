@@ -141,8 +141,8 @@ test('the tools she used in the compacted span are named once after the summary,
   const step = (...calls: ReturnType<typeof call>[]) => ({ id: `s${n}`, role: 'assistant', source: { kind: 'model' }, content: [{ type: 'text', text: '好' }, ...calls] }) as never;
   const outcome = (of: ReturnType<typeof call>) => ({ id: `r${of.id}`, role: 'tool', toolCallId: of.id, source: { kind: 'tool' }, content: [{ type: 'text', text: 'PRIVATE_RESULT' }] }) as never;
   const sent = call('wechat_send', { text: 'PRIVATE_TEXT' }), again = call('wechat_send', { text: '再说一句' }), diary = call('edit', { file_path: 'PRIVATE_PATH' });
-  const line = toolsUsed([step(sent), outcome(sent), step(diary, call('set_mood', {})), outcome(diary), step(again), outcome(again)])!;
-  assert.equal(line, `${TOOLS_LEAD}edit、set_mood、wechat_send`);
+  const line = toolsUsed([step(sent), outcome(sent), step(diary, call('plan_next', {})), outcome(diary), step(again), outcome(again)])!;
+  assert.equal(line, `${TOOLS_LEAD}edit、plan_next、wechat_send`);
   assert.doesNotMatch(line, /PRIVATE/);
   assert.equal(toolsUsed([step()]), undefined, 'nothing called, nothing said');
 });
@@ -187,6 +187,6 @@ test('her own alarm messages stay in the summarized input and the instruction sa
   assert.ok(input.some(message => message.source?.kind === 'dsh-world-life' && JSON.stringify(message.content).includes('ALARM_NOTE')));
   const instruction = JSON.stringify(input.find(message => message.source?.kind === 'dsh-world-summary-input')!.content);
   assert.ok(instruction.includes('以【我的时间】（较早的是【你的时间】）开头的消息是你自己定的闹钟和留给自己的话，不是用户说的话；把它们当作你自己的安排来记，不要算作用户发言。'));
-  assert.ok(instruction.includes('以【我的心情值】开头的心情快照'), 'her mood snapshot comes back after compaction, so it is not summarized');
+  assert.ok(instruction.includes('以【我的心情值】开头的是已经不用的旧心情快照'), 'mood snapshots left in an older session are not summarized');
   assert.ok(instruction.includes('以【别处的动静】开头的未读计数'), 'news from elsewhere is told again after compaction, so it is not summarized');
 });

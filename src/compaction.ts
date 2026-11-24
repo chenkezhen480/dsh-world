@@ -15,13 +15,14 @@ const summaryInstruction = [
   '现在暂停对话，改为执行上下文压缩：把上面这段会话中双方的交流整理成一段精炼的中文摘要，供你之后接着对话使用。',
   '保留用户的意图、情绪与关系进展、明确要求、重要事实、已作决定、未完成事项和最近进展；最后一条用户发言尽量按原意完整保留。以“以下是此前交流的摘要”开头的消息是更早的摘要，请与新内容合并为同一段。',
   '以【我的时间】（较早的是【你的时间】）开头的消息是你自己定的闹钟和留给自己的话，不是用户说的话；把它们当作你自己的安排来记，不要算作用户发言。',
-  '开头写着“这是我们最近的聊天记录”（较早的写着“最近的聊天记忆”或“最近的相处记忆”）的记忆资料、系统提示里的世界提示词（含她写的自述）、以【我的心情值】开头的心情快照、以【别处的动静】开头的未读计数和“Time sampled”开头的时间块会在压缩后重新提供，不要写进摘要。工具调用过程已从会话中删除，不要提及工具。',
+  '开头写着“这是我们最近的聊天记录”（较早的写着“最近的聊天记忆”或“最近的相处记忆”）的记忆资料、系统提示里的世界提示词（含她写的自述）、以【别处的动静】开头的未读计数和“Time sampled”开头的时间块会在压缩后重新提供，以【我的心情值】开头的是已经不用的旧心情快照，都不要写进摘要。工具调用过程已从会话中删除，不要提及工具。',
   '保留准确的姓名、日期、数字和标识，分清每件事是谁说的、谁做的。不要标题、列表或分段，不要开头语，不要补写原文没有的事实，不要调用任何工具，直接输出摘要正文。',
 ].join('\n');
 // The model tends to echo the checkpoint lead it saw on earlier summaries; the frame adds it once.
 const leadEcho = /^以下是此前交流的摘要[^：:]{0,40}[：:]\s*/;
 const checkpointLead ='以下是此前交流的摘要，工具调用过程已省略；请把它当作已知背景，直接接着当前对话继续：';
-// Re-injected after every successful compaction by the memory runtime; replayed only as cacheable prefix.
+// Re-injected after every successful compaction by the memory runtime (her mood snapshots, gone since 0.8.4, only linger in
+// older sessions); replayed only as cacheable prefix.
 export const injectedSources: ReadonlySet<string> = new Set(['time-context', 'dsh-world-history', 'dsh-world-mood', 'dsh-world-elsewhere']);
 
 interface SummaryAudit { policyVersion: 2; provider: string; model: string; maxTokens: number; instruction: string; timeContext: string; replayedMessageIds: string[] }

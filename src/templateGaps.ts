@@ -81,7 +81,8 @@ export function worldPromptGaps(own: string, shipped = readFileSync(DEFAULT_TEMP
  * she can miss is what a section of her own does not use, most often a capability added after she wrote it.
  */
 export function alarmGaps(own: string, shipped = readFileSync(DEFAULT_ALARM_FILE, 'utf8')): TemplateGap[] {
-  const hers = parseSections(own, MESSAGE_KEYS), ours = parseSections(shipped, MESSAGE_KEYS);
+  // Every `##` section, as the plugin reads the file: one it no longer sends (an old 提前停下) stays its own, not part of the one above.
+  const hers = parseSections(own), ours = parseSections(shipped);
   return MESSAGE_KEYS.flatMap(key => {
     const mine = hers.get(key), theirs = ours.get(key);
     if (mine === undefined || theirs === undefined) return [];

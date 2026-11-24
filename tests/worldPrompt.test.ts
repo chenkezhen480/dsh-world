@@ -74,9 +74,7 @@ test('the shipped template: room, diary, 我, world line and ask-first rules, wi
   const order = ['# 我的世界', '## 房间', '## 日记', '## 聊天记录', '## 我', '## 世界线', '## 大事先问'].map(heading => home.indexOf(heading));
   assert.deepEqual([...order].sort((a, b) => a - b), order); assert.ok(order.every(index => index > 0));
   assert.match(home, /我的房间是 R。/); assert.match(home, /我的日记本在 D，一天一个文件/);
-  // The mood rules are in set_mood's own description; the template only says where it is and how she sees it.
-  assert.match(home, /房间里的 mood\.md 记我此刻的心情，用 set_mood 记[^\n]*下一步就会在时间前面看到/);
-  assert.doesNotMatch(home, /focus\.md|常见的情绪词/);
+  assert.doesNotMatch(home, /mood|心情|focus\.md|常见的情绪词/);
   assert.match(home, /自己的家里（「小鱼的家」）/); assert.match(home, /不是伙伴在说话/);
   assert.match(home, /【我的时间】/); assert.match(home, /用 plan_next 说好打算做什么、做到什么时候/); assert.match(home, /闹钟不是用来叫醒自己的/); assert.match(home, /每天早上 07:30 被叫醒/); assert.match(home, /reach_out/);
   assert.match(home, /问完不用干等，先去做别的；伙伴回我的话会直接插进我正在做的事里。其余的事我自己决定。/);

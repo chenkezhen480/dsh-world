@@ -19,9 +19,6 @@ export interface WorldConfig {
   fallbackWakeTime?: string;
   /** Her own 「我」 file, part of the world prompt; defaults to `<world>/room/我.md`, or the `我是谁.md` an older world has. */
   selfFile?: string;
-  /** Her mood file, read back to her each turn; `<world>/room/mood.md` in the plugin, none when unset. */
-  moodFile?: string;
-  experienceMood?: boolean;
   /** Her name (home title, notifications, memory labels); TA when unset. */
   companionName?: string;
   /** What she calls her partner in the plugin's own words; 伙伴 when unset. */

@@ -103,7 +103,7 @@ export function memoryTools(service: MemoryService, inside: () => boolean, looke
 }
 
 /**
- * Gives world sessions their tools (long-term memory, her mood), whatever the life line does: a session has them
+ * Gives world sessions their long-term memory tools, whatever the life line does: a session has them
  * while it is in her world, and loses them when it leaves. A registration that fails is a fault, never a broken agent.
  */
 export function createWorldToolRegistry(deps: { tools(inside: () => boolean, agent: Agent): ToolDefinition[]; inWorld(agent: Agent): boolean; faults: Faults; logger: { error(...args: unknown[]): void } }) {

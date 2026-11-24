@@ -14,7 +14,7 @@ declare module '@deepseek-ai/dsh-llm' {
     'dsh-world-history': { kind: 'dsh-world-history'; form: 'recall'; worldId?: string; scope?: string };
     'dsh-world-summary-input': { kind: 'dsh-world-summary-input' };
     'dsh-world-life': { kind: 'dsh-world-life' };
-    /** 她在 mood.md 里写的心情值：快照，不是谁说的话，不进归档。 */
+    /** 她在 mood.md 里写的心情值（0.8.4 起不再有）：快照，不是谁说的话，不进归档；旧会话里留着的压缩时清掉。 */
     'dsh-world-mood': { kind: 'dsh-world-mood'; form: 'snapshot'; worldId: string };
     /** 别处的动静：她不在场的地方攒下多少条、最后是谁，只是事实，不是谁说的话，不进归档。 */
     'dsh-world-elsewhere': { kind: 'dsh-world-elsewhere'; form: 'notice'; worldId: string };

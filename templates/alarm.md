@@ -21,8 +21,8 @@
 ## 晚到说明
 （晚了 {{lateBy}}，那段时间电脑没开，或者家暂时打不开。）
 
-## 提前停下
-我说好做到 {{time}}{{#note}}（「{{note}}」）{{/note}}，现在才 {{now}}，这一轮就停了。做完了，就想想接下来做什么，用 plan_next 重新说好做到几点；要是在休息，就不用管，到点会叫我。
+## 没定闹钟
+这一轮我还没说接下来做什么。还想接着做事，就用 plan_next 说好做到几点；要歇着，就不用管，明早 {{fallbackWakeTime}} 会叫我。
 
 ## 每日回顾
 {{date}} 快过完了，回头看看今天吧。{{#conversations}}今天的聊天记录在 {{conversations}}{{/conversations}}{{^conversations}}今天家里没有聊天记录{{/conversations}}{{#activity}}，今天做过的事在 {{activity}}{{/activity}}，日记在 {{diaryDir}}。

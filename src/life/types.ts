@@ -1,6 +1,5 @@
 export type AlarmSource = 'plan' | 'fallback';
-/** `nudged`: she was already asked once, when a home turn stopped well before this alarm, whether she is done. */
-export interface Alarm { at: string; note: string; setAt: string; source: AlarmSource; nudged?: true }
+export interface Alarm { at: string; note: string; setAt: string; source: AlarmSource }
 /** The next look back on a day: when it is due, and the local day it looks back on. */
 export interface Review { at: string; day: string }
 /** A word the plugin owes her home: `arrival` when a new home was built, `return` when her world was started again. */

@@ -611,6 +611,7 @@ test('the installed world injects memory prompts and life tools only into its wo
   const home = ctx.agents.get(SessionId(snapshot.life.homeSessionId))!;
   home.followup(user('WORLD_PRIVATE_HISTORY')); await home.whenIdle();
   const room = join(root, 'worlds/fish/room');
+  await writeFile(join(room, 'mood.md'), '开心 6\n');
   const inside = (await ctx.agents.create({ sessionId: SessionId('inside-world'), meta: { cwd: room, agentPreset: config.agentPreset }, agentOptions: { provider: 'test', model: 'test' } })).agent;
   const workspace = (ctx.get('workspaceRegistry') as { list(): { attachSession(id: string): Promise<void> }[] }).list()[0];
   await workspace.attachSession(inside.id);
@@ -619,6 +620,9 @@ test('the installed world injects memory prompts and life tools only into its wo
   assert.match(textOf(insideRequest), /WORLD_PRIVATE_HISTORY/);
   assert.match(textOf(insideRequest), /# 我的世界/);
   assert.ok(insideRequest.tools?.some(tool => tool.name === 'plan_next'));
+  // A mood.md left from before 0.8.4 is a plain file in her room: nothing reads it to her or gives her a tool for it.
+  assert.ok(!insideRequest.tools?.some(tool => tool.name === 'set_mood'));
+  assert.doesNotMatch(textOf(insideRequest), /【我的心情值】|开心 6/);
   const outside = (await ctx.agents.create({ sessionId: SessionId('outside-world'), meta: { cwd: root, agentPreset: config.agentPreset }, agentOptions: { provider: 'test', model: 'test' } })).agent;
   outside.followup(user('outside')); await outside.whenIdle();
   const outsideRequest = requests.at(-1)!;

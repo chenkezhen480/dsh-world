@@ -1069,25 +1069,10 @@
         h('div', null, h('b', null, category.name), h('span', { className: 'dw-muted' }, category.guide ? ' · 她写了说明' : ' · 还没写说明')),
         operations.length ? operations.map(function (p) { return h('div', { key: p.name, className: p.last && !p.last.ok ? 'dw-bad' : 'dw-muted' }, p.name + ' · ' + p.description + (p.onAlarm ? '（闹钟前）' : '') + (p.last ? (p.last.ok ? ' · 最近成功' : ' · 最近失败：' + (p.last.detail || '')) : '')) }) : h('div', { className: 'dw-muted' }, '这一类还没有操作'))
     }
-    // Read-only: what she wrote in mood.md and reads before each turn's time block. Only she changes it.
-    function Mood(props) {
-      var mood = props.mood
-      return !mood || mood.kind === 'none' ? h('div', { className: 'dw-muted' }, '她还没有写 mood.md')
-        : mood.kind === 'failed' ? h('div', { className: 'dw-bad' }, 'mood.md 读不出来：' + mood.message)
-        : [
-          h('div', { key: 'v', className: 'dw-trail' }, list(mood.values).map(function (v) { return h('span', { key: v.name, className: v.value ? null : 'dw-muted' }, v.name + ' ' + v.value) })),
-          list(mood.trivia).length ? h('div', { key: 't', style: { marginTop: 8 } }, '旁边：' + list(mood.trivia).join('；') + (mood.cut ? '……后面还有' : '')) : null,
-          list(mood.outside).length ? h('div', { key: 'o', className: 'dw-muted' }, list(mood.outside).join('、') + ' 不在固定的心情里，没有算进去') : null,
-          mood.unread ? h('div', { key: 'u', className: 'dw-muted' }, '有 ' + mood.unread + ' 行没读懂，她在快照里能看到') : null,
-          h('div', { key: 'at', className: 'dw-muted', style: { marginTop: 8 } }, mood.updatedAt ? '她最后改于 ' + local(mood.updatedAt, props.zone) : ''),
-        ]
-    }
-    // Her mood sits with the plugin's faults: one place to see how things are with her.
     function Health(props) {
       var faults = list(props.faults)
       return h(Card, { title: '健康', delay: 120 },
-        faults.length ? faults.map(function (f, i) { return h('div', { key: i, className: 'dw-bad' }, '● ' + f) }) : h('div', { className: 'dw-ok' }, '● 一切正常'),
-        props.mood ? h('div', { style: { marginTop: 12 } }, KV([['心情', h(Mood, { mood: props.mood, zone: props.zone })]])) : null)
+        faults.length ? faults.map(function (f, i) { return h('div', { key: i, className: 'dw-bad' }, '● ' + f) }) : h('div', { className: 'dw-ok' }, '● 一切正常'))
     }
     /** 有新版本时最上面的一行：只提示，升级要先退出 DSH，按升级说明做。没查到就说没查到，不冒充「已是最新」。 */
     function UpdateNotice(props) {
@@ -1136,7 +1121,7 @@
             ['最近', wakes.length ? h('div', { className: 'dw-trail' }, wakes.map(function (w, i) { return h('span', { key: i }, local(w.deliveredAt, zone) + ' ' + (sourceLabel[w.source] || w.source) + (w.lateMs >= 120000 ? ' · 晚 ' + Math.round(w.lateMs / 60000) + ' 分' : '')) })) : '—'],
           ]))) : null,
         h('div', { className: 'dw-grid' },
-          h(Health, { faults: snap.health, mood: snap.mood, zone: zone }),
+          h(Health, { faults: snap.health }),
           h(Budget, { budget: snap.budget, zone: zone, onSaved: props.refresh }),
           h(Memory, { mem: mem, onSaved: props.refresh }),
           h(CompactionPreset, { info: snap.compactionPreset, refresh: props.refresh }),

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { greetingText, earlyStopText, nextReview, reviewOf, formatDuration, nextLocalTime, resolveAlarmTime, wakeText } from '../src/life/alarm.ts';
+import { greetingText, unplannedText, nextReview, reviewOf, formatDuration, nextLocalTime, resolveAlarmTime, wakeText } from '../src/life/alarm.ts';
+import { readAlarmMessages } from '../src/life/messages.ts';
 
 const now = new Date('2026-10-23T12:00:00.000Z');
 test('alarm time accepts exactly one of an offset timestamp or minutes, at least one minute ahead', () => {
@@ -62,10 +63,10 @@ test('nextLocalTime handles DST gaps and repeated times', () => {
   assert.equal(next('2026-11-01T05:30:00.000Z', '01:30', 'America/New_York'), '2026-11-01T06:30:00.000Z');
   assert.equal(next('2026-11-01T06:30:00.000Z', '01:30', 'America/New_York'), '2026-11-02T06:30:00.000Z');
 });
-test('the early-stop question names her plan, its time and now, and carries the mark but no tail', () => {
-  const plan = { at: '2026-10-23T12:30:00.000Z', note: '看视频', setAt: '2026-10-23T11:00:00.000Z', source: 'plan' as const };
-  assert.equal(earlyStopText(plan, now, 'Asia/Seoul'), '【我的时间】我说好做到 2026-10-23T21:30:00+09:00（「看视频」），现在才 2026-10-23T21:00:00+09:00，这一轮就停了。做完了，就想想接下来做什么，用 plan_next 重新说好做到几点；要是在休息，就不用管，到点会叫我。');
-  assert.match(earlyStopText({ ...plan, note: '' }, now, 'UTC'), /^【我的时间】我说好做到 2026-10-23T12:30:00\+00:00，现在才/);
+test('the word for an alarm turn closing with nothing planned carries the mark and her wake time; an emptied section says nothing', () => {
+  assert.equal(unplannedText('09:00'), '【我的时间】这一轮我还没说接下来做什么。还想接着做事，就用 plan_next 说好做到几点；要歇着，就不用管，明早 09:00 会叫我。');
+  const shipped = readAlarmMessages(undefined);
+  assert.equal(unplannedText('09:00', { sections: { ...shipped.sections, 没定闹钟: '{{#never}}只在开着时说{{/never}}\n' } }), '');
 });
 test('the next look back is the next 23:00 in her zone, for that local day', () => {
   assert.deepEqual(nextReview(new Date('2026-10-23T03:00:00Z'), 'Asia/Seoul'), { at: '2026-10-23T14:00:00.000Z', day: '2026-10-23' });
