@@ -3,6 +3,10 @@
   "version": "0.1.0",
   "description": "她的小屋：dsh-world 世界控制台里的三渲二小屋页面。由 dsh-world 在控制台里按需安装，不单独使用。",
   "license": "MIT",
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  },
   "type": "module",
   "repository": {
     "type": "git",
