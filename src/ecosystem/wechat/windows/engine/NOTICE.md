@@ -29,3 +29,13 @@ The 4.2.0.53 mapping was independently compared with the fingerprint-verified
 Tencent's installer at https://dldir1v6.qq.com/weixin/Universal/Windows/WeChatWin_4.2.0.exe,
 and both the installer and DLL Authenticode signatures were verified. The
 existing native bridge ABI is unchanged.
+
+The 4.2.1.9 mapping was independently derived from Tencent's signed x64 DLL,
+extracted offline from https://dldir1v6.qq.com/weixin/Universal/Windows/WeChatWin_4.2.1.exe.
+Both installer and DLL signatures were verified. Comparison with the
+fingerprint-verified 4.2.0.53 DLL covered function entry instructions, native
+call interfaces, account-root references, scheduler literals and context and
+manager RTTI. Eleven complete entry functions and eleven context vtable slots
+match after relative-address normalization. Changes inside text sending were
+reviewed separately; the native text manager fields that moved are not accessed
+by this bridge. The existing request ABI and static-image sticker path are retained.
