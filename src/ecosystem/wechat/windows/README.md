@@ -83,7 +83,7 @@ DSH 端代码在 `src/ecosystem/wechat/`，此目录只负责 Windows 微信收�
 
 平台账号 ID 不按同名自动合并。微信的分片内数字 `sender_id` 不能直接当人 ID。QQ 的 @ 使用 [消息段的 `at.data.qq`](https://github.com/botuniverse/onebot-11/blob/master/message/segment.md#某人)，同样不通过昵称判断。
 
-`wechat_send` 的 `messages` 每项为 `{ "type": "text", "text": "一句话" }`、`{ "type": "image", "path": "绝对路径" }` 或 `{ "type": "sticker", "stickerId": "st_..." }`；表情也接受允许目录下的 `path`。图片会快照成 PNG，表情转成 GIF 并保留动画；每条文字最多 4094 UTF-8 字节，GIF 最大 1MB、1024 像素边长，过大时明确报错。
+`wechat_send` 的 `messages` 每项为 `{ "type": "text", "text": "一句话" }`、`{ "type": "image", "path": "绝对路径" }` 或 `{ "type": "sticker", "stickerId": "st_..." }`；表情也接受允许目录下的 `path`。图片会快照成 PNG，表情转成 GIF 并保留动画，转换后的大小和边长不设限；每条文字最多 4094 UTF-8 字节，图片和表情的原文件最多 10MB。一批里有一条准备不了（文件不在、格式不支持、超过 10MB），整批都不发，她看到「整批未发送」，适配器照常运行，不会卡住这个聊天。
 
 ```powershell
 ./src/ecosystem/wechat/windows/wechat.ps1 Status

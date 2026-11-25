@@ -106,22 +106,33 @@ test('an archive that cannot be written does not stop her talking; what she said
   assert.equal(records.filter(record => record.role === 'assistant').length, 2);
 });
 
-test('a session whose log cannot be read is still created and talks; the fault names it', async t => {
+test('a session whose log cannot be read is still created and talks; a gap only that log could fill is named', async t => {
   const requests: GenerateOptions[] = [];
   const { ctx, root, cleanup } = await hostFixture(t, request => { requests.push(request); return textResponse('reply'); });
   const config = { worldId: 'fish', agentPreset: 'companion', timeZone: 'UTC' };
   const store = createArchiveStore({ ...config, root }); cleanup.push(() => store.close());
   const persistence = ctx.sessionPersistence, open = persistence.open.bind(persistence);
   persistence.open = async (id, mode) => {
-    if (id === 'home' && mode === 'read') throw Object.assign(new Error('stored log is corrupt'), { name: 'SessionFormatError' });
+    if (mode === 'read') throw Object.assign(new Error('stored log is corrupt'), { name: 'SessionFormatError' });
     return open(id, mode);
   };
   cleanup.push(() => { persistence.open = open; });
+  const create = async (id: string) => (await ctx.agents.create({ sessionId: SessionId(id), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } })).agent;
+  // What it said before her world listened can only come from its stored log.
+  const home = await create('home');
+  home.followup(user('before')); await home.whenIdle(); await ctx.sessions.flush(home.session);
   const world = createWorldRuntime(ctx, config, store); cleanup.push(() => world.stop());
   await world.start();
-  const home = (await ctx.agents.create({ sessionId: SessionId('home'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } })).agent;
-  assert.equal(ctx.agents.get(SessionId('home')), home, 'the session exists');
   home.followup(user('hello')); await home.whenIdle();
-  assert.equal(requests.length, 1);
+  assert.equal(requests.length, 2, 'it still talks');
+  await world.flush().catch(() => {});
   assert.ok(world.faults().some(message => /home.*归档未完成/.test(message)), world.faults().join('|'));
+  // A session created while her world listens is archived from what it publishes, so its log is never needed.
+  const late = await create('late');
+  assert.equal(ctx.agents.get(SessionId('late')), late, 'the session exists');
+  late.followup(user('later')); await late.whenIdle();
+  assert.equal(requests.length, 3);
+  await world.flush().catch(() => {});
+  assert.ok(!world.faults().some(message => /late/.test(message)), world.faults().join('|'));
+  assert.ok((await store.readPage({ limit: 20 })).records.some(row => row.content === 'later'));
 });

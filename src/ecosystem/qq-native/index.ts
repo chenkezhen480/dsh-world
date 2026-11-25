@@ -533,6 +533,7 @@ export function createQqNativeModule(deps: {
   /**
    * 她自己开的一轮（家里的闹钟、世界线）说完的话，也推一份给主人。只看她的家，只看由她自己的时间开起来、
    * 中途没有人说话的那一轮：有人说话的轮次是在回那个人，QQ 进来的话已经由上面那条路原路回过了。
+   * DSH 的排程也算：它和闹钟一样是到点投进来的，没有人在等她回话，不推就没人看得到她这一轮说了什么（#64）。
    */
   function forwardOwnTurns(): () => void {
     const turns = new Map<string, { own: boolean; said: string }>();
@@ -542,8 +543,10 @@ export function createQqNativeModule(deps: {
       const turn = turns.get(session.id);
       if (!turn) return;
       if (event.type === 'user/message') {
-        if (event.data.source.kind === 'dsh-world-life') turn.own = true;
-        else if (event.data.source.kind === 'user') { turns.delete(session.id); return; }
+        // A plain string: `schedule` is only in the types of newer hosts.
+        const kind: string = event.data.source.kind;
+        if (kind === 'dsh-world-life' || kind === 'schedule') turn.own = true;
+        else if (kind === 'user') { turns.delete(session.id); return; }
       }
       if (event.type === 'assistant/message') {
         const text = event.data.message.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n').trim();

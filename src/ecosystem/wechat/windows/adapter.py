@@ -487,11 +487,14 @@ def flushOutgoing(config, database, store, send, *, poll=pollOutgoing, report=re
         store.beginReply(replyId, len(items), chat['id'], seq)
         try:
             prepared = prepareMessages(items, config, Path(config['moduleFile']).parent / 'wechat-outgoing')
-        except Exception:
+        except Exception as error:
+            # Nothing was sent and she is told so; stopping here would leave the message she answered unconfirmed
+            # and hold its chat until a person checks it.
             store.failReply(replyId)
             store.finish(chat['id'], key, seq)
             flushReceipts(config['moduleFile'], store, report)
-            raise
+            print(f'微信回复没有发出（整批未发送）：{chat["id"]} / {replyId[:12]}：{error}', file=sys.stderr, flush=True)
+            continue
         try:
             deliverMessages(prepared, lambda item: send(chat, item), lambda count: store.confirmReply(replyId, count))
             store.finish(chat['id'], key, seq)

@@ -44,6 +44,8 @@ test('the memory tools reach every world session with no life line at all, not o
   const agent = await create(s.ctx, 'chat');
   agent.followup(user('想想')); await agent.whenIdle();
   assert.deepEqual(memoryToolNames(s.requests[0]!), ['memory_find', 'memory_image', 'memory_read']);
+  // She built her own index for the rest of her room, rebuilt after every write, because nothing said where this one stops.
+  assert.match(s.requests[0]!.tools!.find(tool => tool.name === 'memory_find')!.description!, /只看日记文件夹里的，不进子文件夹；房间里别的文件不在这里，用 grep 照字面找/);
   const found = JSON.parse(lastToolResult(s.requests[1]!));
   assert.equal(found.items[0].kind, 'conversation'); assert.equal(found.coverage, undefined, 'a ready index adds nothing to the result'); assert.equal(found.items[0].text, '我们聊过潮汐');
   assert.equal(JSON.parse(lastToolResult(s.requests[2]!)).content, '我们聊过潮汐');

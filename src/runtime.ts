@@ -380,6 +380,7 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
         if (cold) { state.reload = true; state.cold = true; }
         if (compacted || cold) prompts?.refresh(session);
         if (!isOrdinarySession(session.header)) return;
+        archive.observe(session.id, event);
         if (event.type === 'assistant/message' || event.type === 'turn/end' || event.type === 'turn/start' || event.type === 'compaction/end' || (event.type === 'user/message' && event.data.source.kind === 'user')) void archive.schedule(session.id).catch(() => {});
       }));
       // The host fails the whole session creation when a creation listener rejects, leaving an empty session behind on

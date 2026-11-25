@@ -54,7 +54,7 @@ function wire(failures = 0, extra: Partial<QqTransport> = {}) {
 async function channel(t: test.TestContext, reply: string | ((text: string) => string), over: Partial<QqNativeConfig> = {}, failures = 0, extra: { roomDir?: string; transport?: Partial<QqTransport> } = {}) {
   const asked: string[] = [], notes: string[] = [];
   const { ctx, cleanup } = await hostFixture(t, request => {
-    const words = request.messages.filter(message => message.role === 'user' && ['user', 'dsh-world-life'].includes(message.source?.kind ?? '')).at(-1);
+    const words = request.messages.filter(message => message.role === 'user' && ['user', 'dsh-world-life', 'schedule'].includes(message.source?.kind ?? '')).at(-1);
     const last = words?.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('') ?? '';
     asked.push(last);
     notes.push(request.messages.filter(message => message.role === 'user' && message.source?.kind === 'dsh-world-channel-context').at(-1)?.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('') ?? '');
@@ -191,6 +191,13 @@ test('what she says in a turn of her own at home also reaches the owner, and not
   elsewhere.followup(createUserMessage({ source: { kind: 'dsh-world-life' }, content: [{ type: 'text', text: '闹钟' }] }));
   await elsewhere.whenIdle(); await settle();
   assert.equal(qq.transport.sent.length, 2, 'only her home');
+});
+
+test('a DSH schedule delivered to her home is a turn of her own: what she says reaches the owner (#64)', async t => {
+  const qq = await channel(t, text => text.includes('简报') ? '今天晴，最高十二度' : '回你', { ownerQQ: '100' });
+  qq.agent.followup(createUserMessage({ source: { kind: 'schedule' } as never, content: [{ type: 'text', text: '每天的简报' }] }));
+  await qq.agent.whenIdle(); await settle(900);
+  assert.deepEqual(qq.transport.sent, [{ to: '100', parts: '今天晴，最高十二度' }]);
 });
 
 test('forwardOwn: false keeps her own home turns from reaching the owner', async t => {
