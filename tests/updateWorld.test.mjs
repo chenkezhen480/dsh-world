@@ -144,7 +144,9 @@ test('external dsh-world links can be upgraded without writing to their source',
       await rm(f.oldPackage, { recursive: true });
       if (managed) {
         f.manifest.dependencies['dsh-world'] = 'link:../../linked source';
-        await symlink('../../../linked source', f.oldPackage, 'dir');
+        // pnpm links a directory on Windows as a junction to its absolute path; a relative symlink needs a privilege most users lack.
+        if (process.platform === 'win32') await symlink(source, f.oldPackage, 'junction');
+        else await symlink('../../../linked source', f.oldPackage, 'dir');
       } else {
         delete f.manifest.dependencies['dsh-world'];
         await symlink(source, f.oldPackage, process.platform === 'win32' ? 'junction' : 'dir');
