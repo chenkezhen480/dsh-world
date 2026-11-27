@@ -62,14 +62,21 @@ function whole(input: Record<string, unknown>, key: string, fallback: number, mi
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < min || value > max) throw new MemoryError('invalidQuery', `${key} 必须是 ${min} 到 ${max} 的整数`);
   return value;
 }
+/** desc and asc are the words she reaches for out of habit; refused, they cost her a step for nothing. */
+const ORDERS = new Map<unknown, 'newest' | 'oldest'>([[undefined, 'newest'], [null, 'newest'], ['newest', 'newest'], ['oldest', 'oldest'], ['desc', 'newest'], ['asc', 'oldest']]);
+/** Newest or oldest first, from what a lookup was given. */
+export function findOrder(value: unknown): 'newest' | 'oldest' {
+  const order = ORDERS.get(value);
+  if (!order) throw new MemoryError('invalidQuery', 'order 只能是 newest 或 oldest');
+  return order;
+}
 /** The one place a query is checked, for the tools and the console alike. */
 export function normalizeFind(input: Record<string, unknown>, timeZone: string): FindParams {
   const query = text(input, 'query', MAX_QUERY_CHARS * 4);
   if (query !== undefined && (Array.from(query).length > MAX_QUERY_CHARS || query.includes('\0'))) throw new MemoryError('invalidQuery', `query 不能超过 ${MAX_QUERY_CHARS} 个字符，也不能含空字符`);
   const kindsInput = input.kinds;
   if (kindsInput !== undefined && kindsInput !== null && (!Array.isArray(kindsInput) || kindsInput.some(kind => !(MEMORY_KINDS as readonly unknown[]).includes(kind)))) throw new MemoryError('invalidQuery', `kinds 只能是 ${MEMORY_KINDS.join('、')}`);
-  const order = input.order ?? 'newest';
-  if (order !== 'newest' && order !== 'oldest') throw new MemoryError('invalidQuery', 'order 只能是 newest 或 oldest');
+  const order = findOrder(input.order);
   const fromMs = time(input, 'from', timeZone), toMs = time(input, 'to', timeZone);
   if (fromMs !== undefined && toMs !== undefined && fromMs >= toMs) throw new MemoryError('invalidQuery', 'from 必须早于 to（区间左闭右开）');
   const kinds = kindsInput?.length ? [...new Set(kindsInput as MemoryKind[])] : undefined;

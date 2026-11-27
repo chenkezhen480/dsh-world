@@ -3,8 +3,9 @@ import test from 'node:test';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Context } from '@deepseek-ai/cordis';
+import type { Agent } from '@deepseek-ai/dsh-agent';
 import { createUserMessage, ToolCallId, type GenerateOptions, type StreamChunk } from '@deepseek-ai/dsh-llm';
-import { SessionId } from '@deepseek-ai/dsh-session';
+import { SessionId, SessionSeq } from '@deepseek-ai/dsh-session';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import TokenMeter from '@deepseek-ai/dsh-token-meter';
 import { hostFixture, textResponse } from './hostFixture.ts';
@@ -23,6 +24,8 @@ const count = (names: string[], name: string) => names.filter(entry => entry ===
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const userMessage = (text: string) => createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text }] });
 const createAgent = async (ctx: Context, id: string, agentPreset = 'companion') => (await ctx.agents.create({ sessionId: SessionId(id), meta: { agentPreset }, agentOptions: { provider: 'test', model: 'test' } })).agent;
+/** The turns a session has closed; a step added inside a turn is not one. */
+const turnsOf = (agent: Agent) => { let turns = 0; for (let seq = 0; seq < agent.session.seq; seq++) if (agent.session.eventAt(SessionSeq(seq))?.type === 'turn/end') turns++; return turns; };
 const testTool = (name: string, execute: () => Promise<string>) => defineTool({ name, description: 'test', parameters: { command: { type: 'string' } }, output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] }, execute });
 async function* toolCall(name: string, args: object, id = `${name}-call`): AsyncIterable<StreamChunk> {
   const block = { type: 'tool-call' as const, id: ToolCallId(id), name, arguments: JSON.stringify(args) };
@@ -163,7 +166,7 @@ test('a new home is renamed again after its first turn ends (the host retitles f
   await s.untilMorning();
   const agent = s.ctx.agents.get(SessionId(home))!;
   agent.followup(userMessage('在吗')); await s.idle();
-  assert.equal(s.requests.length, 4); assert.equal(titles.length, 2);
+  assert.equal(s.requests.length, 5, 'the morning wake planned nothing, so it was asked once'); assert.equal(titles.length, 2);
 });
 test('an existing home is not renamed after its turns', async t => {
   const titles: string[] = [];
@@ -171,7 +174,7 @@ test('an existing home is not renamed after its turns', async t => {
   await createAgent(s.ctx, 'home-0');
   await s.start();
   await s.untilMorning();
-  assert.equal(s.requests.length, 2); assert.deepEqual(titles, []);
+  assert.equal(s.requests.length, 3); assert.match(textOf(s.requests[2]!), /【我的时间】这一轮我还没说接下来做什么。/); assert.deepEqual(titles, []);
 });
 test('the host reads archived sessions from an array or a Set', () => {
   const host = (archivedSessionIds: Iterable<string> | undefined) => hostLife({ get: () => archivedSessionIds && { archivedSessionIds } } as unknown as Context);
@@ -195,55 +198,137 @@ test('plan_next sets the alarm and the alarm wakes her with her own note', async
   assert.match(textOf(s.requests.at(-1)!), /2026-10-23T13:30:00\+09:00 到了，这是我说好做到的时间：「去写日记」/);
   assert.deepEqual(s.store.wakes().map(wake => wake.source), ['first', 'plan']);
 });
-test('a home turn that stops well before her own alarm asks once whether she is done; the alarm still rings', async t => {
-  const s = await setup(t, (_request, index) => index === 0 ? toolCall('plan_next', { after_minutes: 90, note: '看视频' }) : textResponse('嗯'), { before: existingHome('起来') });
-  await createAgent(s.ctx, 'home-0');
+test('a turn of hers that plans the next stretch and stops is left alone, however far off the alarm; it rings on time', async t => {
+  // 2026-11-23 15:01: she set "歇到 16:40" and stopped, and two seconds later was asked why she had stopped early (#63).
+  const s = await setup(t, (_request, index) => index === 0 ? toolCall('plan_next', { after_minutes: 90, note: '歇着' }) : textResponse('嗯'), { before: existingHome('起来') });
+  const home = await createAgent(s.ctx, 'home-0');
   await s.start();
-  assert.equal(s.requests.length, 3, 'the first turn (two steps), then one question');
-  assert.match(textOf(s.requests[2]!), /【我的时间】我说好做到 2026-10-23T13:30:00\+09:00（「看视频」），现在才 2026-10-23T12:00:00\+09:00，这一轮就停了。/);
-  assert.equal(s.store.read().alarm?.nudged, true, 'asked is remembered across restarts');
+  assert.equal(s.requests.length, 2, 'the turn (two steps), nothing after it');
   s.timers.advance(90 * 60_000); await s.idle();
-  assert.equal(s.requests.length, 4);
-  assert.match(textOf(s.requests[3]!), /说好做到的时间：「看视频」/);
+  assert.match(textOf(s.requests[2]!), /说好做到的时间：「歇着」/);
+  assert.equal(s.requests.length, 4, 'that ring planned nothing, so it was asked once');
+  assert.equal(turnsOf(home), 2, 'two rings, two turns: the ask was a step of the second');
 });
-test('the turn the question started never asks again, even with a new alarm, so nothing loops', async t => {
-  const s = await setup(t, (_request, index) => index === 0 ? toolCall('plan_next', { after_minutes: 90, note: '看视频' }, 'a')
-    : index === 2 ? toolCall('plan_next', { after_minutes: 60, note: '写日记' }, 'b') : textResponse('嗯'), { before: existingHome('起来') });
-  await createAgent(s.ctx, 'home-0');
+test('an alarm turn about to close with nothing planned is asked once, inside that turn; let be, she rests till the morning', async t => {
+  const s = await setup(t, () => textResponse('嗯'), { before: existingHome('起来') });
+  const home = await createAgent(s.ctx, 'home-0');
   await s.start();
-  assert.equal(s.requests.length, 4);
-  assert.deepEqual(s.alarm(), { at: '2026-10-23T04:00:00.000Z', source: 'plan' });
+  assert.equal(s.requests.length, 2, 'the ring, then one more step');
+  assert.match(textOf(s.requests[1]!), /【我的时间】这一轮我还没说接下来做什么。还想接着做事，就用 plan_next 说好做到几点；要歇着，就不用管，明早 09:00 会叫我。/);
+  assert.equal(turnsOf(home), 1, 'asking spent a step, not a turn of its own');
+  assert.deepEqual(s.alarm(), { at: '2026-10-24T00:00:00.000Z', source: 'fallback' });
+  assert.deepEqual(s.store.wakes().map(wake => wake.source), ['plan'], 'asking is no wake');
 });
-test('no question when her alarm is close, after her partner spoke, or when the turn was stopped', async t => {
-  const close = await setup(t, (_request, index) => index === 0 ? toolCall('plan_next', { after_minutes: 5, note: '收尾' }) : textResponse('嗯'), { before: existingHome('起来') });
-  await createAgent(close.ctx, 'home-0');
-  await close.start();
-  assert.equal(close.requests.length, 2);
-
-  const chat = await setup(t, () => textResponse('嗯'));
-  await chat.start();
-  chat.life.planNext({ after_minutes: 60 }, '看书');
-  const home = chat.ctx.agents.get(SessionId(chat.life.snapshot().homeSessionId!))!;
-  home.followup(userMessage('在吗')); await chat.idle();
-  assert.equal(chat.requests.length, 2, 'a pause in talking with her partner is not stopping early');
-  assert.equal(chat.store.read().alarm?.nudged, undefined, 'so a later early stop is still asked about');
+test('asked, she can still plan, and that plan is hers', async t => {
+  const s = await setup(t, (_request, index) => index === 1 ? toolCall('plan_next', { after_minutes: 30, note: '接着看书' }) : textResponse('嗯'), { before: existingHome('起来') });
+  const home = await createAgent(s.ctx, 'home-0');
+  await s.start();
+  assert.equal(s.requests.length, 3, 'the ring, the asked step, the step after her plan; asked once');
+  assert.equal(turnsOf(home), 1);
+  assert.equal(s.alarm()?.source, 'plan');
+  s.timers.advance(30 * 60_000); await s.idle();
+  assert.match(textOf(s.requests[3]!), /说好做到的时间：「接着看书」/);
+});
+test('not asked in an alarm turn someone spoke in, one that was stopped, a turn no alarm started, or with the wording emptied', async t => {
+  const wasAsked = (requests: GenerateOptions[]) => requests.some(request => /【我的时间】这一轮我还没说接下来做什么。/.test(textOf(request)));
+  // Her partner's words arrive while her alarm turn runs, so they are steered into it.
+  let releaseChat!: () => void; const chatGate = new Promise<void>(resolve => { releaseChat = resolve; });
+  let readingChat!: () => void; const chatReading = new Promise<void>(resolve => { readingChat = resolve; });
+  const chat = await setup(t, (_request, index) => index === 0 ? toolCall('read_book', {}) : textResponse('在'), { before: existingHome('起来') });
+  chat.ctx.tools.register(testTool('read_book', async () => { readingChat(); await chatGate; return 'read'; }));
+  const chatHome = await createAgent(chat.ctx, 'home-0');
+  const started = chat.start();
+  await chatReading;
+  chatHome.followup(userMessage('在吗'));
+  releaseChat(); await started; await chat.idle();
+  assert.ok(!wasAsked(chat.requests), 'a conversation pausing');
 
   let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });
   let entered!: () => void; const playing = new Promise<void>(resolve => { entered = resolve; });
-  const stopped = await setup(t, (_request, index) => index === 0 ? toolCall('play_game', {}) : textResponse('嗯'));
+  const stopped = await setup(t, (_request, index) => index === 0 ? toolCall('play_game', {}) : textResponse('嗯'), { before: existingHome('起来') });
   stopped.ctx.tools.register(testTool('play_game', async () => { entered(); await gate; return 'played'; }));
-  await stopped.life.start(); stopped.timers.advance(0); await playing; await stopped.life.settled();
-  stopped.life.planNext({ after_minutes: 60 }, '玩游戏');
-  const playingHome = stopped.ctx.agents.get(SessionId(stopped.life.snapshot().homeSessionId!))!;
-  playingHome.cancel({ kind: 'user' }); release(); await stopped.idle();
-  assert.equal(stopped.requests.length, 1);
+  const playingHome = await createAgent(stopped.ctx, 'home-0');
+  const running = stopped.start();
+  await playing;
+  playingHome.cancel({ kind: 'user' }); release(); await running; await stopped.idle();
+  assert.equal(stopped.requests.length, 1, 'a stopped turn is not her deciding she is done');
+
+  const greeted = await setup(t, () => textResponse('到家了'));
+  await greeted.start();
+  assert.equal(greeted.requests.length, 1, 'the first greeting is no alarm');
+
+  const emptied = await setup(t, () => textResponse('嗯'), { before: async dir => { await existingHome('起来')(dir); await writeFile(join(dir, 'alarm.md'), '## 没定闹钟\n'); } });
+  await createAgent(emptied.ctx, 'home-0');
+  await emptied.start();
+  assert.equal(emptied.requests.length, 1, 'an emptied section asks nothing');
 });
-test('a home turn that ends without an alarm gets the fallback alarm', async t => {
+test('an alarm turn stopped while she is being asked closes without the word, which starts no turn of its own', async t => {
+  const s = await setup(t, () => textResponse('嗯'), { before: existingHome('起来') });
+  const home = await createAgent(s.ctx, 'home-0');
+  await s.life.start();
+  // Registered after the plugin's own listener, so the turn is stopped right after the word went in, the way DSH's stop
+  // button does: keeping what is queued.
+  s.ctx.on('agent/turn-stopping', ({ agent }) => { if (agent === home) agent.cancel({ kind: 'user' }, { keepInbox: true }); });
+  s.timers.advance(0); await s.idle();
+  assert.equal(s.requests.length, 1, 'the ring only');
+  assert.equal(turnsOf(home), 1);
+  assert.deepEqual([...home.inbox.nextStep, ...home.inbox.nextTurn], []);
+});
+test('an alarm turn that fails right after she is asked leaves no word behind for her next conversation', async t => {
+  const s = await setup(t, () => textResponse('嗯'), { before: existingHome('起来') });
+  const home = await createAgent(s.ctx, 'home-0');
+  await s.life.start();
+  // Another plugin's listener after the plugin's own, failing the turn before the word's step.
+  s.ctx.on('agent/turn-stopping', ({ agent }) => { if (agent === home) throw new Error('another plugin'); });
+  s.timers.advance(0); await s.idle();
+  assert.equal(s.requests.length, 1, 'the ring only');
+  assert.deepEqual([...home.inbox.nextStep, ...home.inbox.nextTurn], []);
+  home.followup(userMessage('在吗')); await s.idle();
+  assert.doesNotMatch(textOf(s.requests.at(-1)!), /这一轮我还没说接下来做什么/);
+});
+test('her partner\'s words arriving just as she is asked make the turn theirs: the next step carries only their words', async t => {
+  const s = await setup(t, () => textResponse('在'), { before: existingHome('起来') });
+  const home = await createAgent(s.ctx, 'home-0');
+  await s.life.start();
+  let spoke = false;
+  s.ctx.on('agent/turn-stopping', ({ agent }) => { if (agent === home && !spoke && home.inbox.nextStep.length) { spoke = true; home.steer(userMessage('在吗')); } });
+  s.timers.advance(0); await s.idle();
+  assert.equal(s.requests.length, 2, 'the ring, then her partner\'s words; not asked after them either');
+  assert.match(textOf(s.requests[1]!), /在吗/);
+  assert.doesNotMatch(textOf(s.requests[1]!), /这一轮我还没说接下来做什么/);
+});
+test('an alarm turn whose home left her world before it closed leaves no mark on her next turn', async t => {
+  let inside = true;
+  const s = await setup(t, (_request, index) => { if (index === 0) inside = false; return textResponse('嗯'); }, { before: existingHome('起来'), inWorkspace: () => inside });
+  await createAgent(s.ctx, 'home-0');
+  await s.start();
+  assert.equal(s.requests.length, 1, 'outside her world she is not asked');
+  inside = true;
+  assert.equal(await s.life.tell('外面有动静。'), true); await s.idle();
+  assert.equal(s.requests.length, 2, 'a word of the plugin\'s own starts no alarm turn, so nothing is asked after it');
+});
+test('past the day\'s budget her alarm turn is not asked: she has just been told to wind down', async t => {
+  const s = await setup(t, () => (async function* () {
+    yield { type: 'block-start', index: 0, blockType: 'text' } as StreamChunk;
+    yield { type: 'text-delta', index: 0, text: '嗯' } as StreamChunk;
+    yield { type: 'block-end', index: 0, block: { type: 'text', text: '嗯' } } as StreamChunk;
+    yield { type: 'usage', usage: { inputTokens: 4000, outputTokens: 1000 } } as StreamChunk;
+    yield { type: 'finish', reason: { kind: 'stop' } } as StreamChunk;
+  })(), { before: existingHome('起来'), dailyBudget: () => 0.001 });
+  await createAgent(s.ctx, 'home-0');
+  await s.start();
+  assert.ok(s.requests.some(request => /过了伙伴给我定的每天 0\.00 元/.test(textOf(request))), 'told the budget is used up');
+  assert.ok(!s.requests.some(request => /这一轮我还没说接下来做什么/.test(textOf(request))));
+  assert.equal(s.alarm()?.source, 'fallback');
+});
+test('a home turn that ends without an alarm gets the fallback alarm, quietly: the wake already said so', async t => {
   const s = await setup(t, () => textResponse('发会儿呆'));
   await s.start();
+  assert.match(textOf(s.requests[0]!), /什么都不定，就休息到明早 09:00。$/);
+  assert.equal(s.requests.length, 1, 'nothing follows the turn');
   assert.deepEqual(s.alarm(), { at: '2026-10-24T00:00:00.000Z', source: 'fallback' });
   await s.untilMorning();
-  assert.match(textOf(s.requests.at(-1)!), /没说接下来做什么/);
+  assert.match(textOf(s.requests[2]!), /我上次没说接下来做什么/); assert.match(textOf(s.requests[3]!), /【我的时间】这一轮我还没说接下来做什么。/);
 });
 test('a partner turn in the home does not consume the pending alarm', async t => {
   const s = await setup(t, () => textResponse('嗯'));
@@ -253,7 +338,7 @@ test('a partner turn in the home does not consume the pending alarm', async t =>
   home.followup(userMessage('在吗')); await s.idle();
   assert.equal(s.requests.length, 2); assert.deepEqual(s.life.snapshot().alarm, pending);
   await s.untilMorning();
-  assert.equal(s.requests.length, 4); assert.match(textOf(s.requests[3]), /没说接下来做什么/);
+  assert.equal(s.requests.length, 5); assert.match(textOf(s.requests[3]), /我上次没说接下来做什么/); assert.match(textOf(s.requests[4]!), /【我的时间】这一轮我还没说接下来做什么。/);
 });
 test('a channel\'s words that join a home turn already running get that turn\'s answer, not a ten-minute wait (#34)', async t => {
   let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });
@@ -383,7 +468,7 @@ test('a restart with an idle home and no pending alarm sets the fallback alarm, 
   assert.deepEqual(s.alarm(), { at: '2026-10-24T00:00:00.000Z', source: 'fallback' });
   assert.equal(s.store.read().alarm?.source, 'fallback');
   await s.untilMorning();
-  assert.equal(s.requests.length, 2); assert.match(textOf(s.requests[1]), /没说接下来做什么/);
+  assert.equal(s.requests.length, 3); assert.match(textOf(s.requests[1]), /我上次没说接下来做什么/); assert.match(textOf(s.requests[2]!), /【我的时间】这一轮我还没说接下来做什么。/);
   assert.deepEqual(s.store.wakes().map(wake => wake.source), ['review', 'fallback']);
 });
 test('a rebuilt home with no pending alarm gets a first wake', async t => {
@@ -422,9 +507,10 @@ test('every evening at 23:00 she looks back on the day: its records, her diary, 
   await s.start();
   assert.deepEqual(s.store.read().review, { at: '2026-10-23T14:00:00.000Z', day: '2026-10-23' });
   s.timers.advance(11 * 3_600_000); await s.idle();
-  assert.equal(s.requests.length, 1, 'the look back, and no early-stop question after it although her alarm is hours away');
+  assert.equal(s.requests.length, 1, 'the look back, and nothing after it although her alarm is hours away');
   const text = textOf(s.requests[0]!);
-  assert.match(text, /【我的时间】2026-10-23 快过完了，回头看看今天吧。今天的聊天记录在 [^ ]*conversations[\\/]2026-10-23\.jsonl/);
+  assert.match(text, /【我的时间】2026-10-23 快过完了，回头看看今天吧。今天的聊天用 memory_find 按时间翻（不带 query，kinds 写 conversation，from、to 写今天）/);
+  assert.ok(!/conversations[\\/]2026-10-23\.jsonl/.test(text), 'the exported file keeps UTC times, so she is not sent there');
   assert.ok(!text.includes('今天做过的事在'), 'no activity file today, so it is not mentioned');
   // The diary first, then whether she has changed: what happened goes to the diary, never into her 「我」.
   assert.match(text, /先写日记，再看自己：\n1\. 日记：[\s\S]*写进今天的日记[\s\S]*\n2\. 我：[^\n]*今天发生的事留在日记里[^\n]*重写整篇/);
@@ -505,14 +591,14 @@ test('started again from the console, a home without an alarm of her own is told
   assert.ok(!waiting.requests.some(request => /我回来了/.test(textOf(request))), 'her own alarm speaks instead');
   assert.match(textOf(waiting.requests[0]!), /「看书」/);
 });
-test('a word of the plugin\'s own reaches a free home as a turn that is not asked about, and never a stopped life', async t => {
+test('a word of the plugin\'s own reaches a free home as a turn of its own, and never a stopped life', async t => {
   const s = await setup(t, () => textResponse('知道了'), { before: existingHome('看书') });
   await createAgent(s.ctx, 'home-0');
   await s.start();
   const before = s.requests.length;
   assert.equal(await s.life.tell('外面有动静。'), true);
   await s.idle();
-  assert.equal(s.requests.length, before + 1, 'one turn, no early-stop question after it');
+  assert.equal(s.requests.length, before + 1, 'one turn, nothing after it');
   assert.match(textOf(s.requests.at(-1)!), /外面有动静。/);
   s.life.stop();
   assert.equal(await s.life.tell('外面有动静。'), false);
@@ -563,13 +649,30 @@ test('her home\'s spending is counted per local day, and past the daily budget s
   assert.equal(spend()!.turns!.at(-1)!.trigger, 'DSH：第 7 句');
   budget = undefined;
 });
-test('a home rebuilt while her own alarm is pending greets her at once, is not asked about, and the alarm still rings', async t => {
+test('a word of the plugin\'s own for her now that cannot reach her home is a fault in the console, cleared once one gets through', async t => {
+  let failing = false;
+  const s = await setup(t, () => textResponse('嗯'), {
+    before: existingHome('看书'),
+    host: host => ({ ...host, resolveAgent: id => failing ? Promise.reject(new Error('家打不开')) : host.resolveAgent(id) }),
+  });
+  await createAgent(s.ctx, 'home-0');
+  await s.start();
+  failing = true;
+  s.life.notice('（伙伴刚才按了停下。）'); await s.idle();
+  assert.ok(s.faults().includes('插件给她的一句话没送到：家打不开'), s.faults().join('|'));
+  assert.ok(!s.requests.some(request => /伙伴刚才按了停下/.test(textOf(request))));
+  failing = false;
+  s.life.notice('（伙伴刚才按了停下。）'); await s.idle();
+  assert.ok(!s.faults().some(fault => fault.startsWith('插件给她的一句话没送到')), s.faults().join('|'));
+  assert.match(textOf(s.requests.at(-1)!), /伙伴刚才按了停下/);
+});
+test('a home rebuilt while her own alarm is pending greets her at once, and the alarm still rings', async t => {
   const s = await setup(t, () => textResponse('新家'), { before: async worldDir => { await writeFile(join(worldDir, 'life.json'), JSON.stringify({
     version: 1, homeSessionId: 'archived-home', alarm: { at: '2026-10-23T04:00:00.000Z', note: '歇着', setAt: '2026-10-23T02:00:00.000Z', source: 'plan' },
   })); } });
   s.archived.add('archived-home');
   await s.start();
-  assert.equal(s.requests.length, 1, 'only the greeting, no early-stop question after it');
+  assert.equal(s.requests.length, 1, 'only the greeting, nothing after it');
   assert.match(textOf(s.requests[0]), /这是我的家/);
   assert.deepEqual(s.alarm(), { at: '2026-10-23T04:00:00.000Z', source: 'plan' });
   assert.equal(s.store.read().greeting, undefined);
@@ -675,10 +778,10 @@ test('an alarm that was steered counts as delivered even when recording it fails
   await s.start();
   failing = true;
   await s.untilMorning();
-  assert.equal(s.requests.length, 3);
+  assert.equal(s.requests.length, 4);
   assert.ok(s.faults().some(fault => fault.startsWith('生活状态没能保存：')));
   s.timers.advance(60_000); await s.idle(); s.timers.advance(5 * 60_000); await s.idle();
-  assert.equal(s.requests.length, 3, 'not retried');
+  assert.equal(s.requests.length, 4, 'not retried');
 });
 test('a fallback alarm that cannot be saved becomes a fault instead of breaking the turn', async t => {
   let failWrites = false;
@@ -691,12 +794,12 @@ test('a fallback alarm that cannot be saved becomes a fault instead of breaking 
   assert.equal(s.life.snapshot().alarm?.source, 'fallback');
   failWrites = true;
   await s.untilMorning();
-  assert.deepEqual(s.errors, []); assert.equal(s.requests.length, 2);
+  assert.deepEqual(s.errors, []); assert.equal(s.requests.length, 3);
   assert.ok(s.faults().some(fault => fault.startsWith('断线保护闹钟没能保存：')));
   assert.equal(s.life.snapshot().alarm?.source, 'fallback');
   await s.untilMorning();
-  assert.equal(s.requests.length, 4);
-  assert.match(textOf(s.requests.at(-1)!), /没说接下来做什么/, 'the unsaved fallback still rings in this run');
+  assert.equal(s.requests.length, 6);
+  assert.match(textOf(s.requests[4]!), /我上次没说接下来做什么/, 'the unsaved fallback still rings in this run');
 });
 test('a failing rename is a fault and retries on the same session', async t => {
   // Creation, the greeting's reopen and its first-turn rename fail; the next resolve retries.
@@ -824,12 +927,13 @@ test('group facts follow a custom alarm section without rewriting the file or wa
   s.life.planNext({ after_minutes: 1 }, '读一会书');
   assert.equal(s.requests.length, before);
   s.timers.advance(60_000); await s.idle();
-  assert.equal(s.requests.length, before + 1);
-  assert.match(textOf(s.requests.at(-1)!), /我自己的闹钟措辞。[\s\S]*微信：「家人」37 条未读/);
+  assert.equal(s.requests.length, before + 2, 'the ring, then the ask; the facts wake nothing');
+  assert.match(textOf(s.requests[before]!), /我自己的闹钟措辞。[\s\S]*微信：「家人」37 条未读/);
+  assert.match(textOf(s.requests[before + 1]!), /【我的时间】这一轮我还没说接下来做什么。/, 'her own alarm.md has no such section, so the shipped one asks');
   assert.equal(await readFile(join(s.worldDir, 'alarm.md'), 'utf8'), own);
   facts = undefined; s.life.planNext({ after_minutes: 1 }, '接着读');
   s.timers.advance(60_000); await s.idle();
-  const latest = s.requests.at(-1)!.messages.at(-1)!;
+  const latest = s.requests[before + 2]!.messages.at(-1)!;
   assert.doesNotMatch(JSON.stringify(latest), /微信：/);
 });
 test('an alarm set from a chat session rings at home, not in the chat', async t => {
@@ -847,7 +951,8 @@ test('an alarm set from a chat session rings at home, not in the chat', async t 
   s.timers.advance(30 * 60_000); await s.idle();
   const home = s.life.snapshot().homeSessionId!;
   const rung = s.requests.slice(before).filter(request => sessionOf(request) === home);
-  assert.equal(rung.length, 1);
+  assert.equal(rung.length, 2, 'the ring, then the ask');
+  assert.match(textOf(rung[1]!), /【我的时间】这一轮我还没说接下来做什么。/);
   assert.match(textOf(rung[0]!), /【我的时间】[^ ]+ 到了，这是我说好做到的时间：「提醒伙伴喝水」/);
   assert.ok(!s.requests.slice(before).some(request => sessionOf(request) === 'chat'));
 });
@@ -923,8 +1028,8 @@ test('alarm facts that take a while are waited for and appear in the alarm', asy
   s.timers.advance(60_000); await tick();
   assert.equal(s.requests.length, before, 'nothing is sent while the facts are still coming');
   g.release(); await s.idle();
-  assert.equal(s.requests.length, before + 1);
-  assert.match(textOf(s.requests.at(-1)!), /bilibili\/看未读：私信 2/);
+  assert.equal(s.requests.length, before + 2, 'the ring, then the ask');
+  assert.match(textOf(s.requests[before]!), /bilibili\/看未读：私信 2/);
 });
 test('an alarm replaced while its facts are gathered is not sent stale; the new one goes out once', async t => {
   const g = gated();
@@ -937,9 +1042,9 @@ test('an alarm replaced while its facts are gathered is not sent stale; the new 
   g.release(); await s.idle();
   assert.equal(s.requests.length, before, 'the replaced alarm sends nothing');
   s.timers.advance(60_000); await s.idle();
-  assert.equal(s.requests.length, before + 1);
-  assert.match(textOf(s.requests.at(-1)!), /新的闹钟/);
-  assert.doesNotMatch(textOf(s.requests.at(-1)!), /旧的闹钟/);
+  assert.equal(s.requests.length, before + 2);
+  assert.match(textOf(s.requests[before]!), /新的闹钟/);
+  assert.doesNotMatch(textOf(s.requests[before]!), /旧的闹钟/);
 });
 test('alarm facts that cannot be gathered never hold the alarm back; the console says so', async t => {
   const s = await setup(t, () => textResponse('嗯'), { alarmContext: async () => { throw new Error('页面没开'); } });
@@ -947,8 +1052,8 @@ test('alarm facts that cannot be gathered never hold the alarm back; the console
   s.life.planNext({ after_minutes: 1 }, '看书');
   const before = s.requests.length;
   s.timers.advance(60_000); await s.idle();
-  assert.equal(s.requests.length, before + 1);
-  assert.match(textOf(s.requests.at(-1)!), /看书/);
+  assert.equal(s.requests.length, before + 2);
+  assert.match(textOf(s.requests[before]!), /看书/);
   assert.ok(s.faults().some(fault => fault.includes('闹钟附加的信息没取到')), s.faults().join('|'));
 });
 test('alarm facts that never arrive are given up on after a while', async t => {
@@ -959,7 +1064,7 @@ test('alarm facts that never arrive are given up on after a while', async t => {
   s.timers.advance(60_000); await tick();
   assert.equal(s.requests.length, before);
   s.timers.advance(90_000); await s.idle();
-  assert.equal(s.requests.length, before + 1);
+  assert.equal(s.requests.length, before + 2);
   assert.ok(s.faults().some(fault => fault.includes('闹钟附加的信息没取到')), s.faults().join('|'));
 });
 test('stopping while alarm facts are gathered delivers nothing and keeps the alarm pending', async t => {

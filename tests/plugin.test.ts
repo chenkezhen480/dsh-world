@@ -16,7 +16,7 @@ import { hostFixture, mountCompaction, textResponse } from './hostFixture.ts';
 import { createWorldRuntime } from '../src/index.ts';
 import * as worldPlugin from '../src/index.ts';
 import { moduleLimits } from '../src/ecosystem/computer/index.ts';
-import { DEFAULT_INBOX_IGNORE } from '../src/worldSwitch.ts';
+import { DEFAULT_INBOX_IGNORE, DEFAULT_MEMORY_TURNS } from '../src/worldSwitch.ts';
 import { createArchiveStore } from '../src/store.ts';
 import { record } from './fixtures.ts';
 import TokenMeter from '@deepseek-ai/dsh-token-meter';
@@ -423,7 +423,7 @@ test('overflow remains eligible for host recovery and reports an explicit capaci
   assert.equal(errors.length, 1);
   assert.match(String((errors[0] as { error: Error }).error), /容量不足/);
 });
-test('automatic tool-free compaction is followed by the latest 200 turns before the next conversation request', async t => {
+test('automatic tool-free compaction is followed by the latest turns of the default window before the next conversation request', async t => {
   const requests: GenerateOptions[] = []; const summaries: GenerateOptions[] = [];
   const { ctx, root, cleanup, errors } = await hostFixture(t, async function* (request) {
     if (isAgentLoopRequest(request)) { requests.push(request); yield* textResponse('conversation response'); }
@@ -448,7 +448,7 @@ test('automatic tool-free compaction is followed by the latest 200 turns before 
   }
   const memory = requests[1].messages.find(m => m.source?.kind === 'dsh-world-history')!;
   const turns = memory.content.filter(b => b.type === 'text')[0].text.split('\n').slice(1).map(line => JSON.parse(line));
-  assert.equal(turns.length, 200);
+  assert.equal(turns.length, DEFAULT_MEMORY_TURNS);
   assert.ok(turns.some(turn => turn.session === 'auto-com' && turn.messages.some((message: { content: string }) => message.content === 'first')));
   assert.ok(!turns.some(turn => turn.messages.some((message: { content: string }) => message.content === 'seed-message-0')));
   assert.equal(requests[1].messages.filter(m => m.source?.kind === 'dsh-world-history').length, 1);
@@ -611,6 +611,7 @@ test('the installed world injects memory prompts and life tools only into its wo
   const home = ctx.agents.get(SessionId(snapshot.life.homeSessionId))!;
   home.followup(user('WORLD_PRIVATE_HISTORY')); await home.whenIdle();
   const room = join(root, 'worlds/fish/room');
+  await writeFile(join(room, 'mood.md'), '开心 6\n');
   const inside = (await ctx.agents.create({ sessionId: SessionId('inside-world'), meta: { cwd: room, agentPreset: config.agentPreset }, agentOptions: { provider: 'test', model: 'test' } })).agent;
   const workspace = (ctx.get('workspaceRegistry') as { list(): { attachSession(id: string): Promise<void> }[] }).list()[0];
   await workspace.attachSession(inside.id);
@@ -619,6 +620,9 @@ test('the installed world injects memory prompts and life tools only into its wo
   assert.match(textOf(insideRequest), /WORLD_PRIVATE_HISTORY/);
   assert.match(textOf(insideRequest), /# 我的世界/);
   assert.ok(insideRequest.tools?.some(tool => tool.name === 'plan_next'));
+  // A mood.md left from before 0.8.4 is a plain file in her room: nothing reads it to her or gives her a tool for it.
+  assert.ok(!insideRequest.tools?.some(tool => tool.name === 'set_mood'));
+  assert.doesNotMatch(textOf(insideRequest), /【我的心情值】|开心 6/);
   const outside = (await ctx.agents.create({ sessionId: SessionId('outside-world'), meta: { cwd: root, agentPreset: config.agentPreset }, agentOptions: { provider: 'test', model: 'test' } })).agent;
   outside.followup(user('outside')); await outside.whenIdle();
   const outsideRequest = requests.at(-1)!;

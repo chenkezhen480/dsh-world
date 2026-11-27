@@ -197,5 +197,24 @@ class SendingTest(unittest.TestCase):
                 self.assertEqual(sent,[])
             finally:store.close()
 
+    def test_a_reply_that_cannot_be_prepared_fails_alone_and_the_queue_goes_on(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);store=MessageStore(root/'state.sqlite');store.baseline('private',10)
+            # She is answering this message when the reply comes; it must not be left unconfirmed.
+            store.begin('private','m.db:11',11)
+            config=dict(selfId='wxid_bot',moduleFile=str(root/'wechat.json'),chats=[dict(id='private',name='伙伴')])
+            jobs=[dict(id='a'*64,accountId='wxid_bot',chatId='private',messages=[dict(type='text',text='带表情'),dict(type='sticker',stickerId='st_missing00000')]),
+                  dict(id='b'*64,accountId='wxid_bot',chatId='private',messages=[dict(type='text',text='后面一句')]),None]
+            sent,receipts=[],[]
+            try:
+                with patch('sys.stderr') as stderr:
+                    flushOutgoing(config,None,store,lambda _chat,item:sent.append(item['text']),poll=lambda _config:dict(job=jobs.pop(0)),report=lambda _file,r:receipts.append(r))
+                self.assertEqual(sent,['后面一句'])
+                self.assertEqual([(r['id'][0],r['confirmed'],r['status']) for r in receipts],[('a',0,'failed'),('b',1,'sent')])
+                self.assertIn('整批未发送',''.join(call.args[0] for call in stderr.write.call_args_list))
+                store.finish('private','m.db:11',11)
+                store.checkPending()
+            finally:store.close()
+
 
 if __name__=='__main__':unittest.main()

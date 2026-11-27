@@ -105,11 +105,6 @@ function withTail(body: string, messages: AlarmMessages, values: Record<string, 
   const tail = fillMessage(messages, '结尾提醒', values);
   return `${ALARM_MARK}${body}${tail ? `\n${tail}` : ''}`;
 }
-/** What she hears when a home turn stops well before the time she said she would keep at it. */
-export function earlyStopText(alarm: Alarm, now: Date, timeZone: string, messages: AlarmMessages = readAlarmMessages(undefined), extra: Record<string, string> = {}): string {
-  const body = fillMessage(messages, '提前停下', { ...extra, timeZone, time: formatLocalTime(new Date(alarm.at), timeZone), now: formatLocalTime(now, timeZone), note: alarm.note }, { note: Boolean(alarm.note) });
-  return `${ALARM_MARK}${body}`;
-}
 const local = (at: string | Date, timeZone: string) => formatLocalTime(new Date(at), timeZone);
 /** plan_next's answer. Replacing her own plan says what it carried, while she can still copy it over; the plugin's own alarms are replaced silently. */
 export function planReply(at: Date, replaced: Alarm | undefined, timeZone: string): string {
@@ -126,6 +121,11 @@ export function checkReply(alarm: Alarm | undefined, now: Date, timeZone: string
 export function cancelReply(cancelled: Alarm | undefined, next: Alarm | undefined, timeZone: string): string {
   if (cancelled?.source !== 'plan') return `现在没有我自己定的闹钟，不用取消。${next ? `下一次会在 ${local(next.at, timeZone)} 按平常的时间叫我。` : ''}`;
   return `取消了做到 ${local(cancelled.at, timeZone)} 的安排${cancelled.note ? `：「${cancelled.note}」` : ''}。不另定的话，我就休息到 ${next ? local(next.at, timeZone) : '明早'}。`;
+}
+/** Said once inside an alarm's turn about to close with nothing planned; an emptied section asks nothing. */
+export function unplannedText(fallbackWakeTime: string, messages: AlarmMessages = readAlarmMessages(undefined), extra: Record<string, string> = {}): string {
+  const body = fillMessage(messages, '没定闹钟', { ...extra, fallbackWakeTime });
+  return body.trim() ? `${ALARM_MARK}${body}` : '';
 }
 /** Told once a day, when her home has spent past the daily budget. */
 export function budgetText(spent: number, budget: number, messages: AlarmMessages = readAlarmMessages(undefined), extra: Record<string, string> = {}): string {

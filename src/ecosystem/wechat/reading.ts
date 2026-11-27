@@ -2,7 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import type { ContentBlock } from '@deepseek-ai/dsh-llm';
 import { imagesMessage } from '../../images.ts';
 import { defineTool, type ToolRunContext } from '@deepseek-ai/dsh-tools';
-import { channelContext, type ChannelContextMessage } from '../shared/context.ts';
+import { channelContext, inMessageTime, messageTime, type ChannelContextMessage } from '../shared/context.ts';
 import type { SpeakerIdentity } from '../shared/identity.ts';
 import { wechatTextOutput } from './messages.ts';
 
@@ -10,7 +10,7 @@ interface ReadRequest { id: string; accountId: string; chatId: string; limit: nu
 interface Pending { request: ReadRequest; identity: SpeakerIdentity; resolve(value: string): void; reject(error: unknown): void }
 
 /** Reads use the existing adapter poll; cancellation drops only the request, never a receive cursor. */
-export function createWechatReading(deps: { target(chatId: string): SpeakerIdentity; images?(identity: SpeakerIdentity, context: ChannelContextMessage[]): Promise<ContentBlock[]> }) {
+export function createWechatReading(deps: { timeZone?: string; target(chatId: string): SpeakerIdentity; images?(identity: SpeakerIdentity, context: ChannelContextMessage[]): Promise<ContentBlock[]> }) {
   const pending = new Map<string, Pending>();
   const completed = new Map<string, string>();
   let stopped = false;
@@ -64,7 +64,7 @@ export function createWechatReading(deps: { target(chatId: string): SpeakerIdent
         context.signal.throwIfAborted();
         if (!blocks.some(block => block.type === 'image')) throw new Error('图片没能交给模型');
         context.deferContext(imagesMessage(blocks));
-        return `图片 ${entry.id}（${entry.identity.speakerName ?? entry.identity.speakerId}，${entry.occurredAt}）已附在下一条消息里。`;
+        return `图片 ${entry.id}（${entry.identity.speakerName ?? entry.identity.speakerId}，${messageTime(entry.occurredAt, deps.timeZone)}）已附在下一条消息里。`;
       },
     }),
     /** Lets another tool put a request to the adapter through the same queue, timeout and cancellation. */
@@ -103,7 +103,7 @@ export function createWechatReading(deps: { target(chatId: string): SpeakerIdent
         item.resolve(JSON.stringify(messages[0])); completed.set(input.id, digest);
         return true;
       }
-      item.resolve(JSON.stringify({ accountId: item.request.accountId, chatId: item.request.chatId, messages, ...(input.nextCursor === undefined ? {} : { nextCursor: input.nextCursor }) }));
+      item.resolve(JSON.stringify({ accountId: item.request.accountId, chatId: item.request.chatId, messages: inMessageTime(messages, deps.timeZone), ...(input.nextCursor === undefined ? {} : { nextCursor: input.nextCursor }) }));
       completed.set(input.id, digest);
       if (completed.size > 128) completed.delete(completed.keys().next().value!);
       return true;

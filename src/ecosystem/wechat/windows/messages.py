@@ -32,6 +32,12 @@ def recentEntries(database, chatId, normalize, pageSize, limit, before=None):
     return {key: found[key] for key in keys}
 
 
+def hasSender(row):
+    """Whether the row names who said it. A pat card and some system cards name nobody; nobody is guessed for them,
+    and they are passed over rather than stopping a whole page of a group (#70)."""
+    return bool(row.get('sender_username'))
+
+
 def normalizeMessage(row, chatId, selfId, people=None, *, includeSelf=False, conversationName=None):
     if row.get('sender_username') == selfId and not includeSelf: return None
     quote = parseQuote(row)

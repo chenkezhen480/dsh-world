@@ -12,7 +12,7 @@ export const STOPPED = '伙伴按了停下。在伙伴再跟你说话之前，�
 const SIGN_LINGER_MS = 5000;
 const KEPT_ACTIONS = 20;
 /** The actions that send input, named as she is told about them. */
-export const INPUTS: Record<string, string> = { click: '点击', drag: '拖动', type: '输入', press: '按键', scroll: '滚动' };
+export const INPUTS: Record<string, string> = { click: '点击', drag: '拖动', swipe: '滑动', type: '输入', press: '按键', scroll: '滚动' };
 
 /**
  * Her turns on the partner's computer, in either mode: one action at a time, in order; the sign up while she acts and

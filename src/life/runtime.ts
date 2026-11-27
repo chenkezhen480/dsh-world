@@ -16,10 +16,10 @@ import { inWorld } from '../sourceArchive.ts';
 import type { WorldConfig } from '../types.ts';
 import { homeTitle, roomTitle, worldNames } from '../worldPrompt.ts';
 import { admit, reassembleOnChange } from '../worldScope.ts';
-import { budgetText, cancelReply, greetingText, checkReply, earlyStopText, nextLocalTime, nextReview, planReply, resolveAlarmTime, reviewOf, reviewText, wakeText } from './alarm.ts';
+import { budgetText, cancelReply, greetingText, checkReply, nextLocalTime, nextReview, planReply, resolveAlarmTime, reviewOf, reviewText, unplannedText, wakeText } from './alarm.ts';
 import { summarizeSince } from './activity.ts';
 import { createAlarmTimer, realTimers, type LifeTimers } from './alarmTimer.ts';
-import { createEarlyStopWatch } from './earlyStop.ts';
+import { createAlarmTurnWatch } from './alarmTurn.ts';
 import { closedDiaryRefusal, wikiRefusal } from './diary.ts';
 import { createHome } from './home.ts';
 import type { LifeHost } from './host.ts';
@@ -104,8 +104,11 @@ export function createLifeRuntime(deps: LifeDeps) {
     return summarizeSince(records, alarm.setAt, now);
   };
   const lifeMessage = (text: string) => createUserMessage({ source: { kind: 'dsh-world-life' }, content: [{ type: 'text', text }] });
+  /** Into her home at its next step; the host's checkpoint before that step's request makes it durable. */
+  const steerIn = (agent: Agent, message: string | UserMessage) => admit(includes, agent).steer(typeof message === 'string' ? lifeMessage(message) : message);
+  /** Steered in and flushed at once, for a word the plugin then watches through to its step. */
   const say = (agent: Agent, message: string | UserMessage) => {
-    admit(includes, agent).steer(typeof message === 'string' ? lifeMessage(message) : message);
+    steerIn(agent, message);
     return ctx.sessions.flush(agent.session);
   };
 
@@ -244,7 +247,7 @@ export function createLifeRuntime(deps: LifeDeps) {
   }
   /**
    * A message of the plugin's own, taken off the schedule while it is sent and put back if it fails: it backs
-   * off like an alarm, and its turn is never asked about as an early stop. It counts once its turn starts a step.
+   * off like an alarm. It counts once its turn starts a step.
    */
   async function sayOwn(what: string, source: WakeRecord['source'], scheduledAt: string, job: PendingWake['job'], take: () => void, putBack: () => void, text: (now: Date) => string, delivered?: () => void): Promise<void> {
     try {
@@ -254,13 +257,11 @@ export function createLifeRuntime(deps: LifeDeps) {
       const now = clock();
       const message = lifeMessage(text(now));
       expect(agent, message, what, scheduledAt, source, job, now);
-      earlyStop.startsOwnTurn();
       await say(agent, message);
       if (!stopped) delivered?.();
     } catch (error) {
       ctx.logger.error(error);
       if (stopped) return;
-      earlyStop.ownTurnFailed();
       settle(); putBack();
       record(() => store.write(state));
       faults.set('delivery', `${what}没送到，${timer.failed()} 分钟后重试：${errorText(error)}`);
@@ -358,18 +359,6 @@ export function createLifeRuntime(deps: LifeDeps) {
     timer.arm();
   }
 
-  // Stopping early: asked once per alarm whether she is done.
-  const earlyStop = createEarlyStopWatch();
-  function askIfDoneEarly(completed: boolean): void {
-    const now = clock(); const alarm = state.alarm;
-    if (!earlyStop.turnEnded(completed, alarm, now) || stopped) return;
-    alarm.nudged = true;
-    record(() => store.write(state));
-    earlyStop.startsOwnTurn();
-    const text = earlyStopText(alarm, now, timeZone, alarmMessages(), templateValues());
-    void home.open().then(agent => stopped ? undefined : say(agent, text)).catch(error => { earlyStop.ownTurnFailed(); ctx.logger.error(error); });
-  }
-
   // What her home spends: each model step priced as it lands, and added to the turn it is part of; past the daily
   // budget she is told once that day.
   const today = () => {
@@ -397,26 +386,48 @@ export function createLifeRuntime(deps: LifeDeps) {
     if (!remind) return;
     notice(budgetText(spend.yuan, budget, alarmMessages(), templateValues()));
   }
-  /** A word for her now: into the running turn at its next step, or a turn of its own that is not asked about. */
+  // An alarm's turn about to close with nothing planned: asked once, inside that turn, before the host closes it, so
+  // she can still plan or let it rest till the morning; the morning alarm is set at the turn's end as for any turn.
+  const alarmTurn = createAlarmTurnWatch();
+  function askBeforeClosing(agent: Agent, signal: AbortSignal): void {
+    // Past the day's budget she has been told to wind down; the ask would only spend another step.
+    if (stopped || signal.aborted || agent.id !== state.homeSessionId || !includes(agent.session) || state.alarm || !alarmTurn.due() || today().reminded) return;
+    const text = unplannedText(wake(), alarmMessages(), templateValues());
+    if (!text) { faults.clear('unplanned'); return; }
+    const message = lifeMessage(text);
+    alarmTurn.asked(agent.id, message.id);
+    try { steerIn(agent, message); faults.clear('unplanned'); }
+    catch (error) { faults.set('unplanned', `没定闹钟的提醒没送到：${errorText(error)}`); ctx.logger.error(error); }
+  }
+  /**
+   * The ask taken back while it still waits: left queued by a turn that closed without its step (stopped, or failed),
+   * it would start a turn of its own; and words of her partner arriving with it make the turn theirs.
+   */
+  function takeBackAsk(agent: Agent): void {
+    const id = alarmTurn.takeAsk(agent.id);
+    if (id === undefined || !queued(agent, id)) return;
+    try { agent.inbox.remove(id); }
+    catch (error) { faults.set('unplanned', `没定闹钟的提醒没能收回：${errorText(error)}`); ctx.logger.error(error); }
+  }
+
+  /** A word for her now: into the running turn at its next step, or a turn of its own. One that cannot be put in her inbox is a fault. */
   function notice(text: string): void {
-    void home.open().then(agent => {
-      if (stopped) return;
-      if (agent.status !== 'running') earlyStop.startsOwnTurn();
-      return say(agent, text);
-    }).catch(error => { earlyStop.ownTurnFailed(); ctx.logger.error(error); });
+    void faults.track('notice', '插件给她的一句话没送到', async () => {
+      const agent = await home.open();
+      if (!stopped) steerIn(agent, text);
+    }).catch(error => ctx.logger.error(error));
   }
 
   /**
    * A word of the plugin's own for a home that is free: false while she is in a turn or another word is on its way,
-   * so the caller keeps it and asks again. Its turn is never asked about as an early stop.
+   * so the caller keeps it and asks again.
    */
   async function tell(text: string): Promise<boolean> {
     if (stopped) return false;
     const agent = await home.open();
     if (stopped || agent.status === 'running' || state.delivering) return false;
-    earlyStop.startsOwnTurn();
-    try { await say(agent, text); return true; }
-    catch (error) { earlyStop.ownTurnFailed(); throw error; }
+    await say(agent, text);
+    return true;
   }
 
   // Her tools and her home.
@@ -447,6 +458,8 @@ export function createLifeRuntime(deps: LifeDeps) {
     // A new home greets her at once (the pending alarm moves in too and rings at its own time).
     moveIn(sessionId) {
       state.homeSessionId = sessionId;
+      // The old home's turn ends outside her home now, so its alarm mark is dropped here.
+      alarmTurn.turnEnded();
       state.greeting = { at: clock().toISOString(), kind: 'arrival' };
       tools.releaseOldHomes();
       store.write(state);
@@ -464,25 +477,31 @@ export function createLifeRuntime(deps: LifeDeps) {
       reassembleOnChange(ctx, attach),
       ctx.on('agent/pre-step', ({ agent }, next) => { attach(agent); return next(); }, { prepend: true }),
       ctx.on('agent/disposed', ({ agent }) => tools.forget(agent)),
+      ctx.on('agent/turn-stopping', ({ agent, signal }) => askBeforeClosing(agent, signal)),
+      // Not at turn/end: the session takes no write from inside its own event, and the host checks the inbox right after.
+      ctx.on('agent/status', ({ agent, status }) => { if (status === 'idle') takeBackAsk(agent); }),
       ctx.on('agent/inbox/inserted', ({ agent, message: inserted }) => {
         attach(agent);
+        if (inserted.source.kind === 'user' && agent.id === state.homeSessionId) takeBackAsk(agent);
         // Her partner's words reach her at the next step, like being called while busy.
         if (!includes(agent.session) || agent.id !== state.homeSessionId || inserted.source.kind !== 'user' || agent.status !== 'running') return;
         if (!agent.inbox.nextTurn.some(queued => queued.id === inserted.id)) return;
         agent.inbox.remove(inserted.id); agent.steer(inserted);
       }),
       ctx.on('session/event', (session, event) => {
+        // Also when her home left her world during the turn, so its marks never carry into a later one.
+        if (event.type === 'turn/end' && session.id === state.homeSessionId) alarmTurn.turnEnded();
         if (!includes(session)) return;
         journal.world(session, event);
         if (session.id !== state.homeSessionId) return;
         journal.home(session, event);
         turnEvent(event);
         if (event.type === 'assistant/message' && event.data.usage) spent(event.data.usage, event.data.message.source.model, event.data.message.content.flatMap(block => block.type === 'tool-call' ? [block.name] : []));
-        if (event.type === 'user/message' && event.data.source.kind === 'user') { earlyStop.partnerSpoke(); deps.partnerSpoke?.(); }
+        if (event.type === 'user/message' && event.data.source.kind === 'user') { alarmTurn.partnerSpoke(); deps.partnerSpoke?.(); }
         // Before the fallback below, so a word whose turn never ran goes back first.
         const pending = state.delivering;
         if (pending?.sessionId === session.id) {
-          if (event.type === 'user/message' && event.data.id === pending.messageId) confirmed();
+          if (event.type === 'user/message' && event.data.id === pending.messageId) { if ('alarm' in pending.job) alarmTurn.rang(); confirmed(); }
           else if (event.type === 'turn/end') {
             const agent = ctx.agents.get(session.id);
             if (!agent || !queued(agent, pending.messageId)) neverRan(`那一轮没开始就结束了（${event.data.reason.kind}）`);
@@ -492,8 +511,6 @@ export function createLifeRuntime(deps: LifeDeps) {
         if (state.delivering?.source !== 'review') reviewing = undefined;
         home.turnEnded(session.id);
         fallbackAlarm();
-        // A stopped or failed turn is not her deciding she is done.
-        askIfDoneEarly(event.data.reason.kind === 'completed');
       }),
     );
     for (const agent of ctx.agents.list()) attach(agent);

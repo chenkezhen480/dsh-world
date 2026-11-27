@@ -11,9 +11,7 @@ import { compactsWhole, llmError } from './compaction.ts';
 import { compactionFor } from './console/homeApply.ts';
 import { errorText, Faults } from './faults.ts';
 import { createHistory, excludePresentMessages, GROUP_PRIVACY, renderHistory } from './history.ts';
-import { MOOD_CLEARED, moodAge, moodText, moodUpdatedAt, readMood } from './mood.ts';
 import { createWorldToolRegistry, memoryTools } from './memoryTools.ts';
-import { moodTools } from './moodTools.ts';
 import { createSessionNews } from './sessionNews.ts';
 import { assembledWorlds, createPromptSections, type WorldPromptSource } from './promptSection.ts';
 import { belongsToWorld, createSourceArchive, inWorld, sessionPreset } from './sourceArchive.ts';
@@ -25,7 +23,9 @@ import { DEFAULT_COLD_HOURS, DEFAULT_MEMORY_TURNS } from './worldSwitch.ts';
 
 export type { WorldPromptSource } from './promptSection.ts';
 const memorySource = 'dsh-world-history';
+/** Her mood snapshots, gone since 0.8.4; sessions from before keep theirs until they compact, and they stay world context. */
 const moodSource = 'dsh-world-mood';
+const MOOD_GONE = '【我的心情值】心情值不再记了：上面最后那条不会再更新，set_mood 也没有了。';
 const elsewhereSource = 'dsh-world-elsewhere';
 const isRecall = (source: UserMessage['source'] | undefined, worldId?: string) => source?.kind === memorySource && (worldId === undefined || source.worldId === undefined || source.worldId === worldId);
 type RequestPosition = { turn: number; step: number };
@@ -179,7 +179,7 @@ interface MemoryState { reload: boolean; cold: boolean; position: RequestPositio
  * block of the newest turns at its start, after each successful compaction and when it speaks again after being cold,
  * never in between, so it stays inside the provider-cached prefix. `home` archives the current home; `workspace` uses host membership. The memory block still
  * goes to every world session in her workspace (`inWorkspace`), independently of the archive scope.
- * `memoryTurns` is read each time a block is built (default 200).
+ * `memoryTurns` is read each time a block is built (default 100).
  *
  * A session silent for `coldHours` (read at each turn start, default 24) is cold (#36): its provider cache has most
  * likely expired (DeepSeek clears an unused one "usually within a few hours to a few days", best effort), so its next
@@ -210,12 +210,12 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
   const memory = new WeakMap<Session, MemoryState>();
   const service = world?.memory;
   const sessionNews = world?.elsewhere ? createSessionNews({ store, isHome: id => !!world.isHome(id), partner: () => world.names?.().partner ?? world.prompt.names.partner }) : undefined;
-  const worldTools = (inside: () => boolean, agent: Agent) => [
-    ...service ? memoryTools(service, inside, sourceId => sessionNews?.looked(agent.session, sourceId.slice('chat:'.length)), () => ctx.get('attachments') as AttachmentStore | undefined) : [],
-    ...config.moodFile ? moodTools(config.moodFile, inside) : [],
-  ];
-  const tools = service || config.moodFile ? createWorldToolRegistry({ tools: worldTools, inWorld: agent => !stopped && included(agent.session), faults, logger: ctx.logger }) : undefined;
-  /** The world tools (memory, mood) follow world membership, whatever the life line does. */
+  const inGroup = (session: Session) => store.channelType(session.id) === 'group';
+  const tools = service ? createWorldToolRegistry({
+    tools: (inside, agent) => memoryTools(service, inside, sourceId => sessionNews?.looked(agent.session, sourceId.slice('chat:'.length)), () => ctx.get('attachments') as AttachmentStore | undefined, () => inGroup(agent.session)),
+    inWorld: agent => !stopped && included(agent.session), faults, logger: ctx.logger,
+  }) : undefined;
+  /** The world's memory tools follow world membership, whatever the life line does. */
   const syncTools = (agent: Agent): boolean => !tools ? false : included(agent.session) ? tools.attach(agent) : tools.detach(agent);
   const disposers: (() => void)[] = [];
   let stopping: Promise<void> | undefined;
@@ -288,32 +288,19 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
     }
     return found.length ? found.slice(0, 8).join('、') + (found.length > 8 ? `…共 ${found.length} 个` : '') : '无';
   }
-  /** The text of her latest mood snapshot still on the surface, if any. */
-  function latestMood(session: Session): string | undefined {
-    const seq = recallNodes(session, source => source?.kind === moodSource && source.worldId === config.worldId).at(-1);
-    const event = seq === undefined ? undefined : session.eventAt(seq);
-    return event?.type === 'user/message' ? event.data.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('') : undefined;
-  }
   /**
-   * Her mood rides just before the time block on every step, appended like it and never replacing an old one, so the
-   * cached prefix stays whole and compaction clears them all. Every step, because one wake can run a hundred steps: a
-   * snapshot shown only when it changed sank far behind her work and she stopped noticing it, so it never moved.
+   * A session from before 0.8.4 still shows her last mood snapshot, which tells her to update it with set_mood, until it
+   * compacts; it is told once, at a step's end, that this is over.
    */
-  function moodMessage(session: Session): UserMessage | undefined {
-    if (!config.moodFile) return undefined;
-    const mood = readMood(config.moodFile);
-    if (mood.kind === 'failed') faults.set('mood', `mood.md 读不出来：${mood.message}`); else faults.clear('mood');
-    const updatedAt = mood.kind === 'mood' ? moodUpdatedAt(config.moodFile) : undefined;
-    const shown = moodText(mood, updatedAt === undefined ? undefined : moodAge(updatedAt, now()));
-    const latest = shown === undefined ? latestMood(session) : undefined;
-    // A removed file is said once, so the old values stop counting.
-    const text = shown ?? (latest === undefined || latest === MOOD_CLEARED ? undefined : MOOD_CLEARED);
-    return text === undefined ? undefined : createUserMessage({ content: [{ type: 'text', text }], source: { kind: moodSource, form: 'snapshot', worldId: config.worldId } });
+  function moodGone(session: Session): UserMessage | undefined {
+    const last = recallNodes(session, source => source?.kind === moodSource && source.worldId === config.worldId).at(-1);
+    const event = last === undefined ? undefined : session.eventAt(last);
+    if (event?.type !== 'user/message' || event.data.content.some(block => block.type === 'text' && block.text === MOOD_GONE)) return undefined;
+    return createUserMessage({ content: [{ type: 'text', text: MOOD_GONE }], source: { kind: moodSource, form: 'snapshot', worldId: config.worldId } });
   }
-  const inGroup = (session: Session) => store.channelType(session.id) === 'group';
   /**
    * News from elsewhere is an event, told once: at a turn's start it comes before the new message (what gathered
-   * before it arrived), later in the turn at the step's end, ahead of her mood and the time.
+   * before it arrived), later in the turn at the step's end, ahead of the time.
    */
   function elsewhereMessage(session: Session): UserMessage | undefined {
     const news = world?.elsewhere?.take(session, new Date(now()));
@@ -361,7 +348,7 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
     // The two reads are independent, and the first step waits for both.
     const [turns, catalog] = await Promise.all([history.loadRecentTurns(memoryTurns(), archivedByScope), wikiCatalog()]);
     const present = new Set(session.deriveMessages().map(message => message.id));
-    const rendered = renderHistory(excludePresentMessages(turns, present), config.timeZone, names(), config.archiveScope === 'home');
+    const rendered = renderHistory(excludePresentMessages(turns, present), config.timeZone, names(), { homeOnly: config.archiveScope === 'home', partnerAccounts: world?.partnerAccounts?.(), lookBack: Boolean(service) });
     const body = [catalog, rendered].filter(Boolean).join('\n\n');
     const text = body && inGroup(session) ? `${body}\n\n${GROUP_PRIVACY}` : body;
     // A session entering this workspace can still carry an inherited recall from another world.
@@ -393,6 +380,7 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
         if (cold) { state.reload = true; state.cold = true; }
         if (compacted || cold) prompts?.refresh(session);
         if (!isOrdinarySession(session.header)) return;
+        archive.observe(session.id, event);
         if (event.type === 'assistant/message' || event.type === 'turn/end' || event.type === 'turn/start' || event.type === 'compaction/end' || (event.type === 'user/message' && event.data.source.kind === 'user')) void archive.schedule(session.id).catch(() => {});
       }));
       // The host fails the whole session creation when a creation listener rejects, leaving an empty session behind on
@@ -429,29 +417,8 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
         state.inScope = true;
         await archiveNow(agent.id); signal.throwIfAborted();
         if (!included(agent.session)) return leave();
-        if (step === 1 && world?.experience) {
-          const old = recallNodes(agent.session, source => source.kind === moodSource && source.worldId === config.worldId);
-          if (old.length) {
-            state.retiring.push(...old);
-            decision = { ...decision, startsRequestSeries: true };
-          }
-          const admitted = () => !stopped && included(agent.session) && !inGroup(agent.session);
-          if (admitted()) {
-            const input = decision.messages;
-            try {
-              const addition = await world.experience(agent.session, input, signal, admitted);
-              faults.clear('experience');
-              if (addition) decision = { ...decision, messages: input.flatMap(m => m.id === addition.before ? [addition.note, m] : [m]) };
-            } catch (error) {
-              signal.throwIfAborted();
-              faults.set('experience', `心情私记暂不可用：${errorText(error)}`);
-            }
-            signal.throwIfAborted();
-            if (stopped || !included(agent.session)) return leave();
-          }
-        }
-        const news = elsewhereMessage(agent.session), mood = moodMessage(agent.session);
-        const head = news && step === 1 ? [news] : [], tail = [...(news && step > 1 ? [news] : []), ...(mood ? [mood] : [])];
+        const news = elsewhereMessage(agent.session), gone = moodGone(agent.session);
+        const head = news && step === 1 ? [news] : [], tail = [...(news && step > 1 ? [news] : []), ...(gone ? [gone] : [])];
         if (head.length || tail.length) decision = { ...decision, messages: [...head, ...decision.messages, ...tail] };
         if (!state.reload) return decision;
         // A block that cannot be built leaves the old one in place; she talks on, the fault shows, and the next step tries again.

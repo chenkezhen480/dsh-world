@@ -26,7 +26,6 @@ export interface WorldPrompt {
   life?: LifeOptions;
   /** The memory_find and memory_read tools are on her sessions. */
   memoryTools?: boolean;
-  experienceMood?: boolean;
   /** Her wiki's folder (`<room>/认识`): what it is for and when she writes a page. */
   wikiDir?: string;
 }
@@ -62,7 +61,7 @@ export function renderTemplate(template: string, flags: Record<string, boolean>,
  */
 export function renderWorldPrompt(prompt: WorldPrompt, template: string, self: { file: string; text: string } | undefined, home: boolean): string {
   const { life, names } = prompt;
-  return renderTemplate(template, { life: Boolean(life), home, selfFile: Boolean(self), conversationsDir: Boolean(prompt.conversationsDir), memoryTools: Boolean(prompt.memoryTools), experienceMood: Boolean(prompt.experienceMood), wikiDir: Boolean(prompt.wikiDir) }, {
+  return renderTemplate(template, { life: Boolean(life), home, selfFile: Boolean(self), conversationsDir: Boolean(prompt.conversationsDir), memoryTools: Boolean(prompt.memoryTools), wikiDir: Boolean(prompt.wikiDir) }, {
     name: names.companion, partner: names.partner, homeTitle: homeTitle(names), selfFile: self?.file ?? '', self: self?.text ?? '', conversationsDir: prompt.conversationsDir ?? '', wikiDir: prompt.wikiDir ?? '',
     ...(life ? { roomDir: life.roomDir, diaryDir: life.diaryDir, fallbackWakeTime: life.schedule().wake } : {}),
   });

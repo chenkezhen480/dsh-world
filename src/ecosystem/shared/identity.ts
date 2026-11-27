@@ -37,7 +37,7 @@ export function conversationKey(identity: SpeakerIdentity): string {
   return JSON.stringify([identity.channel, identity.accountId, identity.conversationType ?? 'private', identity.conversationId]);
 }
 
-const appName = (channel: string) => channel === 'wechat' ? '微信' : channel === 'qq' || channel === 'qq-bridge' ? 'QQ' : channel;
+export const appName = (channel: string) => channel === 'wechat' ? '微信' : channel === 'qq' || channel === 'qq-bridge' ? 'QQ' : channel;
 /** A chat as she reads it: 微信「Ken」, 微信群「一家人」, QQ群「…」. */
 export function chatLabel(channel: string, conversationType: SpeakerIdentity['conversationType'], name: string): string {
   return `${appName(channel)}${conversationType === 'group' ? '群' : ''}「${name}」`;

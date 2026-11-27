@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { cp, lstat, mkdir, mkdtemp, readFile, readdir, readlink, realpath, rm, symlink, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -46,7 +46,7 @@ async function fixture(t, name = 'dsh-world', compiled = true) {
     const updated = { ...manifest, dependencies: { ...manifest.dependencies, 'dsh-world': 'file:' + args[2].replaceAll('\\', '/') } };
     await writeFile(join(profile, 'package.json'), JSON.stringify(updated));
     await writeFile(join(profile, 'pnpm-lock.yaml'), 'new lock');
-    await rm(oldPackage, { recursive: true });
+    await rm(oldPackage, { recursive: true, force: true });
     await cp(contents, oldPackage, { recursive: true });
     return { stdout: '', stderr: '' };
   };
@@ -70,6 +70,8 @@ test('updater backs up the profile and world data and preserves authored files a
   assert.deepEqual(await readFile(savedArchive), await readFile(f.options.archive));
   assert.match(await readFile(join(f.oldPackage, 'lib', 'index.js'), 'utf8'), /0\.6\.0/);
   assert.equal((await readdir(join(f.root, 'profiles'))).some(name => name.endsWith('.lock')), false);
+  // What the updater said stays with the backup, for when the window it ran in is gone.
+  assert.match(await readFile(join(result.backup, 'update.log'), 'utf8'), /Backing up[\s\S]*Backed up the profile[\s\S]*Updated dsh-world to 0\.6\.0/);
 });
 
 test('node_modules from an older pnpm is reinstalled with DSH\'s pnpm before the add, which would otherwise refuse it', async t => {
@@ -109,6 +111,75 @@ test('a --pnpm older than the one that laid out node_modules is refused before a
   assert.deepEqual(JSON.parse(await readFile(join(f.profile, 'package.json'), 'utf8')), f.manifest);
 });
 
+test('a different pnpm store triggers one relink and retry even when the pnpm major matches', async t => {
+  const f = await fixture(t);
+  await writeFile(join(f.profile, 'node_modules', '.modules.yaml'), 'packageManager: pnpm@11.20.0\n');
+  const { updateWorld } = await import('../scripts/update-world.mjs');
+  const calls = [];
+  const result = await updateWorld(f.options, {
+    processes: async () => [], log() {},
+    run: async (file, args, settings) => {
+      if (args[0] !== f.options.pnpm) return f.runner(file, args, settings);
+      calls.push(args[1]);
+      if (args[1] === '--version') return { stdout: '11.21.0\n' };
+      if (args[1] === 'install') return { stdout: '' };
+      if (calls.length === 2) {
+        throw Object.assign(new Error('pnpm add exited with code 1'), {
+          stdout: '[ERR_PNPM_UNEXPECTED_STORE] Unexpected store location',
+        });
+      }
+      return f.runner(file, args, settings);
+    },
+  });
+  assert.deepEqual(calls, ['--version', 'add', 'install', 'add']);
+  assert.equal(result.version, '0.6.0');
+  assert.match(await readFile(join(f.oldPackage, 'lib', 'index.js'), 'utf8'), /0\.6\.0/);
+  assert.deepEqual(JSON.parse(await readFile(join(result.backup, 'profile', 'package.json'), 'utf8')), f.manifest);
+});
+
+test('external dsh-world links can be upgraded without writing to their source', async t => {
+  for (const managed of [true, false]) {
+    await t.test(managed ? 'pnpm link dependency' : 'junction registered as a bundle', async t => {
+      const f = await fixture(t);
+      const source = join(f.root, 'linked source');
+      await cp(f.oldPackage, source, { recursive: true });
+      await rm(f.oldPackage, { recursive: true });
+      if (managed) {
+        f.manifest.dependencies['dsh-world'] = 'link:../../linked source';
+        // pnpm links a directory on Windows as a junction to its absolute path; a relative symlink needs a privilege most users lack.
+        if (process.platform === 'win32') await symlink(source, f.oldPackage, 'junction');
+        else await symlink('../../../linked source', f.oldPackage, 'dir');
+      } else {
+        delete f.manifest.dependencies['dsh-world'];
+        await symlink(source, f.oldPackage, process.platform === 'win32' ? 'junction' : 'dir');
+      }
+      await writeFile(join(f.profile, 'package.json'), JSON.stringify(f.manifest));
+      const oldTarget = await readlink(f.oldPackage);
+      const { updateWorld } = await import('../scripts/update-world.mjs');
+      let removed = false;
+      const result = await updateWorld(f.options, {
+        processes: async () => [], log() {},
+        run: async (file, args, settings) => {
+          if (args[0] === f.options.pnpm && args[1] === 'remove') {
+            assert.equal(args[2], 'dsh-world');
+            if ((await lstat(f.oldPackage).catch(() => undefined))?.isSymbolicLink()) await unlink(f.oldPackage);
+            removed = true;
+            return { stdout: '' };
+          }
+          if (args[0] === f.options.pnpm) {
+            assert.equal(removed, managed);
+            await assert.rejects(lstat(f.oldPackage), { code: 'ENOENT' });
+          }
+          return f.runner(file, args, settings);
+        },
+      });
+      assert.equal(result.version, '0.6.0');
+      assert.equal(await readlink(join(result.backup, 'profile/node_modules/dsh-world')), oldTarget);
+      assert.equal(await readFile(join(source, 'index.js'), 'utf8'), 'old implementation');
+    });
+  }
+});
+
 test('a failed install restores the whole old profile and retains the failed profile for inspection', async t => {
   const f = await fixture(t);
   const { updateWorld } = await import('../scripts/update-world.mjs');
@@ -126,6 +197,7 @@ test('a failed install restores the whole old profile and retains the failed pro
   const [backup] = await readdir(join(f.root, 'backups'));
   const failed = join(f.root, 'backups', backup, 'failed-profile');
   assert.equal(JSON.parse(await readFile(join(failed, 'node_modules', 'dsh-world', 'package.json'), 'utf8')).version, '0.6.0');
+  assert.match(await readFile(join(f.root, 'backups', backup, 'update.log'), 'utf8'), /Update failed: installation interrupted[\s\S]*Old profile restored/);
 });
 
 test('unexpected changes to other profile configuration fail validation and restore the old profile', async t => {
@@ -216,17 +288,24 @@ test('process detection catches standalone hosts and adapters with both path sep
     { ProcessId: 12007, Name: 'msedge.exe', CommandLine: '"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe" --type=renderer --user-data-dir="C:\\Users\\o\\.dsh\\worlds\\jingjing\\browser"' },
     { ProcessId: 12008, Name: 'msedge.exe', CommandLine: '"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe" --profile-directory=Default' },
     { ProcessId: 12009, Name: 'chrome', CommandLine: '/usr/bin/google-chrome --user-data-dir=/home/o/.dsh/worlds/w/browser --remote-debugging-port=0' },
+    { ProcessId: 12010, Name: 'DSH NEXT.exe', CommandLine: '"C:\\Apps\\DSH NEXT\\DSH NEXT.exe"' },
+    { ProcessId: 12011, Name: 'dsh-desktop-next', CommandLine: '/opt/dsh-desktop-next/dsh-desktop-next' },
   ];
-  const found = await runningProcesses(async (file, args, options) => {
+  const sampleProcesses = async (file, args, options) => {
     if (process.platform !== 'win32') return { stdout: samples.map(row => `${row.ProcessId} ${row.CommandLine}`).join('\n') };
     const query = Buffer.from(args.at(-1), 'base64').toString('utf16le');
     const data = Buffer.from(JSON.stringify(samples), 'utf8').toString('base64');
     const program = `function Get-CimInstance { foreach ($row in (ConvertFrom-Json ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${data}'))))) { $row } }\n` + query;
     return command(file, ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(program, 'utf16le').toString('base64')], options);
-  });
+  };
+  const home = process.platform === 'win32' ? 'C:\\Users\\o\\.dsh' : '/home/o/.dsh';
+  const found = await runningProcesses(home, sampleProcesses);
+  const localBrowser = process.platform === 'win32' ? 12006 : 12009;
+  const otherBrowser = process.platform === 'win32' ? 12009 : 12006;
+  const desktopNext = process.platform === 'win32' ? 12010 : 12011;
   assert.equal(found.length, 6, found.join('\n'));
-  for (const id of [12001, 12002, 12003, 12004, 12006, 12009]) assert.ok(found.some(line => line.includes(String(id))));
-  for (const id of [12007, 12008]) assert.ok(!found.some(line => line.includes(String(id))), `${id}: a helper, or the partner's own browser`);
+  for (const id of [12001, 12002, 12003, 12004, localBrowser, desktopNext]) assert.ok(found.some(line => line.includes(String(id))));
+  for (const id of [12007, 12008, otherBrowser]) assert.ok(!found.some(line => line.includes(String(id))), `${id}: a helper, the partner's browser or another data directory`);
 });
 
 test('profile backup and restore preserve internal dependency directory links without following them', async t => {
@@ -249,4 +328,43 @@ test('profile backup and restore preserve internal dependency directory links wi
   assert.ok((await lstat(link)).isSymbolicLink());
   const [backup] = await readdir(join(f.root, 'backups'));
   assert.ok((await lstat(join(f.root, 'backups', backup, 'profile', 'node_modules', 'linked-dependency'))).isSymbolicLink());
+});
+
+test('a relative directory link is backed up as a junction to where it led, so the backup and a restore from it still open', async t => {
+  const f = await fixture(t);
+  // Like plugins linked from <DSH_HOME>/plugins: written relative, from the profile's node_modules.
+  const plugin = join(f.root, 'plugins', 'companion-connector');
+  await mkdir(plugin, { recursive: true });
+  await writeFile(join(plugin, 'index.js'), 'the linked plugin');
+  const link = join(f.profile, 'node_modules', 'companion-connector');
+  try { await symlink(join('..', '..', '..', 'plugins', 'companion-connector'), link, 'dir'); }
+  catch (error) { if (error.code === 'EPERM') return t.skip('this account cannot create symbolic links'); throw error; }
+  const { updateWorld } = await import('../scripts/update-world.mjs');
+  await assert.rejects(updateWorld(f.options, {
+    processes: async () => [], log() {},
+    run: async (file, args, settings) => {
+      const result = await f.runner(file, args, settings);
+      if (args[0] === f.options.pnpm) throw new Error('installation interrupted');
+      return result;
+    },
+  }), /installation interrupted.*Old profile restored/is);
+  assert.equal(await readFile(join(link, 'index.js'), 'utf8'), 'the linked plugin', 'the restored profile opens it');
+  if (process.platform === 'win32') {
+    // Copied as written, it pointed elsewhere from the backup folder and became a file link DSH could not open (EPERM).
+    const [backup] = await readdir(join(f.root, 'backups'));
+    const saved = join(f.root, 'backups', backup, 'profile', 'node_modules', 'companion-connector');
+    assert.equal(await realpath(saved), await realpath(plugin));
+    assert.equal(await readFile(join(saved, 'index.js'), 'utf8'), 'the linked plugin');
+  }
+});
+
+test('a link that was already broken before the update does not stop it', async t => {
+  const f = await fixture(t);
+  const gone = join(f.root, 'plugins', 'removed-plugin');
+  await mkdir(gone, { recursive: true });
+  await symlink(gone, join(f.profile, 'node_modules', 'removed-plugin'), process.platform === 'win32' ? 'junction' : 'dir');
+  await rm(gone, { recursive: true });
+  const { updateWorld } = await import('../scripts/update-world.mjs');
+  const result = await updateWorld(f.options, { run: f.runner, processes: async () => [], log() {} });
+  assert.equal(result.version, '0.6.0');
 });

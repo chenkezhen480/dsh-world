@@ -5,10 +5,10 @@ import { speakerIdentity } from '../src/ecosystem/shared/identity.ts';
 
 const identity = speakerIdentity({ channel: 'wechat', accountId: 'bot', speakerId: 'wechat:bot', conversationId: 'family@chatroom', conversationType: 'group', conversationName: '家人' });
 const entry = { id: 'm.db:1', occurredAt: '2026-10-27T10:00:00Z', text: '今晚吃面', identity: { ...identity, speakerId: 'wechat:dad', speakerName: '爸爸' } };
-function fixture(images?: (source: typeof identity, context: unknown[]) => Promise<unknown[]>) {
+function fixture(images?: (source: typeof identity, context: unknown[]) => Promise<unknown[]>, timeZone?: string) {
   let allowed = true;
   const deferred: { source: { kind: string }; content: unknown[] }[] = [];
-  const reading = createWechatReading({ target: (id: string) => { if (!allowed || id !== identity.conversationId) throw new Error('聊天不在配置中'); return identity; }, images: images as never });
+  const reading = createWechatReading({ timeZone, target: (id: string) => { if (!allowed || id !== identity.conversationId) throw new Error('聊天不在配置中'); return identity; }, images: images as never });
   const controller = new AbortController();
   const tool = { signal: controller.signal, deferContext: (message: (typeof deferred)[number]) => { deferred.push(message); } } as never;
   const run = (args: object = {}) => reading.tool.execute({ chatId: identity.conversationId, ...args }, tool);
@@ -78,13 +78,14 @@ test('only consumed successful reads acknowledge clearing; duplicate deliveries 
 
 test('wechat_image asks the adapter for one picture by the id history showed and hands it over as a context message', async t => {
   const seen: unknown[][] = [];
-  const { reading, look, deferred } = fixture(async (_source, context) => { seen.push(context); return [{ type: 'text', text: '图片来源' }, { type: 'image', attachment: { attachmentId: 'x' } }]; }); t.after(reading.stop);
+  const { reading, look, deferred } = fixture(async (_source, context) => { seen.push(context); return [{ type: 'text', text: '图片来源' }, { type: 'image', attachment: { attachmentId: 'x' } }]; }, 'Asia/Shanghai'); t.after(reading.stop);
   const result = look();
   const job = reading.poll()!;
   assert.equal(job.imageId, 'm.db:9'); assert.equal(job.limit, 1); assert.equal(job.chatId, identity.conversationId);
   reading.accept({ id: job.id, accountId: 'bot', chatId: job.chatId, messages: [picture] });
   const text = await result as string;
   assert.match(text, /m.db:9/); assert.match(text, /下一条消息/);
+  assert.match(text, /2026-10-27T18:00:00\+08:00/);
   assert.equal(seen.length, 1);
   assert.equal(deferred.length, 1);
   assert.equal(deferred[0].source.kind, 'dsh-world-channel-context');

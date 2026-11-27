@@ -91,6 +91,22 @@ class PresenceTest(unittest.TestCase):
         self.assertEqual(self.store.db.execute('SELECT count(*) FROM messages').fetchone()[0], 1, 'ordinary messages must not add per-message state')
         self.store.checkPending()
 
+    def test_a_line_that_names_nobody_is_passed_over_and_the_group_keeps_being_read(self):
+        # A pat card arrives with no sender; it used to stop the adapter on every poll (#70).
+        pat = {**row(2, ''), 'type': '拍一拍', 'content': '「爸爸」拍了拍「鲸鲸」'}
+        class Database:
+            def get_messages(_, chat, limit, offset=0): return [row(3), pat, row(1)][offset:offset+limit]
+            def get_nickname(_, sender): return '爸爸'
+            def get_message_row(_, *args, **kwargs): return dict(source='<msgsource/>')
+        self.store.baseline(self.chat['id'], 1, [row(1)])
+        with patch('adapter.time.sleep', side_effect=StopIteration), patch('sys.stderr'):
+            with self.assertRaises(StopIteration):
+                watch(self.config, Database(), self.store, lambda *args: self.fail('must not send'),
+                      ask=lambda *args: self.fail('must not ask'), poll=lambda _: {})
+        self.assertEqual(self.store.cursor(self.chat['id']), 3, 'read past it')
+        self.assertEqual(GroupPresence(self.store.db).snapshot(self.config)[0]['count'], 1, 'only the line with a speaker counts')
+        self.store.checkPending()
+
     def test_many_groups_keep_all_counters_but_report_a_bounded_summary(self):
         chats = [dict(id=f'{i}@chatroom', name=str(i)) for i in range(20)]
         for i, chat in enumerate(chats): self.store.presence.observe('bot', chat['id'], row(i+1), '爸爸')

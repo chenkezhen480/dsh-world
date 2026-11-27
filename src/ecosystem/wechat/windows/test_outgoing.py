@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -86,6 +87,17 @@ class OutgoingTest(unittest.TestCase):
             with Image.open(prepared[0]['path']) as output:
                 self.assertEqual(output.format, 'GIF')
                 self.assertEqual(output.n_frames, 2)
+
+    def test_a_big_sticker_is_converted_without_a_size_limit(self):
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / 'wide.png'
+            Image.frombytes('RGB', (1500, 1000), os.urandom(1500 * 1000 * 3)).save(source, format='PNG')
+            prepared = prepareMessages([dict(type='sticker', path=str(source))], dict(mediaRoots=[directory]), root)
+            with Image.open(prepared[0]['path']) as output:
+                self.assertEqual(output.size, (1500, 1000))
+            self.assertGreater(Path(prepared[0]['path']).stat().st_size, 1024 * 1024)
 
     def test_still_sticker_keeps_a_drawn_first_frame_and_skips_a_flat_one(self):
         from PIL import Image

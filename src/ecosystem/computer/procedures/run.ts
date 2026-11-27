@@ -76,6 +76,7 @@ export function describeStep(step: Step | DesktopStep): string {
   }
   if ('type' in step) return 'into' in step.type ? `在 ${describeAnchor(step.type.into)} 输入` : `输入${at(step.type)}`;
   if ('drag' in step) return `从${at(step.drag)}拖到${at({ x: step.drag.x2, y: step.drag.y2 })}`;
+  if ('swipe' in step) return `从${at({ x: step.swipe.path[0]![0], y: step.swipe.path[0]![1] })}滑过 ${step.swipe.path.length} 个点到${at({ x: step.swipe.path.at(-1)![0], y: step.swipe.path.at(-1)![1] })}`;
   if ('press' in step) return `按 ${step.press}`;
   if ('scroll' in step) return `往 ${step.scroll.direction} 滚${at(step.scroll)}`;
   if ('wait' in step) return 'seconds' in step.wait && !('text' in step.wait || 'url' in step.wait || 'anchor' in step.wait) ? `等 ${step.wait.seconds} 秒` : `等 ${describeCondition(step.wait as Condition)}`;
@@ -134,6 +135,7 @@ function desktopInput(step: Exclude<DesktopStep, { wait: unknown }>, args: Args)
   if ('open' in step) return { action: 'open', app: substitute(step.open, args) };
   if ('click' in step) return { action: 'click', ...step.click };
   if ('drag' in step) return { action: 'drag', ...step.drag };
+  if ('swipe' in step) return { action: 'swipe', ...step.swipe };
   if ('type' in step) return { action: 'type', ...step.type, text: substitute(step.type.text, args) };
   if ('press' in step) return { action: 'press', key: step.press, ...(step.hold === undefined ? {} : { hold: step.hold }) };
   return { action: 'scroll', ...step.scroll };

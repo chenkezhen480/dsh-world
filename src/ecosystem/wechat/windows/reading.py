@@ -3,7 +3,7 @@ import base64
 import hashlib
 import json
 from pathlib import Path
-from messages import MAX_CONTEXT_BYTES, displayMessage, messageEntry, messageNormalizer, recentEntries
+from messages import MAX_CONTEXT_BYTES, displayMessage, hasSender, messageEntry, messageNormalizer, recentEntries
 from incoming import ImageUnavailable
 from quotes import isAppMessage
 from stickers import StickerUnavailable, fetchSticker, stickerKind
@@ -83,7 +83,7 @@ def readHistory(database, config, request):
     normalize = messageNormalizer(database, chat, config)
     observed = {}
     def historyEntry(row):
-        if row['type'] == '系统消息': return None
+        if row['type'] == '系统消息' or not hasSender(row): return None
         text = str(row['content'])
         if row['type'] == '图片': text = '【图片，未读取；要看请调用 wechat_image，messageId 用本条的 id】'
         elif row['type'] == '动画表情': text = '【表情包，未读取；想收进表情库就调用 sticker_save，messageId 用本条的 id】'

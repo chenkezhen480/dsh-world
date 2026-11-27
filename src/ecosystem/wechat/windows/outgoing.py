@@ -65,8 +65,6 @@ def prepareMessages(messages, config, stateDir):
             extension = '.gif' if kind == 'sticker' else '.png'
             snapshot = outputDir / (digest + extension)
             if kind == 'sticker':
-                if max(image.size) > 1024:
-                    raise ValueError('表情包尺寸不能超过 1024')
                 if image.format == 'GIF':
                     shutil.copyfile(path, snapshot)
                 else:
@@ -79,8 +77,6 @@ def prepareMessages(messages, config, stateDir):
                         frames.append(image.convert('RGBA'))
                         durations.append(image.info.get('duration', 100))
                     frames[0].save(snapshot, format='GIF', save_all=True, append_images=frames[1:], duration=durations, loop=0)
-                if snapshot.stat().st_size > 1024 * 1024:
-                    raise ValueError('转换后的表情包超过 1MB，请换图片发送')
             else:
                 image.convert('RGBA').save(snapshot, format='PNG')
         prepared.append(dict(type=kind, path=str(snapshot)))

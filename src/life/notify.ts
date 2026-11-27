@@ -50,7 +50,10 @@ export function toastScript(appId: string | undefined, title: string, body: stri
       '}',
     ] : [],
     '$notifier = [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($appId)',
-    "if (\"$($notifier.Setting)\" -ne 'Enabled') { throw \"Windows 关闭了 $appId 的通知（$($notifier.Setting)）\" }",
+    // As a number: the WinRT enum put into a string sometimes came out empty, so every toast was refused as switched
+    // off, with empty brackets for the reason (#72). 0 is Enabled; the rest say who switched it off.
+    '$setting = [int]$notifier.Setting',
+    "if ($setting -ne 0) { $why = @('', '这个程序的通知被关了', '这个账户的通知被关了', '组策略关了通知', '程序清单不允许通知')[$setting]; throw \"Windows 关闭了 $appId 的通知（$why）\" }",
     '$xml = New-Object Windows.Data.Xml.Dom.XmlDocument',
     `$xml.LoadXml(${decode(payload)})`,
     '$notifier.Show([Windows.UI.Notifications.ToastNotification]::new($xml))',

@@ -17,7 +17,7 @@ const GIVE_BACK_TRIES = 3;
  * Posted input reaches a program that reads its messages; one that reads the real mouse and keyboard (many games) never
  * sees a button or a key held, so a held press or a drag that changed nothing at all is told with what to do about it.
  */
-const UNMOVED = '截图和动手之前一模一样。后台模式下，有的程序（很多游戏）读的是真实的鼠标键盘，看不到按住和拖动；该动的没动，就请伙伴切到前台模式。';
+const UNMOVED = '截图和动手之前一模一样。后台模式下，有的程序（很多游戏）读的是真实的鼠标键盘，看不到按住、拖动和滑动；该动的没动，就请伙伴切到前台模式。';
 interface Window { hwnd: number; pid: number; app: string }
 
 /**
@@ -90,7 +90,7 @@ export function createDesktop(deps: {
     },
     input: {
       click: (at, how) => call('click', { hwnd: current().hwnd, ...at, ...how }),
-      drag: (from, to, how) => call('drag', { hwnd: current().hwnd, x: from.x, y: from.y, x2: to.x, y2: to.y, ...how }),
+      stroke: (points, how) => call('stroke', { hwnd: current().hwnd, xs: points.map(point => point.x), ys: points.map(point => point.y), ...how }),
       type: text => call('type', { hwnd: current().hwnd, text }),
       key: (key, hold) => call('key', { hwnd: current().hwnd, ...key, ...(hold === undefined ? {} : { hold }) }),
       scroll: (at, up, right) => call('scroll', { hwnd: current().hwnd, ...at, up, right }),
@@ -149,7 +149,7 @@ export function createDesktop(deps: {
       const { open: target } = await visible();
       return {
         key: `window:${target.hwnd}`, app: target.app,
-        capture: async (file, edge) => String((await call('shot', { hwnd: target.hwnd, file, edge, grow: 1, x: 0, y: 0, w: 0, h: 0, markX: -1, markY: -1 })).print ?? ''),
+        capture: async (file, edge) => String((await call('shot', { hwnd: target.hwnd, file, edge, grow: 1, x: 0, y: 0, w: 0, h: 0, marks: [] })).print ?? ''),
         space: () => call('key', { hwnd: target.hwnd, vk: VK.space, modifiers: [] }),
       };
     },

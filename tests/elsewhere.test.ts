@@ -135,6 +135,12 @@ test('her other sessions are news by count, never words, from the moment a sessi
   calls = [];
   await say(home, '然后呢');
   assert.match(notices(lastHome()).at(-1)!, /有 2 条我在这边没看到/, 'after she paged it, only what came later counts');
+  calls = [{ name: 'memory_find', arguments: JSON.stringify({ sourceId: 'chat:other', order: 'desc' }) }];
+  await say(home, '再看看');
+  await say(other, '第三句');
+  calls = [];
+  await say(home, '嗯');
+  assert.match(notices(lastHome()).at(-1)!, /有 2 条我在这边没看到/, 'newest first written as desc is paging the newest too');
 
   const asOther = requests.filter(entry => entry.session === 'other').at(-1)!.request;
   assert.ok(notices(asOther).length > 0 && notices(asOther).every(text => /家有 \d+ 条我在这边没看到/.test(text)), 'the other session hears of home the same way');

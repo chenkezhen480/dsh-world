@@ -110,7 +110,9 @@ export function createAdapterSupervisor(deps: AdapterSupervisorDeps) {
     } catch (cause) { return fail(`无法写适配器日志：${String(cause)}`); }
     const startedAt = Date.now();
     let current: ChildProcess;
-    try { current = spawnProcess(deps.python, ['-X', 'utf8', '-u', script, 'watch', '--config', deps.config, '--allow-send'], { cwd: dirname(script), stdio: ['ignore', fd, fd], windowsHide: true }); }
+    // Not from the script's folder: Windows cannot rename a folder a process works in, so an install in the profile
+    // (her cottage, the QQ SDK) failed halfway through replacing this package and left it unloadable.
+    try { current = spawnProcess(deps.python, ['-X', 'utf8', '-u', script, 'watch', '--config', deps.config, '--allow-send'], { cwd: dirname(deps.config), stdio: ['ignore', fd, fd], windowsHide: true }); }
     catch (cause) { return fail(`适配器启动失败：${String(cause)}`); }
     finally { closeSync(fd); } // the child owns its copy of the descriptor
     error = null;

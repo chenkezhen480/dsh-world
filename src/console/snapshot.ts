@@ -14,7 +14,6 @@ import type { PhotoStore } from '../life/photos.ts';
 import type { DailySchedule } from '../life/types.ts';
 import type { MemoryService } from '../memory.ts';
 import type { compactionPresetOverride } from '../compactionSwap.ts';
-import { moodView } from '../mood.ts';
 
 const SNAPSHOT_TTL_MS = 5000;
 export function estimateTokens(text: string): number {
@@ -36,8 +35,6 @@ export interface SnapshotDeps {
   /** Long-term memory: the console's lookups and the health of its index. */
   longTerm?: MemoryService;
   diaryDir: string;
-  /** Her mood file, shown read-only; absent in a console without a room. */
-  moodFile?: string;
   running(): boolean;
   /** CNY a day for her home; undefined is no limit. */
   dailyBudget(): number | undefined;
@@ -94,11 +91,10 @@ export function consoleSources(deps: SnapshotDeps): ConsoleSources & { invalidat
       promptMerge: deps.promptMerge?.() ?? null,
       compactionPreset: deps.compactionPreset?.() ?? null,
       health: [...(life?.faults ?? []), ...deps.faults()],
-      memory: { index: deps.longTerm?.status() ?? null, turns: turns.length, windowTurns: window, coldHours: deps.coldHours?.() ?? null, archiveScope, selectedArchiveScope, restartRequired: archiveScope !== selectedArchiveScope, approxTokens: estimateTokens(renderHistory(turns, config.timeZone, deps.names(), archiveScope === 'home')), oldest: turns.at(-1)?.messages[0]?.occurredAt, ...archive.stats() },
+      memory: { index: deps.longTerm?.status() ?? null, turns: turns.length, windowTurns: window, coldHours: deps.coldHours?.() ?? null, archiveScope, selectedArchiveScope, restartRequired: archiveScope !== selectedArchiveScope, approxTokens: estimateTokens(renderHistory(turns, config.timeZone, deps.names(), { homeOnly: archiveScope === 'home' })), oldest: turns.at(-1)?.messages[0]?.occurredAt, ...archive.stats() },
       wechat: deps.wechat?.() ?? null,
       compactions: lifeStore?.compactions().slice(-5).reverse() ?? [],
       diaryDates: diary.dates(), activityDays: lifeStore?.activityDays() ?? [],
-      mood: deps.moodFile ? moodView(deps.moodFile) : null,
       native,
       update: deps.update?.() ?? null,
       modules: deps.modules?.() ?? null,

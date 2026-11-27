@@ -33,7 +33,7 @@ test('a desktop operation is saved with its own steps, and what does not belong 
   const refused = (change: object, why: RegExp) => assert.throws(() => parseProcedure({ ...POST, ...change }), why);
   refused({ onAlarm: true }, /onAlarm：桌面上的操作不能用/);
   refused({ where: 'web' }, /where：只能是 desktop/);
-  refused({ steps: [{ extract: { list: { css: '.a' }, fields: { a: { css: '.b' } } } }] }, /每一步只能有一个动作（open、click、drag、type、press、scroll、wait）/);
+  refused({ steps: [{ extract: { list: { css: '.a' }, fields: { a: { css: '.b' } } } }] }, /每一步只能有一个动作（open、click、drag、swipe、type、press、scroll、wait）/);
   refused({ steps: [{ press: 'win+r' }] }, /steps\[0\]\.press：不认识按键 win\+r/);
   refused({ steps: [{ type: { text: 'x', x: 3 } }] }, /steps\[0\]\.type\.y：应该是截图上的像素/);
   refused({ steps: [{ click: { x: 1, y: 2, anchor: 'a' } }] }, /不认识 anchor/);
@@ -96,18 +96,21 @@ test('procedure_run replays a desktop operation and hands her the picture it end
 // Daily rewards in a game that only foreground mode can reach: a long press, a drag, a key held.
 const DAILY = {
   name: '每日奖励', category: 'starrail', description: '领列车补给和每日实训', where: 'screen', params: {},
-  steps: [{ open: '崩坏：星穹铁道' }, { click: { x: 640, y: 752, hold: 1 } }, { drag: { x: 300, y: 500, x2: 700, y2: 500, hold: 0.5 } }, { press: 'w', hold: 2 }, { press: 'escape' }],
+  steps: [{ open: '崩坏：星穹铁道' }, { click: { x: 640, y: 752, hold: 1 } }, { drag: { x: 300, y: 500, x2: 700, y2: 500, hold: 0.5 } }, { swipe: { path: [[860, 160], [1080, 160], [860, 330], [1080, 330]] } }, { press: 'w', hold: 2 }, { press: 'escape' }],
 };
 
-test('an operation found on the whole screen is saved with long presses and drags, and replays on a fresh picture of the screen', async () => {
+test('an operation found on the whole screen is saved with long presses, drags and swipes, and replays on a fresh picture of the screen', async () => {
   const procedure = parseProcedure(DAILY);
   assert.equal(procedure.where, 'screen');
   const h = hands();
   assert.deepEqual(await runProcedure(procedure, {}, h), { ok: true, rows: [], values: {} });
   assert.deepEqual(h.done, [
     { action: 'shot' }, { action: 'open', app: '崩坏：星穹铁道' }, { action: 'click', x: 640, y: 752, hold: 1 },
-    { action: 'drag', x: 300, y: 500, x2: 700, y2: 500, hold: 0.5 }, { action: 'press', key: 'w', hold: 2 }, { action: 'press', key: 'escape' },
+    { action: 'drag', x: 300, y: 500, x2: 700, y2: 500, hold: 0.5 }, { action: 'swipe', path: [[860, 160], [1080, 160], [860, 330], [1080, 330]] },
+    { action: 'press', key: 'w', hold: 2 }, { action: 'press', key: 'escape' },
   ], 'measured on a picture of this screen first');
+  assert.throws(() => parseProcedure({ ...DAILY, steps: [{ swipe: { path: [[1, 1]] } }] }), /steps\[0\]\.swipe\.path.*2 到 20 个/);
+  assert.throws(() => parseProcedure({ ...DAILY, steps: [{ swipe: { path: [[1, 1], [2, 2]], seconds: 30 } }] }), /steps\[0\]\.swipe\.seconds/);
   assert.throws(() => parseProcedure({ ...DAILY, steps: [{ press: 'w', hold: 30 }] }), /steps\[0\]\.hold.*最多 10/);
   assert.throws(() => parseProcedure({ ...DAILY, steps: [{ drag: { x: 1, y: 1 } }] }), /steps\[0\]\.drag\.x2/);
   assert.throws(() => parseProcedure({ ...DAILY, where: 'phone' }), /只能是 desktop（后台模式走通的）或 screen（前台模式走通的）/);
@@ -126,6 +129,6 @@ test('procedure_run replays a whole-screen operation only in foreground mode, an
   const screen = hands(), window = hands(), deferred: unknown[] = [];
   const watched = { signal: new AbortController().signal, deferContext: (message: unknown) => { deferred.push(message); } } as never;
   assert.match(String(await make({ desktop: window, screen }).execute({ path: 'starrail/每日奖励', args: {} } as never, watched)), /^做完了。/);
-  assert.equal(screen.done.length, 6); assert.equal(window.done.length, 0);
+  assert.equal(screen.done.length, 7); assert.equal(window.done.length, 0);
   assert.match(JSON.stringify(deferred), /这是操作跑完时伙伴电脑整个屏幕的截图/, 'the last picture is said to be of the whole screen');
 });

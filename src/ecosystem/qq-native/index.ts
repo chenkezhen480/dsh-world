@@ -217,7 +217,7 @@ export interface QqTransportOptions {
 /** One message to send, kept as it was so a retry sends exactly the same. */
 interface Outgoing { kind: 'group' | 'private'; target: string; parts: string | QqPart[] }
 /** What one conversation said while its words were gathering. */
-interface Gathered { text: string; identity: SpeakerIdentity; who: string; images: QqImageSegment[]; messageId: string; quoted?: true }
+interface Gathered { text: string; identity: SpeakerIdentity; who: string; images: QqImageSegment[]; messageId: string; quoted?: true; sentAt?: string }
 
 /**
  * QQ as another way into the same home, without a bridge process in between.
@@ -228,6 +228,8 @@ interface Gathered { text: string; identity: SpeakerIdentity; who: string; image
  */
 export function createQqNativeModule(deps: {
   ctx: Context;
+  /** Her world's zone, for the times she reads in a group's earlier messages. */
+  timeZone?: string;
   home(identity: SpeakerIdentity): Promise<Agent>;
   inWorld?: InWorld;
   /** Whether the session is her home now: what she says there on her own goes to the owner too. */
@@ -243,7 +245,7 @@ export function createQqNativeModule(deps: {
   /** 传输层；不给就用真身（snowluma.js 那条线）。测试靠它把合成事件灌进来。 */
   transport?(options: QqTransportOptions): QqTransport;
 }) {
-  const home = createQqHome({ ctx: deps.ctx, home: deps.home, inWorld: deps.inWorld });
+  const home = createQqHome({ ctx: deps.ctx, home: deps.home, inWorld: deps.inWorld, timeZone: deps.timeZone });
   const seen = recentIds(SEEN_LIMIT);
   // 她说出去的消息 id。有人引用她的话，引用的就是这个 id。
   const sentIds = recentIds(SEEN_LIMIT);
@@ -459,7 +461,7 @@ export function createQqNativeModule(deps: {
     }
     const images = (message.segments ?? []).filter(segment => segment?.type === 'image')
       .slice(0, MAX_KEPT_IMAGES + 1).map(segment => ({ file: segment.data?.file, url: segment.data?.url }));
-    batches.add(key, { text, identity, who: speakerName, images, messageId });
+    batches.add(key, { text, identity, who: speakerName, images, messageId, ...(message.time ? { sentAt: new Date(message.time * 1000).toISOString() } : {}) });
   }
 
   /**
@@ -522,7 +524,7 @@ export function createQqNativeModule(deps: {
       const images = gathered.flatMap(item => item.images.map(image => ({ ...image, identity: item.identity })));
       const reply = await home.ask(text, identity, contexts.get(key) ?? [], images.length
         ? () => admitQqImages(deps.ctx, images, client?.getImage?.bind(client))
-        : undefined, gathered.some(item => item.quoted));
+        : undefined, gathered.some(item => item.quoted), gathered.at(-1)!.sentAt);
       // 这一轮真的开了：前面攒着的那些话，她已经在「别处的动静」里看到过，不再重复报。
       missed.delete(key);
       const words = stripHostNoise(reply.text);
@@ -562,6 +564,7 @@ export function createQqNativeModule(deps: {
   /**
    * 她自己开的一轮（家里的闹钟、世界线）说完的话，也推一份给主人。只看她的家，只看由她自己的时间开起来、
    * 中途没有人说话的那一轮：有人说话的轮次是在回那个人，QQ 进来的话已经由上面那条路原路回过了。
+   * DSH 的排程也算：它和闹钟一样是到点投进来的，没有人在等她回话，不推就没人看得到她这一轮说了什么（#64）。
    */
   function forwardOwnTurns(): () => void {
     const turns = new Map<string, { own: boolean; said: string }>();
@@ -571,8 +574,10 @@ export function createQqNativeModule(deps: {
       const turn = turns.get(session.id);
       if (!turn) return;
       if (event.type === 'user/message') {
-        if (event.data.source.kind === 'dsh-world-life') turn.own = true;
-        else if (event.data.source.kind === 'user') { turns.delete(session.id); return; }
+        // A plain string: `schedule` is only in the types of newer hosts.
+        const kind: string = event.data.source.kind;
+        if (kind === 'dsh-world-life' || kind === 'schedule') turn.own = true;
+        else if (kind === 'user') { turns.delete(session.id); return; }
       }
       if (event.type === 'assistant/message') {
         const text = event.data.message.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n').trim();

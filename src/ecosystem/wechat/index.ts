@@ -6,6 +6,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { jsonObject, knownHost, readBody, sendJson, type JsonResult } from '../../http.ts';
 import { speakerIdentity, type SpeakerIdentity } from '../shared/identity.ts';
 import { durableWrite } from '../../life/lifeStore.ts';
+import { errorText } from '../../faults.ts';
 import { createWechatHome, WechatHomeBusy } from './home.ts';
 import type { PreparedReply, WechatReceipt } from './archive.ts';
 import { channelContext, channelMedia, channelReference, type ChannelContextMessage, type ChannelReference } from '../shared/context.ts';
@@ -21,16 +22,18 @@ import { reassembleOnChange, registerScopedTool, type InWorld } from '../../worl
 
 import { worldPath } from '../../worldRoutes.ts';
 
-export function createWechatModule(deps: { ctx: Context; home(identity: SpeakerIdentity): Promise<Agent>; midTurn?(agent: Agent): boolean; file: string; worldId?: string; inWorld?: InWorld; incomingDir?: string; origin(): string; allowedHosts: readonly string[]; settings?(): { contextMessages: number; bufferSeconds: number }; record?(reply: PreparedReply): Promise<string>; receipt?(receipt: WechatReceipt): Promise<void> }) {
+export function createWechatModule(deps: { ctx: Context; home(identity: SpeakerIdentity): Promise<Agent>; midTurn?(agent: Agent): boolean; file: string; worldId?: string; timeZone?: string; inWorld?: InWorld; incomingDir?: string; origin(): string; allowedHosts: readonly string[]; settings?(): { contextMessages: number; bufferSeconds: number }; record?(reply: PreparedReply): Promise<string>; receipt?(receipt: WechatReceipt): Promise<void> }) {
   const path = worldPath(deps.worldId ?? 'default') + '/wechat/ask';
   const token = randomBytes(32).toString('hex');
   const stickerDir = join(dirname(deps.file), 'stickers');
   const stickers = createStickerLibrary(stickerDir);
   const sending = createWechatSending({ ...deps, file: join(dirname(deps.file), 'wechat-outbox.sqlite'), worldId: deps.worldId ?? 'default', hasSticker: id => stickers.has(id) });
-  const reading = createWechatReading({ target: sending.target, images: (identity, context) => {
+  async function images(identity: SpeakerIdentity, context: ChannelContextMessage[], reference?: ChannelReference) {
+    if (!reference?.image && !context.some(message => message.image || message.reference?.image)) return [];
     if (!deps.incomingDir) throw new Error('Group image directory is unavailable');
-    return admitContextImages(deps.ctx, deps.incomingDir, identity, context);
-  } });
+    return admitContextImages(deps.ctx, deps.incomingDir, identity, context, reference, deps.timeZone);
+  }
+  const reading = createWechatReading({ timeZone: deps.timeZone, target: sending.target, images });
   const stickerTools = createStickerTools({ library: stickers, stagingDir: join(stickerDir, 'incoming'), target: sending.target, ask: reading.ask });
   const presence = createWechatPresence();
   const attached = new Map<Agent, (() => void)[]>();
@@ -40,6 +43,8 @@ export function createWechatModule(deps: { ctx: Context; home(identity: SpeakerI
   let lastContactAt: string | undefined;
   /** What the adapter last said about the WeChat account itself; only the adapter knows whether it is logged in. */
   let accountState: 'online' | 'offline' | undefined;
+  /** Why the last message could not be handed to her, until one is: shown in the console's health, not only the host's log. */
+  let lastFailure: { at: string; error: string } | undefined;
   const settings = () => deps.settings?.() ?? { contextMessages: 5, bufferSeconds: 3 };
   const { inWorld } = deps;
   const inside = (agent: Agent) => !inWorld || inWorld(agent.session);
@@ -73,11 +78,7 @@ export function createWechatModule(deps: { ctx: Context; home(identity: SpeakerI
       reassembleOnChange(deps.ctx, attach),
     ] : [],
   ];
-  const home = createWechatHome({ ...deps, home: async identity => { const agent = await deps.home(identity); attach(agent); return agent; }, images: async (identity, context, reference) => {
-    if (!reference?.image && !context.some(message => message.image || message.reference?.image)) return [];
-    if (!deps.incomingDir) throw new Error('Group image directory is unavailable');
-    return admitContextImages(deps.ctx, deps.incomingDir, identity, context, reference);
-  } });
+  const home = createWechatHome({ ...deps, home: async identity => { const agent = await deps.home(identity); attach(agent); return agent; }, images });
   async function handle(req: IncomingMessage): Promise<JsonResult> {
     const given = req.headers['x-dsh-world-token'];
     if (!knownHost(req.headers.host, deps.allowedHosts) || req.headers['sec-fetch-site'] === 'cross-site' || typeof given !== 'string') return { status: 403, body: { error: 'forbidden' } };
@@ -114,9 +115,15 @@ export function createWechatModule(deps: { ctx: Context; home(identity: SpeakerI
     if ((!text && !media.length && !reference) || [...text].length > 2000) return { status: 400, body: { error: 'bad request' } };
     if (identity.channel !== 'wechat') return { status: 400, body: { error: 'bad channel' } };
     if ((identity.conversationType === 'group') !== identity.conversationId.endsWith('@chatroom')) return { status: 400, body: { error: 'bad conversation type' } };
-    try { return { status: 200, body: { accepted: true, ...(await home.ask(text, identity, context, media, reference)) } }; }
-    catch (error) {
+    try {
+      // When the adapter says when it was sent: an older one leaves it out, and the message is then taken as just sent.
+      const sentAt = typeof body?.sentAt === 'string' && Number.isFinite(Date.parse(body.sentAt)) ? body.sentAt : undefined;
+      const answer = await home.ask(text, identity, context, media, reference, sentAt);
+      lastFailure = undefined;
+      return { status: 200, body: { accepted: true, ...answer } };
+    } catch (error) {
       if (error instanceof WechatHomeBusy) return { status: 409, body: { error: 'home busy; message not taken in, ask again later' } };
+      lastFailure = { at: new Date().toISOString(), error: errorText(error) };
       deps.ctx.logger.warn('dsh-world WeChat request failed:', error); return { status: 503, body: { error: 'home request failed; delivery must be checked before retrying' } };
     }
   }
@@ -124,7 +131,7 @@ export function createWechatModule(deps: { ctx: Context; home(identity: SpeakerI
     /** The quiet groups, for her alarm; groups with unread messages are news from elsewhere instead. */
     presence: (now: Date) => !stopped && accountState === 'online' ? presence.quiet(now) : undefined,
     elsewhere: { look: '微信群用 wechat_history 看', news: now => !stopped && accountState === 'online' ? presence.unread(now) : [] } satisfies ElsewhereSource,
-    status() { return { ...sending.status(), lastContactAt: lastContactAt ?? null, account: accountState ?? null, ...settings() }; },
+    status() { return { ...sending.status(), lastContactAt: lastContactAt ?? null, account: accountState ?? null, lastFailure: lastFailure ?? null, ...settings() }; },
     start() {
       durableWrite(deps.file, JSON.stringify({ origin: deps.origin(), token, path, pid: process.pid, protocol: 4, references: true }, null, 2));
       if (inWorld) for (const agent of deps.ctx.agents.list()) attach(agent);

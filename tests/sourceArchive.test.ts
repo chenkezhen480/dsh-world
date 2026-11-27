@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setImmediate } from 'node:timers/promises';
+import { hostFixture, textResponse } from './hostFixture.ts';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { SessionId, SessionSeq, type SessionEvent, type SessionHeader } from '@deepseek-ai/dsh-session';
 
@@ -216,4 +217,38 @@ test('corrupt session logs are isolated without treating unrelated errors as cor
   // 别的错误照旧往外抛，不能被这道网兜住。
   assert.equal(isCorruptSessionLog(new Error('EACCES: permission denied')), false);
   assert.equal(isCorruptSessionLog(undefined), false);
+});
+
+test('a live session is archived from what it publishes, without reopening its stored log for each message (#68)', async t => {
+  const { ctx, root, cleanup, errors } = await hostFixture(t, () => textResponse('嗯，记下了'));
+  const options = { worldId: 'fish', agentPreset: 'companion', timeZone: 'UTC' };
+  const store = createArchiveStore({ ...options, root }); cleanup.push(() => store.close());
+  const runtime = createWorldRuntime(ctx, options, store, { prompt: { names: { companion: '鱼', partner: '我' } }, isHome: () => false });
+  cleanup.push(() => runtime.stop()); await runtime.start();
+  // The host decodes the whole stored log on each open; a month-old home made that a month of history per message.
+  const persistence = ctx.sessionPersistence, open = persistence.open.bind(persistence), opened: string[] = [];
+  persistence.open = ((id, access) => { opened.push(id); return open(id, access); }) as typeof persistence.open;
+  const { agent } = await ctx.agents.create({ sessionId: SessionId('chat'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } });
+  for (const text of ['第一句', '第二句', '第三句']) { agent.followup(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text }] })); await agent.whenIdle(); }
+  await runtime.flush();
+  assert.deepEqual((await store.readPage({ limit: 20 })).records.map(row => row.content).reverse(), ['第一句', '嗯，记下了', '第二句', '嗯，记下了', '第三句', '嗯，记下了']);
+  assert.equal(store.progress(SessionId('chat')).nextSeq, agent.session.seq, 'the archive reaches the end of the session');
+  assert.deepEqual(opened, [], 'every replay came from what the session published');
+  assert.deepEqual(errors, []);
+});
+
+test('words said before her world listened come from the stored log once, and what follows from the session, without gaps or repeats (#68)', async t => {
+  const { ctx, root, cleanup, errors } = await hostFixture(t, () => textResponse('嗯'));
+  const options = { worldId: 'fish', agentPreset: 'companion', timeZone: 'UTC' };
+  const store = createArchiveStore({ ...options, root }); cleanup.push(() => store.close());
+  const { agent } = await ctx.agents.create({ sessionId: SessionId('chat'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } });
+  const say = async (text: string) => { agent.followup(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text }] })); await agent.whenIdle(); };
+  await say('早到的一句'); await ctx.sessions.flush(agent.session);
+  const runtime = createWorldRuntime(ctx, options, store, { prompt: { names: { companion: '鱼', partner: '我' } }, isHome: () => false });
+  cleanup.push(() => runtime.stop()); await runtime.start();
+  await say('后来的一句'); await say('再后来的一句');
+  await runtime.flush();
+  assert.deepEqual((await store.readPage({ limit: 20 })).records.map(row => row.content).reverse(), ['早到的一句', '嗯', '后来的一句', '嗯', '再后来的一句', '嗯']);
+  assert.equal(store.progress(SessionId('chat')).nextSeq, agent.session.seq);
+  assert.deepEqual(errors, []);
 });

@@ -67,6 +67,22 @@ test('the upgrade command is filled in from what DSH says about this machine: it
   assert.match(sh.command, /curl -fL -o "\$archive" 'https:\/\/registry\.npmjs\.org\/x\.tgz' &&\ntar -xzf "\$archive" -C "\$work" package\/scripts\/update-world\.mjs &&\n'\/Applications\/DSH\/node' "\$work\/package\/scripts\/update-world\.mjs" --profile '\/Users\/o'\\''neil\/\.dsh\/profiles\/desktop'/);
 });
 
+test('DSH Next runs the updater with its own executable in Node mode', () => {
+  const node = 'D:\\Apps\\DSH NEXT\\DSH NEXT.exe';
+  const pnpm = 'D:\\Apps\\DSH NEXT\\resources\\app.asar.unpacked\\node_modules\\pnpm\\bin\\pnpm.mjs';
+  const profile = { dir: 'C:\\DSH Data\\profiles\\desktop', name: 'desktop', packageManager: {
+    command: node, args: ['--expose-internals', pnpm], env: { ELECTRON_RUN_AS_NODE: '1' },
+  } };
+  const tools = upgradeTools(profile, 'win32', () => false)!;
+  assert.equal(tools.node, node);
+  const url = 'https://registry.npmjs.org/dsh-world/-/dsh-world-0.8.5.tgz';
+  const windows = upgradeCommand(tools, '0.8.5', url).command;
+  assert.match(windows, /\$env:ELECTRON_RUN_AS_NODE = '1'\s+& 'D:\\Apps\\DSH NEXT\\DSH NEXT.exe'/);
+  assert.match(windows, /finally \{ \$env:ELECTRON_RUN_AS_NODE = \$previousNodeMode \}/);
+  const mac = upgradeCommand({ ...tools, platform: 'darwin', node: '/Applications/DSH NEXT.app/Contents/MacOS/DSH NEXT' }, '0.8.5', url).command;
+  assert.match(mac, /ELECTRON_RUN_AS_NODE=1 '\/Applications\/DSH NEXT\.app\/Contents\/MacOS\/DSH NEXT'/);
+});
+
 test('a newer release comes with the command, using the address npm gives for it; an older or equal one has none', async () => {
   const tools = { platform: 'win32' as const, profileDir: 'C:\\p', pnpm: 'C:\\pnpm.mjs', node: 'node' };
   const release = (version: string, tarball: string) => async () => new Response(JSON.stringify({ version, dist: { tarball } }), { status: 200 });

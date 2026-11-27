@@ -22,7 +22,8 @@ export interface WorldPromptSource {
   memory?: import('./memory.ts').MemoryService;
   /** News from where she is not, told to her world sessions. */
   elsewhere?: import('./elsewhere.ts').Elsewhere;
-  experience?: ReturnType<typeof import('./experience/host.ts').createExperience>;
+  /** Her partner's own accounts on other apps (`channel:id`), so her memory says it was them. */
+  partnerAccounts?(): ReadonlySet<string>;
 }
 /** Her persona, template and 「我」 as last read for one session. */
 interface Sources { persona: string; names: WorldNames; template: string; self?: { file: string; text: string } }

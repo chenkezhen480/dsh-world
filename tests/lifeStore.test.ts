@@ -27,6 +27,7 @@ test('activity is split by local day and a failed write marks the next record as
   assert.ok(store.appendActivity({ ...base, time: '2026-10-22T15:30:00.000Z' }));
   assert.deepEqual(store.activityDays(), ['2026-10-23']);
   assert.equal(store.activity('2026-10-23').length, 1);
+  assert.equal(store.activity('2026-10-23')[0].time, '2026-10-23T00:30:00+09:00', 'written in her own time with its offset, not as UTC');
   assert.deepEqual(store.activity('../life'), []);
   await rm(join(root, 'activity'), { recursive: true }); await writeFile(join(root, 'activity'), 'not a directory');
   assert.equal(store.appendActivity({ ...base, time: '2026-10-23T01:00:00.000Z' }), false);

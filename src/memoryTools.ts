@@ -3,8 +3,9 @@ import type { AttachmentStore } from '@deepseek-ai/dsh-attachment';
 import { defineTool, type ToolDefinition } from '@deepseek-ai/dsh-tools';
 import { errorText, type Faults } from './faults.ts';
 import { imagesMessage, shortenArchivedImages, shownImage, storedImage } from './images.ts';
-import type { MemoryPage, MemoryService } from './memory.ts';
+import { findOrder, type MemoryPage, type MemoryService } from './memory.ts';
 import type { MemoryOrigin } from './memoryStore.ts';
+import { GROUP_PRIVACY } from './history.ts';
 import type { PageRelations } from './wiki.ts';
 import { OutsideWorldError, registerScopedTool } from './worldScope.ts';
 
@@ -30,7 +31,7 @@ function compactRelated(related: PageRelations | undefined) {
  * down (他说「房子」，日记里写的是「两居室」). Measured: with months of diary she took five misses for "never said".
  */
 export const NO_LITERAL_MATCH = '照字面没找到。原文可能用的是别的说法：换个词再找，或者不带 query，用 kinds 和 from / to 按时间翻那几天的日记和聊天。';
-function compactFind(page: MemoryPage, query: unknown) {
+function compactFind(page: MemoryPage, query: unknown, inGroup: boolean) {
   return {
     items: page.items.map(item => ({
       ref: item.ref, time: item.time, kind: item.kind, ...(item.kind === 'conversation' ? {} : { title: item.title }),
@@ -39,11 +40,15 @@ function compactFind(page: MemoryPage, query: unknown) {
     })),
     ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
     ...(page.coverage.state === 'ready' ? {} : { coverage: page.coverage }),
-    ...(!page.items.length && query ? { note: NO_LITERAL_MATCH } : {}),
+    ...(!page.items.length && query ? { note: NO_LITERAL_MATCH } : page.items.length && inGroup ? { note: GROUP_PRIVACY } : {}),
   };
 }
-/** `looked`: she paged the newest lines of one chat source (no query, newest first, first page), so it is caught up. */
-export function memoryTools(service: MemoryService, inside: () => boolean, looked?: (sourceId: string) => void, images?: () => AttachmentStore | undefined): ToolDefinition[] {
+/**
+ * `looked`: she paged the newest lines of one chat source (no query, newest first, first page), so it is caught up.
+ * `inGroup`: the session is a group. What she finds is still all hers to read, since a group needs what she lived at
+ * home to sound like her; what she found comes with the reminder that knowing it is not the same as telling it (#71).
+ */
+export function memoryTools(service: MemoryService, inside: () => boolean, looked?: (sourceId: string) => void, images?: () => AttachmentStore | undefined, inGroup: () => boolean = () => false): ToolDefinition[] {
   const checked = async <T>(work: () => Promise<T>): Promise<T> => {
     if (!inside()) throw new OutsideWorldError();
     const result = await work();
@@ -53,7 +58,7 @@ export function memoryTools(service: MemoryService, inside: () => boolean, looke
   return [
     defineTool({
       name: 'memory_find',
-      description: `在我自己的长期记忆里按线索查找：原始聊天（conversation）、日记（diary）${service.wiki.dir ? '和认识（wiki）' : ''}。${service.wiki.dir ? '认识是我对人和事现在的理解，这里能照字面搜到哪一页提到过什么；要看整页和它连着哪些页，用 wiki_open 写页名（结果里的 related 就是这些关系）。' : ''}query 是要在原文里照字面找的一小段话（区分大小写，不是搜索语法）；没有 query 就按时间或来源翻页。kinds 限定种类；from / to 是带时区的 ISO 时间，左闭右开（日期请换成当天零点，如 2026-10-30T00:00:00+08:00）；time 的含义看 timeBasis：聊天是发言时间，日记是文件名里的日期（文件名没有日期时是它最后改动的时间，不一定是事情发生的时间）。sourceId 限定来源；turnId 取同一轮的全部发言。limit 默认 8、最多 100；返回 nextCursor 就用 cursor 翻下一页，返回 cursorExpired 说明资料变了、要重新查。零命中不等于从没发生过：返回里若带 coverage，说明有来源没能读到。每条结果的 text 只是摘录，要看原文用它的 ref 调 memory_read。`,
+      description: `什么时候查：对方提到一个人、一样东西或一件以前的事，眼前又没有它的细节，就先查再接话；要说「没有」「从没」「第一次」「不认识」之前，也先查一次，查不到再这么说。在我自己的长期记忆里按线索查找：原始聊天（conversation）、日记（diary）${service.wiki.dir ? '和认识（wiki）' : ''}。文件只看${service.wiki.dir ? '日记和认识这两个文件夹' : '日记文件夹'}里的，不进子文件夹；房间里别的文件不在这里，用 grep 照字面找，写完就找得到，不用另建索引。${service.wiki.dir ? '认识是我对人和事现在的理解，这里能照字面搜到哪一页提到过什么；要看整页和它连着哪些页，用 wiki_open 写页名（结果里的 related 就是这些关系）。' : ''}query 是要在原文里照字面找的一小段话（区分大小写，不是搜索语法）；没有 query 就按时间或来源翻页。kinds 限定种类；from / to 是带时区的 ISO 时间，左闭右开（日期请换成当天零点，如 2026-10-30T00:00:00+08:00）；time 的含义看 timeBasis：聊天是发言时间，日记是文件名里的日期（文件名没有日期时是它最后改动的时间，不一定是事情发生的时间）。sourceId 限定来源；turnId 取同一轮的全部发言。limit 默认 8、最多 100；返回 nextCursor 就用 cursor 翻下一页，返回 cursorExpired 说明资料变了、要重新查。零命中不等于从没发生过：返回里若带 coverage，说明有来源没能读到。每条结果的 text 只是摘录，要看原文用它的 ref 调 memory_read。`,
       parameters: {
         query: { type: 'string' }, kinds: { type: 'array', items: { type: 'string' } }, from: { type: 'string' }, to: { type: 'string' }, sourceId: { type: 'string' }, turnId: { type: 'string' },
         linkedTo: { type: 'string' }, order: { type: 'string' }, limit: { type: 'integer' }, cursor: { type: 'string' },
@@ -61,8 +66,8 @@ export function memoryTools(service: MemoryService, inside: () => boolean, looke
       output,
       execute: async input => {
         const { sourceId, query, cursor, order } = input as Record<string, unknown>;
-        const found = compactFind(await checked(() => service.find({ limit: TOOL_FIND_LIMIT, ...(input as Record<string, unknown>) })), query);
-        if (typeof sourceId === 'string' && sourceId.startsWith('chat:') && !query && !cursor && (order ?? 'newest') === 'newest') looked?.(sourceId);
+        const found = compactFind(await checked(() => service.find({ limit: TOOL_FIND_LIMIT, ...(input as Record<string, unknown>) })), query, inGroup());
+        if (typeof sourceId === 'string' && sourceId.startsWith('chat:') && !query && !cursor && findOrder(order) === 'newest') looked?.(sourceId);
         return JSON.stringify(found);
       },
     }),
@@ -73,7 +78,7 @@ export function memoryTools(service: MemoryService, inside: () => boolean, looke
       output,
       execute: async input => {
         const found = await checked(() => service.read({ limit: TOOL_READ_LIMIT, ...(input as Record<string, unknown>) }));
-        return JSON.stringify({ ref: found.ref, kind: found.kind, title: found.title, time: found.time, ...(who(found.origin) ? { who: who(found.origin) } : {}), ...(found.turnId ? { turnId: found.turnId } : {}), content: shortenArchivedImages(found.content), offset: found.offset, ...(found.nextOffset === undefined ? {} : { nextOffset: found.nextOffset }), totalChars: found.totalChars, ...compactRelated(found.related) });
+        return JSON.stringify({ ref: found.ref, kind: found.kind, title: found.title, time: found.time, ...(who(found.origin) ? { who: who(found.origin) } : {}), ...(found.turnId ? { turnId: found.turnId } : {}), content: shortenArchivedImages(found.content), offset: found.offset, ...(found.nextOffset === undefined ? {} : { nextOffset: found.nextOffset }), totalChars: found.totalChars, ...compactRelated(found.related), ...(inGroup() ? { note: GROUP_PRIVACY } : {}) });
       },
     }),
     // Her own pages by the name she gave them: the catalog she sees names them, and a name needs no ref first.
@@ -84,7 +89,7 @@ export function memoryTools(service: MemoryService, inside: () => boolean, looke
       output,
       execute: async input => {
         const found = await checked(() => service.wiki.open({ limit: TOOL_READ_LIMIT, ...(input as Record<string, unknown>) }));
-        return JSON.stringify({ title: found.title, time: found.time, content: found.content, offset: found.offset, ...(found.nextOffset === undefined ? {} : { nextOffset: found.nextOffset }), totalChars: found.totalChars, ...compactRelated(found.related) });
+        return JSON.stringify({ title: found.title, time: found.time, content: found.content, offset: found.offset, ...(found.nextOffset === undefined ? {} : { nextOffset: found.nextOffset }), totalChars: found.totalChars, ...compactRelated(found.related), ...(inGroup() ? { note: GROUP_PRIVACY } : {}) });
       },
     })] : [],
     // A picture in memory is one line naming the stored object; the line itself is what brings it back, so nothing is looked up.
@@ -103,7 +108,7 @@ export function memoryTools(service: MemoryService, inside: () => boolean, looke
 }
 
 /**
- * Gives world sessions their tools (long-term memory, her mood), whatever the life line does: a session has them
+ * Gives world sessions their long-term memory tools, whatever the life line does: a session has them
  * while it is in her world, and loses them when it leaves. A registration that fails is a fault, never a broken agent.
  */
 export function createWorldToolRegistry(deps: { tools(inside: () => boolean, agent: Agent): ToolDefinition[]; inWorld(agent: Agent): boolean; faults: Faults; logger: { error(...args: unknown[]): void } }) {

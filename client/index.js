@@ -433,9 +433,9 @@
           h('button', { className: 'dw-btn', onClick: save }, '保存')),
         h(Status, { msg: msg }))
     }
-    /** 记忆块带最近几轮：默认 200，下次开始对话或压缩之后生效；隔多少小时没开口就重新读：默认 24，下一轮生效。 */
+    /** 记忆块带最近几轮：默认 100，下次开始对话或压缩之后生效；隔多少小时没开口就重新读：默认 24，下一轮生效。 */
     function Memory(props) {
-      var mem = props.mem, window_ = mem && mem.windowTurns || 200
+      var mem = props.mem, window_ = mem && mem.windowTurns || 100
       var activeScope = mem && mem.archiveScope || 'workspace'
       var scopeNames = { home: '仅家会话', workspace: '家所在工作区' }
       var scopeState = useState(mem && mem.selectedArchiveScope || activeScope), scope = scopeState[0], setScope = scopeState[1]
@@ -444,8 +444,8 @@
       var msgState = useState(''), msg = msgState[0], setMsg = msgState[1]
       function save() {
         var text = String(draft).trim(), value = text === '' ? null : Number(text)
-        if (value !== null && !(Number.isInteger(value) && value >= 1)) { setMsg('请填一个不小于 1 的整数，留空恢复默认 200'); return }
-        post('memory', { turns: value }).then(function () { setMsg('已保存。下次开始对话或压缩之后生效。'); if (value === null) setDraft('200'); if (props.onSaved) props.onSaved() }, failedTo(setMsg))
+        if (value !== null && !(Number.isInteger(value) && value >= 1)) { setMsg('请填一个不小于 1 的整数，留空恢复默认 100'); return }
+        post('memory', { turns: value }).then(function () { setMsg('已保存。下次开始对话或压缩之后生效。'); if (value === null) setDraft('100'); if (props.onSaved) props.onSaved() }, failedTo(setMsg))
       }
       function saveCold() {
         var text = String(cold).trim(), value = text === '' ? null : Number(text)
@@ -565,13 +565,25 @@
       }
       function save() {
         var c = String(context).trim() === '' ? null : Number(context), b = String(buffer).trim() === '' ? null : Number(buffer)
-        if (c !== null && !(Number.isInteger(c) && c >= 1 && c <= 20)) { setMsg('请填 1–20 的整数，留空恢复默认 8'); return }
+        if (c !== null && !(Number.isInteger(c) && c >= 1 && c <= 20)) { setMsg('请填 1–20 的整数，留空恢复默认 5'); return }
         if (b !== null && !(b >= 0 && b <= 30)) { setMsg('请填 0–30 秒，留空恢复默认 3'); return }
         post('wechat', { contextMessages: c, bufferSeconds: b }).then(function () {
           setMsg('已保存。适配器下次轮询时同步，当前这一批沿用原值。')
-          if (c === null) setContext('8'); if (b === null) setBuffer('3')
+          if (c === null) setContext('5'); if (b === null) setBuffer('3')
           if (props.onSaved) props.onSaved()
         }, failedTo(setMsg))
+      }
+      // 选的是哪个私聊是伙伴自己的微信；适配器没连上时名单是空的，已选的那个照样列着。
+      var partnerMsgState = useState(''), partnerMsg = partnerMsgState[0], setPartnerMsg = partnerMsgState[1]
+      var chats = (w.privateChats || []).slice()
+      if (w.partner && !chats.some(function (c) { return c.id === w.partner })) chats.unshift({ id: w.partner, name: w.partner })
+      function choosePartner(e) {
+        var id = e.target.value
+        setPartnerMsg('正在保存…')
+        post('wechat', { partner: id || null }).then(function () {
+          setPartnerMsg(id ? '已保存。她下次重读记忆时（新会话、压缩后），你在微信上说的话就写成你说的。' : '已取消。')
+          if (props.onSaved) props.onSaved()
+        }, failedTo(setPartnerMsg))
       }
       return h(Card, { title: '微信', delay: 300 },
         h('div', null, h('span', { className: 'dw-big ' + (contacted && !offline ? 'dw-ok' : 'dw-bad') }, stateText)),
@@ -587,11 +599,17 @@
         blocked ? h('div', { className: 'dw-bad' }, '上次有消息处理到一半、结果不明。先在微信里核对是否真的发出，再用适配器的 acknowledge 确认（见适配器 README），然后点下面的重启。') : null,
         ad ? h('div', { className: 'dw-bar' }, h('button', { className: 'dw-btn', onClick: restartAdapter }, '重启适配器'), adMsg ? h('span', { className: adMsg.indexOf('失败') >= 0 ? 'dw-bad' : 'dw-muted' }, adMsg) : null) : null,
         h('div', { className: 'dw-setting' },
-          h('input', { type: 'text', inputMode: 'numeric', 'aria-label': '群聊读取上文条数', placeholder: '上文条数，默认 8', value: context, onChange: function (e) { setContext(e.target.value); setMsg('') } }),
+          h('input', { type: 'text', inputMode: 'numeric', 'aria-label': '群聊读取上文条数', placeholder: '上文条数，默认 5', value: context, onChange: function (e) { setContext(e.target.value); setMsg('') } }),
           h('input', { type: 'text', inputMode: 'decimal', 'aria-label': '消息缓冲秒数', placeholder: '缓冲秒数，默认 3', value: buffer, onChange: function (e) { setBuffer(e.target.value); setMsg('') } }),
           h('button', { className: 'dw-btn', onClick: save }, '保存')),
         h('div', { className: 'dw-muted' }, '上文按消息条数算（群聊被 @ 时带上之前几条）；缓冲是收到消息后等对方说完的秒数：同一个人在这段时间里又发来消息就重新计时，安静下来再合成一条交给她（最长等 30 秒），0 = 不等。与共享记忆的 200 轮无关。'),
-        h(Status, { msg: msg }))
+        h(Status, { msg: msg }),
+        h('div', { className: 'dw-setting' },
+          h('label', null, '你的微信 ', h('select', { value: w.partner || '', 'aria-label': '伙伴的微信', onChange: choosePartner },
+            h('option', { value: '' }, '不设'),
+            chats.map(function (c) { return h('option', { key: c.id, value: c.id }, c.name || c.id) })))),
+        h('div', { className: 'dw-muted' }, '选你自己和她的那个私聊：她的记忆里，你在微信上说的话就写成你说的。不选的话，写的是这个私聊里对方的微信昵称。'),
+        h(Status, { msg: partnerMsg }))
     }
     /** QQ：她自己那条 OneBot 通道（原生），以及 SnowLuma 控制台的入口。 */
     function Qq(props) {
@@ -1069,25 +1087,10 @@
         h('div', null, h('b', null, category.name), h('span', { className: 'dw-muted' }, category.guide ? ' · 她写了说明' : ' · 还没写说明')),
         operations.length ? operations.map(function (p) { return h('div', { key: p.name, className: p.last && !p.last.ok ? 'dw-bad' : 'dw-muted' }, p.name + ' · ' + p.description + (p.onAlarm ? '（闹钟前）' : '') + (p.last ? (p.last.ok ? ' · 最近成功' : ' · 最近失败：' + (p.last.detail || '')) : '')) }) : h('div', { className: 'dw-muted' }, '这一类还没有操作'))
     }
-    // Read-only: what she wrote in mood.md and reads before each turn's time block. Only she changes it.
-    function Mood(props) {
-      var mood = props.mood
-      return !mood || mood.kind === 'none' ? h('div', { className: 'dw-muted' }, '她还没有写 mood.md')
-        : mood.kind === 'failed' ? h('div', { className: 'dw-bad' }, 'mood.md 读不出来：' + mood.message)
-        : [
-          h('div', { key: 'v', className: 'dw-trail' }, list(mood.values).map(function (v) { return h('span', { key: v.name, className: v.value ? null : 'dw-muted' }, v.name + ' ' + v.value) })),
-          list(mood.trivia).length ? h('div', { key: 't', style: { marginTop: 8 } }, '旁边：' + list(mood.trivia).join('；') + (mood.cut ? '……后面还有' : '')) : null,
-          list(mood.outside).length ? h('div', { key: 'o', className: 'dw-muted' }, list(mood.outside).join('、') + ' 不在固定的心情里，没有算进去') : null,
-          mood.unread ? h('div', { key: 'u', className: 'dw-muted' }, '有 ' + mood.unread + ' 行没读懂，她在快照里能看到') : null,
-          h('div', { key: 'at', className: 'dw-muted', style: { marginTop: 8 } }, mood.updatedAt ? '她最后改于 ' + local(mood.updatedAt, props.zone) : ''),
-        ]
-    }
-    // Her mood sits with the plugin's faults: one place to see how things are with her.
     function Health(props) {
       var faults = list(props.faults)
       return h(Card, { title: '健康', delay: 120 },
-        faults.length ? faults.map(function (f, i) { return h('div', { key: i, className: 'dw-bad' }, '● ' + f) }) : h('div', { className: 'dw-ok' }, '● 一切正常'),
-        props.mood ? h('div', { style: { marginTop: 12 } }, KV([['心情', h(Mood, { mood: props.mood, zone: props.zone })]])) : null)
+        faults.length ? faults.map(function (f, i) { return h('div', { key: i, className: 'dw-bad' }, '● ' + f) }) : h('div', { className: 'dw-ok' }, '● 一切正常'))
     }
     /** 有新版本时最上面的一行：只提示，升级要先退出 DSH，按升级说明做。没查到就说没查到，不冒充「已是最新」。 */
     function UpdateNotice(props) {
@@ -1136,7 +1139,7 @@
             ['最近', wakes.length ? h('div', { className: 'dw-trail' }, wakes.map(function (w, i) { return h('span', { key: i }, local(w.deliveredAt, zone) + ' ' + (sourceLabel[w.source] || w.source) + (w.lateMs >= 120000 ? ' · 晚 ' + Math.round(w.lateMs / 60000) + ' 分' : '')) })) : '—'],
           ]))) : null,
         h('div', { className: 'dw-grid' },
-          h(Health, { faults: snap.health, mood: snap.mood, zone: zone }),
+          h(Health, { faults: snap.health }),
           h(Budget, { budget: snap.budget, zone: zone, onSaved: props.refresh }),
           h(Memory, { mem: mem, onSaved: props.refresh }),
           h(CompactionPreset, { info: snap.compactionPreset, refresh: props.refresh }),

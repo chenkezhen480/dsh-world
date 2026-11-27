@@ -22,15 +22,18 @@ export interface UpdateStatus {
 }
 
 /** What the upgrade command needs from this machine: the profile, and DSH's own pnpm and Node. */
-export interface UpgradeTools { platform: NodeJS.Platform; profileDir: string; pnpm: string; node: string }
+export interface UpgradeTools { platform: NodeJS.Platform; profileDir: string; pnpm: string; node: string; electron?: boolean }
 /**
- * This machine's tools as DSH reports them: the profile, and the pnpm DSH runs it with. DSH ships its Node beside that
- * pnpm (`dependencies/node` next to `dependencies/pnpm`), so nobody has to install one; without it, the Node on PATH.
+ * Use the host's Node-mode Electron launcher when reported by DSH Next. Other editions may ship Node beside pnpm.
  * Undefined when DSH does not say where its pnpm is, and then the partner fills the command in from the instructions.
  */
 export function upgradeTools(profile: ProfileContext | undefined, platform: NodeJS.Platform = process.platform, exists: (path: string) => boolean = existsSync): UpgradeTools | undefined {
   const pnpm = profile?.packageManager?.args?.find(arg => /pnpm\.(c|m)?js$/i.test(arg));
   if (!profile?.dir || !pnpm) return undefined;
+  const manager = profile.packageManager;
+  if (manager?.command && manager.env?.ELECTRON_RUN_AS_NODE === '1') {
+    return { platform, profileDir: profile.dir, pnpm, node: manager.command, electron: true };
+  }
   const path = platform === 'win32' ? win32 : posix;
   const bundled = path.join(path.dirname(path.dirname(path.dirname(pnpm))), 'node', 'bin', platform === 'win32' ? 'node.exe' : 'node');
   return { platform, profileDir: profile.dir, pnpm, node: exists(bundled) ? bundled : 'node' };
@@ -45,6 +48,7 @@ export function upgradeCommand(tools: UpgradeTools, version: string, tarball: st
   const archive = `dsh-world-${version}.tgz`;
   if (tools.platform === 'win32') {
     const q = quotePowerShell;
+    const invoke = `& ${q(tools.node)} (Join-Path $work ${q(UPDATER_ENTRY)}) --profile ${q(tools.profileDir)} --package $archive --pnpm ${q(tools.pnpm)}`;
     return {
       shell: 'PowerShell',
       command: [
@@ -58,7 +62,15 @@ export function upgradeCommand(tools: UpgradeTools, version: string, tarball: st
         // GNU tar (first on PATH for some) reads the `C:` of an archive path as a remote host; from its own folder every tar works.
         '  Push-Location $work',
         `  try { tar -xzf ${q(archive)} ${UPDATER_ENTRY} } finally { Pop-Location }`,
-        `  & ${q(tools.node)} (Join-Path $work ${q(UPDATER_ENTRY)}) --profile ${q(tools.profileDir)} --package $archive --pnpm ${q(tools.pnpm)}`,
+        "  if ($LASTEXITCODE -ne 0) { throw '无法解压更新脚本，请重新下载更新包。' }",
+        ...(tools.electron ? [
+          '  $previousNodeMode = $env:ELECTRON_RUN_AS_NODE',
+          '  try {',
+          "    $env:ELECTRON_RUN_AS_NODE = '1'",
+          // Piping output makes Windows PowerShell wait for the GUI executable to finish.
+          `    ${invoke} | Out-Host`,
+          '  } finally { $env:ELECTRON_RUN_AS_NODE = $previousNodeMode }',
+        ] : [`  ${invoke}`]),
         '}',
       ].join('\n'),
     };
@@ -73,7 +85,7 @@ export function upgradeCommand(tools: UpgradeTools, version: string, tarball: st
       'mkdir -p "$work" &&',
       `curl -fL -o "$archive" ${q(tarball)} &&`,
       `tar -xzf "$archive" -C "$work" ${UPDATER_ENTRY} &&`,
-      `${q(tools.node)} "$work/${UPDATER_ENTRY}" --profile ${q(tools.profileDir)} --package "$archive" --pnpm ${q(tools.pnpm)}`,
+      `${tools.electron ? 'ELECTRON_RUN_AS_NODE=1 ' : ''}${q(tools.node)} "$work/${UPDATER_ENTRY}" --profile ${q(tools.profileDir)} --package "$archive" --pnpm ${q(tools.pnpm)}`,
     ].join('\n'),
   };
 }

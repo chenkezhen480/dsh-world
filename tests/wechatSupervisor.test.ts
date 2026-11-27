@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { EventEmitter } from 'node:events';
-import { appendFileSync, mkdtempSync, rmSync, writeFileSync, readdirSync } from 'node:fs';
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ChildProcess } from 'node:child_process';
@@ -10,12 +10,13 @@ import { createAdapterSupervisor } from '../src/ecosystem/wechat/supervisor.ts';
 class FakeChild extends EventEmitter { pid: number; constructor(pid: number) { super(); this.pid = pid; } }
 function setup(t: test.TestContext) {
   const dir = mkdtempSync(join(tmpdir(), 'dsh-world-supervisor-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const python = join(dir, 'python.exe'), config = join(dir, 'config.json'), script = join(dir, 'adapter.py');
+  const python = join(dir, 'python.exe'), config = join(dir, 'config.json'), script = join(dir, 'package', 'adapter.py');
+  mkdirSync(join(dir, 'package'));
   for (const file of [python, config, script]) writeFileSync(file, '');
-  const children: FakeChild[] = [], launches: { command: string; args: string[] }[] = [], logs: string[] = [], killed: number[] = [];
+  const children: FakeChild[] = [], launches: { command: string; args: string[]; cwd: string }[] = [], logs: string[] = [], killed: number[] = [];
   const supervisor = createAdapterSupervisor({
     python, config, script, logFile: join(dir, 'adapter.log'), minDelayMs: 5, maxDelayMs: 20, log: message => logs.push(message),
-    spawnProcess: ((command: string, args: string[]) => { launches.push({ command, args }); const child = new FakeChild(100 + children.length); children.push(child); return child; }) as never,
+    spawnProcess: ((command: string, args: string[], options: { cwd: string }) => { launches.push({ command, args, cwd: options.cwd }); const child = new FakeChild(100 + children.length); children.push(child); return child; }) as never,
     killTree: (child: ChildProcess) => { killed.push(child.pid!); queueMicrotask(() => child.emit('exit', null, 'SIGKILL')); },
   });
   return { dir, python, config, script, children, launches, logs, killed, supervisor };
@@ -23,11 +24,12 @@ function setup(t: test.TestContext) {
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 test('the adapter starts with the bound config and an explicit send permission, and stops with its whole tree', async t => {
-  const { supervisor, launches, python, config, script, children, killed } = setup(t);
+  const { supervisor, launches, dir, python, config, script, children, killed } = setup(t);
   supervisor.start();
   assert.equal(launches.length, 1);
   assert.equal(launches[0]!.command, python);
   assert.deepEqual(launches[0]!.args, ['-X', 'utf8', '-u', script, 'watch', '--config', config, '--allow-send']);
+  assert.equal(launches[0]!.cwd, dir, 'it works beside its config, not inside the package an install replaces');
   assert.deepEqual(supervisor.status(), { running: true, pid: 100, restarts: 0, lastExit: null, error: null, needsHuman: false, building: false });
   await supervisor.stop();
   assert.deepEqual(killed, [children[0]!.pid]);

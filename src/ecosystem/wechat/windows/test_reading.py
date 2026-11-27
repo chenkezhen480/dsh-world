@@ -80,13 +80,19 @@ class ReadingTest(unittest.TestCase):
             if not cursor: break
         self.assertEqual(len(seen), 20); self.assertEqual(len(set(seen)), 20)
 
-    def test_system_events_are_not_attributed_to_people_and_unknown_real_senders_fail_explicitly(self):
+    def test_system_events_and_lines_that_name_nobody_are_left_out_without_breaking_the_page(self):
         self.rows.insert(0, {**row(9), 'type': '系统消息', 'sender_username': '', 'content': '<sysmsg>成员变动</sysmsg>'})
         page = readHistory(self.database, self.config, self.request)
         self.assertNotIn('m.db:9', [entry['id'] for entry in page['messages']])
+        # A pat card names nobody: nobody is guessed for it, and it no longer fails the whole page (#70).
         self.rows[0]['type'] = '文本'
-        with self.assertRaisesRegex(ValueError, '发送者未解析'):
-            readHistory(self.database, self.config, self.request)
+        for card in ('文本', '链接'):
+            with self.subTest(card=card):
+                self.rows[0]['type'] = card
+                page = readHistory(self.database, self.config, self.request)
+                ids = [entry['id'] for entry in page['messages']]
+                self.assertNotIn('m.db:9', ids)
+                self.assertEqual(ids[-1], 'm.db:8', 'the lines around it are read as before')
 
     def test_reads_and_sends_share_one_poll_without_advancing_the_receive_cursor(self):
         from adapter import MessageStore, flushOutgoing

@@ -35,9 +35,13 @@ export function createScreen(deps: {
   const actions = createActions({
     kind: 'screen', settleMs: deps.settleMs ?? SETTLE_MS, unseen: '还没看过屏幕：先 desktop shot', subject: () => '整个屏幕',
     picture: async framing => ({ shot: await hands('screen', { ...framing }) }),
+    front: async () => {
+      const listed = await eyes('windows'), hwnd = Number(listed.foreground);
+      return { hwnd, title: (listed.windows as Listed[] | undefined)?.find(window => window.hwnd === hwnd)?.title };
+    },
     input: {
       click: (at, how) => hands('rclick', { ...at, ...how }),
-      drag: (from, to, how) => hands('rdrag', { x: from.x, y: from.y, x2: to.x, y2: to.y, ...how }),
+      stroke: (points, how) => hands('rstroke', { xs: points.map(point => point.x), ys: points.map(point => point.y), ...how }),
       type: text => hands('rtype', { text }),
       key: (key, hold) => hands('rkey', { ...key, ...(hold === undefined ? {} : { hold }) }),
       scroll: (at, up, right) => hands('rscroll', { ...at, up, right }),
@@ -66,7 +70,7 @@ export function createScreen(deps: {
     recording, what: () => '整个屏幕', keep: '',
     target: async () => ({
       key: 'screen', app: '屏幕',
-      capture: async (file, edge) => String((await hands('screen', { file, edge, grow: 1, x: 0, y: 0, w: 0, h: 0, markX: -1, markY: -1 })).print ?? ''),
+      capture: async (file, edge) => String((await hands('screen', { file, edge, grow: 1, x: 0, y: 0, w: 0, h: 0, marks: [] })).print ?? ''),
       space: () => hands('rkey', { vk: VK.space, modifiers: [] }),
     }),
   });

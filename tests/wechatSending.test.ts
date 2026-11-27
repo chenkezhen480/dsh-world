@@ -138,6 +138,7 @@ test('a desktop turn can send to either bound chat through persistent tools and 
 
 test('a desktop turn reads an unmentioned group, sends to that chatId and checks the existing receipt tool', async t => {
   let step = 0;
+  let historyOccurredAt: string | undefined;
   const requests: GenerateOptions[] = [];
   const { ctx, root, cleanup, errors } = await hostFixture(t, request => {
     requests.push(request);
@@ -145,6 +146,7 @@ test('a desktop turn reads an unmentioned group, sends to that chatId and checks
     if (step++ === 0) return call('wechat_history', { chatId: 'family@chatroom', limit: 3 });
     if (step === 2) {
       assert.equal(result().messages[0].text, '今晚吃面');
+      historyOccurredAt = result().messages[0].occurredAt;
       return call('wechat_send', { chatId: result().chatId, messages: [{ type: 'text', text: '我也想吃面' }] });
     }
     if (step === 3) return call('wechat_delivery', { id: result().id });
@@ -154,7 +156,7 @@ test('a desktop turn reads an unmentioned group, sends to that chatId and checks
   const agent = (await ctx.agents.create({ sessionId: SessionId('reader'), agentOptions: { provider: 'test', model: 'test' } })).agent;
   const file = join(root, 'wechat.json');
   await createStickerLibrary(join(root, 'stickers')).add(Buffer.concat([Buffer.from('GIF89a'), Buffer.from('hello sticker....')]), { id: 'st_hello', tags: ['你好'] });
-  const module = createWechatModule({ ctx, file, worldId: 'test', inWorld: candidate => candidate.id === agent.id, home: async () => { assert.fail('history must not start an inbound home request'); }, origin: () => 'http://127.0.0.1:1', allowedHosts: [] });
+  const module = createWechatModule({ ctx, file, worldId: 'test', timeZone: 'Asia/Shanghai', inWorld: candidate => candidate.id === agent.id, home: async () => { assert.fail('history must not start an inbound home request'); }, origin: () => 'http://127.0.0.1:1', allowedHosts: [] });
   module.start(); cleanup.push(() => module.stop());
   const server = createServer((req, res) => { void module.route.handler(req, res); });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -185,6 +187,7 @@ test('a desktop turn reads an unmentioned group, sends to that chatId and checks
   }
   assert.ok(finished && read && sent); await idle;
   assert.equal(requests.length, 4); assert.equal(errors.length, 0, errors.map(value => String((value as { error?: unknown }).error)).join('\n'));
+  assert.equal(historyOccurredAt, '2026-10-27T18:00:00+08:00');
   assert.equal(module.status().pending, 0);
 });
 

@@ -31,11 +31,13 @@ class SenderTest(unittest.TestCase):
 
     def test_each_supported_build_encodes_its_own_native_addresses(self):
         profiles = json.loads(PROFILES.read_text(encoding='utf-8-sig'))
-        self.assertEqual([profile['version'] for profile in profiles], ['4.1.15.13', '4.1.15.56', '4.2.0.11', '4.2.0.12', '4.2.0.13', '4.2.0.52', '4.2.0.53'])
+        self.assertEqual([profile['version'] for profile in profiles], ['4.1.15.13', '4.1.15.56', '4.2.0.11', '4.2.0.12', '4.2.0.13', '4.2.0.52', '4.2.0.53', '4.2.1.9'])
         self.assertEqual((profiles[5]['size'], profiles[5]['sha256']),
                          (204168240, 'd733489eea0b62af77e1aa61ba645cd941583d2a64fb2d7572da818d285f8d84'))
         self.assertEqual((profiles[6]['size'], profiles[6]['sha256']),
                          (204154920, 'ac6b174d98ee1b69e95c99a7a39c3197c8c167b7c6d32f5b72c7a7659c104825'))
+        self.assertEqual((profiles[7]['size'], profiles[7]['sha256']),
+                         (205887024, '10f8a5e56e080efe249f9f197bc3d2460cb0e08b558b388319449aaa3fe5868b'))
         # The 4.2 profiles leave the native GIF slots unmapped.
         for profile, timestamp, imageSize, addresses in (
             (profiles[2], 0x6ae0a8d1, 0xc4dc000, (
@@ -58,6 +60,10 @@ class SenderTest(unittest.TestCase):
                 0x1fc90, 0x21290, 0x2e3340, 0x211a0, 0x355620, 0x7023d0, 0x56f8550,
                 0x3e080a0, 0, 0x94090, 0, 0, 0,
                 0x1760b80, 0x776931c, 0x7769360, 0xbb6b788, 0x90cccb8, 0)),
+            (profiles[7], 0x6b0402c7, 0xc4d1000, (
+                0x1da90, 0x1f180, 0x2c1370, 0x1f090, 0x337c80, 0x6cef30, 0x56349d0,
+                0x3d620c0, 0, 0x91840, 0, 0, 0,
+                0x170e270, 0x771d588, 0x771d5cc, 0xbcfa078, 0x9188758, 0)),
             (profiles[0], 0x6ab0a378, 0xc0ae000, (
                 0x45d10, 0x47310, 0x2fb010, 0x47220, 0x36c740, 0x6f4d90, 0x54b02f0,
                 0x3d9d990, 0x1bfb1c0, 0x9b5d0, 0xe7a8e0, 0x5309c0, 0x4e6360,
@@ -74,7 +80,7 @@ class SenderTest(unittest.TestCase):
 
     def test_a_build_without_the_sticker_path_refuses_native_stickers_but_sends_text_and_images(self):
         profiles = json.loads(PROFILES.read_text(encoding='utf-8-sig'))
-        self.assertEqual([sendsStickers(profile) for profile in profiles], [True, True, False, False, False, False, False])
+        self.assertEqual([sendsStickers(profile) for profile in profiles], [True, True, False, False, False, False, False, False])
         for profile in profiles[2:]:
             with self.subTest(version=profile['version']):
                 encodeRequest(profile, 123, 'wxid_bot', 'family@chatroom', 1, '你好')

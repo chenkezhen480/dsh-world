@@ -19,7 +19,7 @@ from groups import DEFAULT_CONTEXT_MESSAGES, mentionedIds, recentContext
 from incoming import ImageUnavailable, admitReference
 from binding import WechatOffline
 from sender import BuildStale, UnsupportedWechatBuild
-from messages import messageKey, messageOrder, normalizeMessage, messageNormalizer, messageEntry, displayMessage
+from messages import hasSender, messageKey, messageOrder, normalizeMessage, messageNormalizer, messageEntry, displayMessage
 from quotes import MessageContentError, isAppMessage
 from reading import readHistory
 from presence import GroupPresence, seedPresence, speakerName, unreadAfter
@@ -30,6 +30,8 @@ BUFFER_POLL_SECONDS = 0.1
 MAX_BUFFER_SECONDS = 30
 MAX_BATCH_ROWS = 16
 MAX_PRIVATE_IMAGES = 2
+# What a private chat hands her as a picture: a sticker comes the same way, so it joins its sender's batch too.
+PRIVATE_MEDIA = ('图片', '动画表情')
 CONTROL_TIMEOUT_SECONDS = 5
 REPLY_TIMEOUT_SECONDS = 190
 # Exit code for "a person must check WeChat and run acknowledge"; the plugin stops restarting the adapter on it.
@@ -124,13 +126,13 @@ def followingRows(chat, first, candidates, store):
     """What the sender of `first` added after it that can join its request, and whether nothing more can (someone else
     spoke, a message that goes on its own, or a limit was reached)."""
     group = chat['id'].endswith('@chatroom')
-    rows, images, length = [], int(first['type'] == '图片'), len(str(first['content'])) if first['type'] == '文本' else 0
+    rows, images, length = [], int(first['type'] in PRIVATE_MEDIA), len(str(first['content'])) if first['type'] == '文本' else 0
     for row in candidates:
         if messageOrder(row) <= messageOrder(first) or store.seen(chat['id'], messageKey(row)):
             continue
-        if row.get('sender_username') != first.get('sender_username') or row['type'] not in (('文本',) if group else ('文本', '图片')) or len(rows) + 1 == MAX_BATCH_ROWS:
+        if row.get('sender_username') != first.get('sender_username') or row['type'] not in (('文本',) if group else ('文本', *PRIVATE_MEDIA)) or len(rows) + 1 == MAX_BATCH_ROWS:
             return rows, True
-        if row['type'] == '图片':
+        if row['type'] in PRIVATE_MEDIA:
             if images == MAX_PRIVATE_IMAGES: return rows, True
             images += 1
         else:
@@ -193,7 +195,7 @@ def incomingMessage(database, chat, row, config):
                 entry['text'] = f'【{unread}：{error}】'
             return dict(text='', identity=message['identity'], media=[entry])
         return admitReference(database, chat['id'], normalizeMessage(row, chat['id'], config['selfId'], config.get('people'), conversationName=chat.get('name')))
-    if (row['type'] != '文本' and not isAppMessage(row)) or row.get('sender_username') == config['selfId']:
+    if (row['type'] != '文本' and not isAppMessage(row)) or row.get('sender_username') == config['selfId'] or not hasSender(row):
         return None
     raw = database.get_message_row(chat['id'], row['local_id'], shard=row['shard'])
     if raw is None:
@@ -487,11 +489,14 @@ def flushOutgoing(config, database, store, send, *, poll=pollOutgoing, report=re
         store.beginReply(replyId, len(items), chat['id'], seq)
         try:
             prepared = prepareMessages(items, config, Path(config['moduleFile']).parent / 'wechat-outgoing')
-        except Exception:
+        except Exception as error:
+            # Nothing was sent and she is told so; stopping here would leave the message she answered unconfirmed
+            # and hold its chat until a person checks it.
             store.failReply(replyId)
             store.finish(chat['id'], key, seq)
             flushReceipts(config['moduleFile'], store, report)
-            raise
+            print(f'微信回复没有发出（整批未发送）：{chat["id"]} / {replyId[:12]}：{error}', file=sys.stderr, flush=True)
+            continue
         try:
             deliverMessages(prepared, lambda item: send(chat, item), lambda count: store.confirmReply(replyId, count))
             store.finish(chat['id'], key, seq)
@@ -576,10 +581,14 @@ def watch(config, database, store, send, ask=askHome, report=reportReceipt, poll
                     if message and message.get('reference', {}).get('error'):
                         store.fault(chat['id'], row, message['reference']['error'])
                     # Only a message she is asked about waits for what its sender adds; in a group, that is one that calls her.
-                    rows = bufferMessages(config, database, store, chat, row) if message and row['type'] in ('文本', '图片') else [row]
+                    rows = bufferMessages(config, database, store, chat, row) if message and row['type'] in ('文本', *PRIVATE_MEDIA) else [row]
                     mergeFollowing(database, chat, config, message, rows[1:])
                     store.beginBatch(chat['id'], rows)
                     if message:
+                        # When its last line was sent: a batch held up (queued, or the adapter was down) reaches her late, and the
+                        # home tells her so instead of her taking an hours-old 「在吗」 as just said.
+                        if rows[-1].get('create_time') is not None:
+                            message['sentAt'] = datetime.fromtimestamp(int(rows[-1]['create_time']), timezone.utc).isoformat()
                         try: askWhileSending(config, message, database, store, send, ask, report, poll)
                         except HomeBusy as error:
                             # She is still busy and has not seen it: hand the same messages over on a later poll.

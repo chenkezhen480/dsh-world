@@ -243,8 +243,10 @@ test('wechat settings validate their range and keep omitted fields', async () =>
   const post = (body: Record<string, unknown>) => handleConsole('/dsh-world/worlds/fish', sources, actions, { method: 'POST', url: '/dsh-world/worlds/fish/console/wechat', write: true, body });
   assert.equal((await post({ contextMessages: 12, bufferSeconds: 1.5 })).status, 200);
   assert.equal((await post({ contextMessages: null })).status, 200);
-  for (const body of [{}, { contextMessages: 0 }, { contextMessages: 21 }, { contextMessages: 2.5 }, { bufferSeconds: -1 }, { bufferSeconds: 31 }, { bufferSeconds: '3' }]) assert.equal((await post(body)).status, 400, JSON.stringify(body));
-  assert.deepEqual(calls, ['wechat:{"context":12,"bufferSeconds":1.5}', 'wechat:{"context":null}']);
+  assert.equal((await post({ partner: 'wxid_partner' })).status, 200);
+  assert.equal((await post({ partner: null })).status, 200);
+  for (const body of [{}, { contextMessages: 0 }, { contextMessages: 21 }, { contextMessages: 2.5 }, { bufferSeconds: -1 }, { bufferSeconds: 31 }, { bufferSeconds: '3' }, { partner: 'family@chatroom' }, { partner: '' }, { partner: 42 }]) assert.equal((await post(body)).status, 400, JSON.stringify(body));
+  assert.deepEqual(calls, ['wechat:{"context":12,"bufferSeconds":1.5}', 'wechat:{"context":null}', 'wechat:{"partner":"wxid_partner"}', 'wechat:{"partner":null}']);
 });
 test('WeChat and QQ both start off in a new world; a world that already ran WeChat keeps it on; an explicit choice is written and survives a restart', t => {
   const fresh = mkdtempSync(join(tmpdir(), 'dsh-world-modules-')); t.after(() => rmSync(fresh, { recursive: true, force: true }));
@@ -275,6 +277,13 @@ test('wechat settings default to 8 and 3, persist, and return to default', t => 
   assert.deepEqual([createWorldSwitch(dir).wechatContext(), createWorldSwitch(dir).wechatBufferSeconds()], [5, 0]);
   again.setWechat({ bufferSeconds: 3 });
   assert.equal('wechatBufferSeconds' in JSON.parse(readFileSync(join(dir, 'world.json'), 'utf8')), false);
+  assert.equal(again.wechatPartner(), undefined, 'nobody on WeChat is the partner until it is chosen');
+  again.setWechat({ partner: 'wxid_partner' });
+  assert.equal(createWorldSwitch(dir).wechatPartner(), 'wxid_partner');
+  createWorldSwitch(dir).setWechat({ context: 7 });
+  assert.equal(createWorldSwitch(dir).wechatPartner(), 'wxid_partner', 'changing another WeChat setting keeps it');
+  createWorldSwitch(dir).setWechat({ partner: null });
+  assert.equal('wechatPartner' in JSON.parse(readFileSync(join(dir, 'world.json'), 'utf8')), false);
 });
 test('console writes need the write mark, and change only what they name', async () => {
   const { actions, calls } = fakeActions();
@@ -390,8 +399,11 @@ test('the memory window is kept in world.json, defaults to 200 and survives a re
   power.setMemoryTurns(60);
   assert.equal(createWorldSwitch(dir).memoryTurns(), 60);
   power.setMemoryTurns(undefined);
-  assert.equal(createWorldSwitch(dir).memoryTurns(), 200);
+  assert.equal(createWorldSwitch(dir).memoryTurns(), 100);
   assert.equal('memoryTurns' in JSON.parse(readFileSync(join(dir, 'world.json'), 'utf8')), false, 'the default is not written out');
+  // A count someone chose stays theirs when the default moves (it was 200 before 0.8.6).
+  writeFileSync(join(dir, 'world.json'), JSON.stringify({ running: false, memoryTurns: 200 }));
+  assert.equal(createWorldSwitch(dir).memoryTurns(), 200);
 });
 
 test('the cold-session hours are kept in world.json, default to 24 and survive a restart (#36)', t => {
