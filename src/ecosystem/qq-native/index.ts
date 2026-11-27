@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import type { Context } from '@deepseek-ai/cordis';
 import type { Agent } from '@deepseek-ai/dsh-agent';
-import { speakerIdentity, conversationKey, type SpeakerIdentity } from '../shared/identity.ts';
+import { chatLabel, chatName, conversationKey, speakerIdentity, type SpeakerIdentity } from '../shared/identity.ts';
 import { quotedText, type ChannelContextMessage, type ChannelReference } from '../shared/context.ts';
 import { createBridge } from './snowluma.ts';
 import { createQqHome } from './home.ts';
@@ -15,6 +15,7 @@ import { createSnowlumaSupervisor, type SnowlumaStatus } from '../qq/supervisor.
 import { startSnowluma, type StartResult } from '../qq/snowluma-start.ts';
 import type { NativePatch } from '../qq/route.ts';
 import { insideDir, type InWorld } from '../../worldScope.ts';
+import { ago, type ElsewhereNews, type ElsewhereSource } from '../../elsewhere.ts';
 import { createNativeBridge, type BridgeStatus, type NativeBridge } from './native-bridge.ts';
 
 export type { QqPart } from './replies.ts';
@@ -168,6 +169,8 @@ export interface QqNativeStatus {
   blocked: number;
   /** 最近一次被白名单挡下的时刻。 */
   lastBlockedAt: string | null;
+  /** 没递到她那儿、她也还没在「别处的动静」里看过的条数（关着自动回复、静默中、群里没叫她）。 */
+  unanswered: number;
   bindHomeSession: 'owner' | 'all' | 'none' | '';
   /** 群里接话的规矩。 */
   groupTrigger: 'mention' | 'all';
@@ -231,6 +234,8 @@ export function createQqNativeModule(deps: {
   inWorld?: InWorld;
   /** Whether the session is her home now: what she says there on her own goes to the owner too. */
   isHome?(sessionId: string): boolean;
+  /** Which conversation a channel session belongs to, so a place's news never goes back into that same place. */
+  sessionKey?(sessionId: string): string | undefined;
   config(): QqNativeConfig;
   /** 她的房间：语音、视频、文件只从这里发。不给就一个都不发。 */
   roomDir?: string;
@@ -384,6 +389,23 @@ export function createQqNativeModule(deps: {
     contexts.set(key, list);
   }
 
+  /**
+   * 她没在场时到的一句话：只留事实（几条、最后是谁、多久前），不留正文。「别处的动静」只报事实，
+   * 要不要紧、要不要让对方再说一遍，由她自己定（#53：关掉自动回复时两边都察觉不到）。
+   */
+  const missed = new Map<string, { count: number; speaker: string; at: number; name: string; group: boolean }>();
+  function noteMissed(key: string, identity: SpeakerIdentity, speakerName: string): void {
+    const before = missed.get(key);
+    const name = chatName(identity) ?? speakerName ?? identity.conversationId;
+    missed.set(key, {
+      count: (before?.count ?? 0) + 1,
+      speaker: speakerName || name,
+      at: Date.now(),
+      name,
+      group: identity.conversationType === 'group',
+    });
+  }
+
   // Close messages of one conversation are asked together; each keeps who said it (a group has several voices).
   const batches = createBatcher<Gathered>({ quietMs: () => settings().batchQuietMs, flush: (key, items) => { void answer(key, items); } });
 
@@ -428,8 +450,13 @@ export function createQqNativeModule(deps: {
     const key = conversationKey(identity);
     // 群里没叫她的话、静默中的话、自动回复关着时的话，都只进上下文：不开口、也不花一轮（关掉自动回复就是
     // 「别理它」，连问都不问；静默到点自己醒）。等她真被叫到，就知道刚才在说什么。私聊不看叫没叫她。
-    if ((isGroup && !directedAtHer(message, config)) || mutedUntil(config) || !config.autoReply) {
+    const directed = !isGroup || directedAtHer(message, config);
+    const held = Boolean(mutedUntil(config)) || !config.autoReply;
+    if (!directed || held) {
       pushContext(key, { id: messageId || String(Date.now()), occurredAt: new Date().toISOString(), text, identity }, config.contextMessages);
+      // 攒一句事实，她下一轮才不至于完全不知道有人找过她（#53）。只记「本该递给她、被挡下」的：
+      // 群里没叫她本来就按设计不理，QQ 又没有读历史的工具，记了也查不了，活跃的群会每轮多报一行。
+      if (directed && held) noteMissed(key, identity, speakerName);
       return;
     }
     const images = (message.segments ?? []).filter(segment => segment?.type === 'image')
@@ -498,6 +525,8 @@ export function createQqNativeModule(deps: {
       const reply = await home.ask(text, identity, contexts.get(key) ?? [], images.length
         ? () => admitQqImages(deps.ctx, images, client?.getImage?.bind(client))
         : undefined, gathered.some(item => item.quoted), gathered.at(-1)!.sentAt);
+      // 这一轮真的开了：前面攒着的那些话，她已经在「别处的动静」里看到过，不再重复报。
+      missed.delete(key);
       const words = stripHostNoise(reply.text);
       // 提醒过一次还是没有能发的话：不发，但要留下痕迹，分得清「她没说出话」和「路丢了」（#34）；
       // 只剩复述的聊天记录、工具标签这些（#35）也一样。
@@ -588,6 +617,27 @@ export function createQqNativeModule(deps: {
     void nativeBridge.start().catch((error: unknown) => deps.logger.error('阳台没能开起来', error));
   }
 
+  /**
+   * 关着自动回复（或静默中）时到的话，接进「别处的动静」：只报条数、最后是谁、多久前，
+   * 正文不带。QQ 通道还不能重读历史，所以她要知道「有人找过她」，靠的就是这一条（#53）。
+   * 取消息的那个会话自己不报：原文已经写在它下一轮带的上下文里了，再报一遍是同一件事说两次。
+   */
+  const elsewhere: ElsewhereSource = {
+    look: 'QQ 通道还不能重读历史，这里只有条数',
+    news: (now, session) => {
+      const self = deps.sessionKey?.(session.id);
+      return [...missed.entries()]
+        .filter(([key]) => key !== self)
+        .map(([key, row]): ElsewhereNews => ({
+          key: `qq-native:${key}`,
+          mark: `${row.count}:${row.at}`,
+          text: row.group
+            ? `${chatLabel('qq', 'group', row.name)}${row.count} 条我还没看到，最后是${row.speaker}（${ago(now.getTime() - row.at)}）`
+            : `QQ 上${row.name}发来 ${row.count} 条我没看到，最后一条 ${ago(now.getTime() - row.at)}`,
+        }));
+    },
+  };
+
   function status(): QqNativeStatus {
     const config = settings();
     return {
@@ -611,6 +661,7 @@ export function createQqNativeModule(deps: {
       lastEventAt: stats.lastEventAt,
       blocked: stats.blocked,
       lastBlockedAt: stats.lastBlockedAt,
+      unanswered: [...missed.values()].reduce((sum, row) => sum + row.count, 0),
       lastError: stats.lastError,
       sent: stats.sent,
       failed: stats.failed,
@@ -626,6 +677,8 @@ export function createQqNativeModule(deps: {
 
   return {
     status,
+    /** 「别处的动静」的一个来源：攒着没递到她那儿的话，只报事实，不带正文。 */
+    elsewhere,
     /**
      * 面板上拨的那些：会不会自己回、静默到几点（null 立刻恢复）、白名单（整组换掉，空数组谁都不收）、
      * 阳台端口（当场关掉重开那条线，0 就是关），以及手动拉起 SnowLuma 一次。一次请求里给的几项一起生效。
@@ -696,6 +749,7 @@ export function createQqNativeModule(deps: {
       void client?.stop();
       client = undefined;
       contexts.clear();
+      missed.clear();
       seen.clear(); sentIds.clear();
       deferred.clear();
     },

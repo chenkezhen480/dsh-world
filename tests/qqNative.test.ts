@@ -14,6 +14,7 @@ import { createUserMessage, type GenerateOptions } from '@deepseek-ai/dsh-llm';
 import { AttachmentId, type SaveImageAttachment } from '@deepseek-ai/dsh-attachment';
 import { hostFixture, textResponse } from './hostFixture.ts';
 import { createQqNativeModule, type QqNativeConfig, type QqTransport, type QqTransportOptions } from '../src/ecosystem/qq-native/index.ts';
+import { createElsewhere } from '../src/elsewhere.ts';
 import { createQqHome } from '../src/ecosystem/qq-native/home.ts';
 import { createNativeBridge } from '../src/ecosystem/qq-native/native-bridge.ts';
 import { WebSocket, WebSocketServer } from 'ws';
@@ -738,6 +739,97 @@ test('面板改的合批窗口存下来，重载后还在；没改过的就是�
   make().update({ batchQuietMs: 0 });
   assert.equal(make().status().batchQuietMs, 0);
   assert.equal(JSON.parse(readFileSync(stateFile, 'utf8')).batchQuietMs, 0);
+});
+
+test('关掉自动回复时收到的话不会无声消失：攒成「几条没看到」，下一轮她在「别处的动静」里看得到（#53）', async t => {
+  const { ctx, cleanup } = await hostFixture(t, () => textResponse('嗯'));
+  const agent = (await ctx.agents.create({ sessionId: SessionId('home'), agentOptions: { provider: 'test', model: 'test' } })).agent;
+  const wire = fakeTransport();
+  const channel = createQqNativeModule({ ctx, home: async () => agent, config: () => configOf({ autoReply: false }), logger: quiet, transport: wire.factory });
+  channel.start(); cleanup.push(channel.stop);
+  const elsewhere = createElsewhere();
+  t.after(elsewhere.register(channel.elsewhere));
+
+  for (const id of ['gone-1', 'gone-2', 'gone-3']) wire.emit(incoming({ messageId: id, text: `第 ${id} 条` }));
+  await settle(200);
+  assert.deepEqual(wire.sent, [], '关着就是「收到但不理」，一个字都不发');
+  assert.equal(channel.status().unanswered, 3);
+
+  const block = elsewhere.take(agent.session, new Date());
+  assert.match(block ?? '', /【别处的动静】/, block ?? '（一个字都没报）');
+  assert.match(block ?? '', /3 条我没看到/, block ?? '');
+  assert.match(block ?? '', /刚刚/, block ?? '');
+  // 同一个数不让她看第二遍；只有真的又来了一条，mark 才会变。
+  assert.equal(elsewhere.take(agent.session, new Date()), undefined);
+  wire.emit(incoming({ messageId: 'gone-4', text: '第四条' }));
+  await settle(100);
+  assert.equal(channel.status().unanswered, 4);
+  assert.match(elsewhere.take(agent.session, new Date()) ?? '', /4 条我没看到/);
+});
+
+test('她重新被叫到、真跑了一轮之后，攒下的话不再重复报（#53）', async t => {
+  const { ctx, cleanup } = await hostFixture(t, () => textResponse('我在'));
+  const agent = (await ctx.agents.create({ sessionId: SessionId('home'), agentOptions: { provider: 'test', model: 'test' } })).agent;
+  const wire = fakeTransport();
+  let autoReply = false;
+  const channel = createQqNativeModule({ ctx, home: async () => agent, config: () => configOf({ autoReply }), logger: quiet, transport: wire.factory });
+  channel.start(); cleanup.push(channel.stop);
+  wire.emit(incoming({ messageId: 'off-1', text: '在吗' }));
+  wire.emit(incoming({ messageId: 'off-2', text: '在吗在吗' }));
+  await settle(200);
+  assert.equal(channel.status().unanswered, 2, '关着的时候攒下了两条');
+  autoReply = true;
+  wire.emit(incoming({ messageId: 'off-3', text: '现在呢' }));
+  await settle(800);
+  assert.equal(wire.sent.length, 1, '这一条她回了');
+  assert.equal(channel.status().unanswered, 0, '这一轮她看见了，不再重复报');
+});
+
+test('群里没叫她的话不算「没看到」：只有本该递给她、被静默或关着挡下的才记账（#53）', async t => {
+  const { ctx, cleanup } = await hostFixture(t, () => textResponse('嗯'));
+  const agent = (await ctx.agents.create({ sessionId: SessionId('home'), agentOptions: { provider: 'test', model: 'test' } })).agent;
+  const wire = fakeTransport();
+  const channel = createQqNativeModule({ ctx, home: async () => agent, config: () => configOf({ autoReply: false }), logger: quiet, transport: wire.factory });
+  channel.start(); cleanup.push(channel.stop);
+  const group = { kind: 'group' as const, groupId: '681528723' };
+
+  // 群里两条，没人叫她：按设计本来就不理，QQ 又没有读历史的工具，记了也查不了。
+  wire.emit(incoming({ ...group, userId: '1001', messageId: 'g1', text: '随便聊聊' }));
+  wire.emit(incoming({ ...group, userId: '1002', messageId: 'g2', text: '今天吃啥' }));
+  await settle(200);
+  assert.equal(channel.status().unanswered, 0, '没人叫她的话不该记成「没看到」');
+
+  // 叫了她，但自动回复关着：这一条本该递到她那儿，才该记。
+  wire.emit(incoming({ ...group, userId: '1003', messageId: 'g3', text: '在吗', segments: [{ type: 'at', data: { qq: '2039693365' } }] }));
+  await settle(200);
+  assert.equal(channel.status().unanswered, 1);
+  assert.deepEqual(wire.sent, [], '关着就是收到但不理');
+});
+
+test('「别处的动静」不把某一个群的账报回它自己那个会话（#53）', async t => {
+  const { ctx, cleanup } = await hostFixture(t, () => textResponse('嗯'));
+  const agent = (await ctx.agents.create({ sessionId: SessionId('home'), agentOptions: { provider: 'test', model: 'test' } })).agent;
+  const groupAgent = (await ctx.agents.create({ sessionId: SessionId('qq-group-681528723'), agentOptions: { provider: 'test', model: 'test' } })).agent;
+  const wire = fakeTransport();
+  // 群会话属于这个群；她的家会话不属于任何一个 QQ 会话。
+  const groupKey = JSON.stringify(['qq', '2039693365', 'group', '681528723']);
+  const channel = createQqNativeModule({
+    ctx, home: async () => agent, logger: quiet, transport: wire.factory,
+    config: () => configOf({ autoReply: false }),
+    sessionKey: id => id === groupAgent.session.id ? groupKey : undefined,
+  });
+  channel.start(); cleanup.push(channel.stop);
+  const elsewhere = createElsewhere();
+  t.after(elsewhere.register(channel.elsewhere));
+
+  wire.emit(incoming({ kind: 'group', groupId: '681528723', userId: '1003', messageId: 'g1', text: '在吗', segments: [{ type: 'at', data: { qq: '2039693365' } }] }));
+  await settle(200);
+  assert.equal(channel.status().unanswered, 1);
+
+  // 她在家会话里：该知道有人叫过她。
+  assert.match(elsewhere.take(agent.session, new Date()) ?? '', /1 条我还没看到/);
+  // 她在那个群自己的会话里：原文已经写在这一轮带的上下文里，不该再说一遍。
+  assert.equal(elsewhere.take(groupAgent.session, new Date()), undefined);
 });
 
 test('a QQ message that reached her late says how long ago it was sent (#72)', async t => {

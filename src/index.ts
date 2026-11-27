@@ -317,6 +317,7 @@ export function apply(ctx: Context, config: Config): void {
       return failure ? [`微信：${formatLocalTime(new Date(failure.at), config.timeZone).slice(0, 16).replace('T', ' ')} 有一条消息没能交给她（${failure.error}），适配器会停下这个聊天等核对`] : [];
     };
     let qqNative: QqNativeModule | undefined;
+    let unregisterQqNews: (() => void) | undefined;
     let computer: ComputerModule | undefined;
     /** Her own browser follows the life line and its console switch; a failure to start is a fault, never a broken plugin. */
     function startComputer(): void {
@@ -418,6 +419,7 @@ export function apply(ctx: Context, config: Config): void {
           inWorld: inWorldSession,
           roomDir: options.roomDir,
           isHome: id => current.isHome(id),
+          sessionKey: id => store.channelKey(id),
           // `none` keeps private test traffic out of her real home, as groups are by default.
           home: identity => {
             const bind = q.bindHomeSession ?? 'owner';
@@ -454,13 +456,14 @@ export function apply(ctx: Context, config: Config): void {
           }),
         });
         qqNative.start();
+        unregisterQqNews = elsewhere.register(qqNative.elsewhere);
         faults.clear('qq');
       } catch (error) {
         stopQqNative();
         faults.set('qq', `QQ 模块没能启动：${errorText(error)}`); lifeCtx.logger.error(error);
       }
     }
-    function stopQqNative(): void { qqNative?.stop(); qqNative = undefined; qqChannels?.stop(); qqChannels = undefined; faults.clear('qq'); }
+    function stopQqNative(): void { unregisterQqNews?.(); unregisterQqNews = undefined; qqNative?.stop(); qqNative = undefined; qqChannels?.stop(); qqChannels = undefined; faults.clear('qq'); }
     async function startLife(resumed: boolean): Promise<void> {
       if (!lifeStore || life) return;
       let current: LifeRuntime | undefined;
