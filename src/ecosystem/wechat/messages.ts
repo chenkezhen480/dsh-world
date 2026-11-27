@@ -1,7 +1,21 @@
 import { defineTool } from '@deepseek-ai/dsh-tools';
+import { formatLocalTime } from '../../timeContext.ts';
+import type { ChannelContextMessage } from '../shared/context.ts';
 import type { SpeakerIdentity } from '../shared/identity.ts';
 
 export const wechatTextOutput = { schema: { type: 'string' as const }, render: (_args: unknown, value: string) => [{ type: 'text' as const, text: value }] };
+
+export function formatWechatTime(occurredAt: string, timeZone?: string): string {
+  if (timeZone === undefined) return occurredAt;
+  const date = new Date(occurredAt);
+  const local = formatLocalTime(date, timeZone);
+  const milliseconds = date.getUTCMilliseconds();
+  return milliseconds ? `${local.slice(0, -6)}.${String(milliseconds).padStart(3, '0')}${local.slice(-6)}` : local;
+}
+
+export function localizeWechatMessages(messages: ChannelContextMessage[], timeZone?: string): ChannelContextMessage[] {
+  return messages.map(message => ({ ...message, occurredAt: formatWechatTime(message.occurredAt, timeZone) }));
+}
 
 declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {

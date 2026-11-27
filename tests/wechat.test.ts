@@ -155,12 +155,13 @@ test('group context preserves sender IDs without accepting another conversation 
   const requests: GenerateOptions[] = [];
   const { ctx, cleanup } = await hostFixture(t, request => { requests.push(request); return textResponse('群回复'); });
   const agent = (await ctx.agents.create({ sessionId: SessionId('group'), agentOptions: { provider: 'test', model: 'test' } })).agent;
-  const channel = createWechatHome({ ctx, home: async received => { assert.equal(received.conversationId, identity.conversationId); return agent; } }); cleanup.push(channel.stop);
+  const channel = createWechatHome({ ctx, timeZone: 'America/New_York', home: async received => { assert.equal(received.conversationId, identity.conversationId); return agent; } }); cleanup.push(channel.stop);
   await channel.ask('@她', identity, [previous]);
   const context = requests[0].messages.find(message => message.source?.kind === 'dsh-world-channel-context');
   assert.ok(context);
   assert.match(JSON.stringify(context), /wechat:dad/);
   assert.match(JSON.stringify(context), /前一句/);
+  assert.match(JSON.stringify(context), /2026-10-24T20:00:00-04:00/);
 });
 
 test('delivery updates the same durable record, survives reopening and rejects stale or invalid receipts', async t => {

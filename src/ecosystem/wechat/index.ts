@@ -21,16 +21,18 @@ import { reassembleOnChange, registerScopedTool, type InWorld } from '../../worl
 
 import { worldPath } from '../../worldRoutes.ts';
 
-export function createWechatModule(deps: { ctx: Context; home(identity: SpeakerIdentity): Promise<Agent>; midTurn?(agent: Agent): boolean; file: string; worldId?: string; inWorld?: InWorld; incomingDir?: string; origin(): string; allowedHosts: readonly string[]; settings?(): { contextMessages: number; bufferSeconds: number }; record?(reply: PreparedReply): Promise<string>; receipt?(receipt: WechatReceipt): Promise<void> }) {
+export function createWechatModule(deps: { ctx: Context; home(identity: SpeakerIdentity): Promise<Agent>; midTurn?(agent: Agent): boolean; file: string; worldId?: string; timeZone?: string; inWorld?: InWorld; incomingDir?: string; origin(): string; allowedHosts: readonly string[]; settings?(): { contextMessages: number; bufferSeconds: number }; record?(reply: PreparedReply): Promise<string>; receipt?(receipt: WechatReceipt): Promise<void> }) {
   const path = worldPath(deps.worldId ?? 'default') + '/wechat/ask';
   const token = randomBytes(32).toString('hex');
   const stickerDir = join(dirname(deps.file), 'stickers');
   const stickers = createStickerLibrary(stickerDir);
   const sending = createWechatSending({ ...deps, file: join(dirname(deps.file), 'wechat-outbox.sqlite'), worldId: deps.worldId ?? 'default', hasSticker: id => stickers.has(id) });
-  const reading = createWechatReading({ target: sending.target, images: (identity, context) => {
+  async function images(identity: SpeakerIdentity, context: ChannelContextMessage[], reference?: ChannelReference) {
+    if (!reference?.image && !context.some(message => message.image || message.reference?.image)) return [];
     if (!deps.incomingDir) throw new Error('Group image directory is unavailable');
-    return admitContextImages(deps.ctx, deps.incomingDir, identity, context);
-  } });
+    return admitContextImages(deps.ctx, deps.incomingDir, identity, context, reference, deps.timeZone);
+  }
+  const reading = createWechatReading({ timeZone: deps.timeZone, target: sending.target, images });
   const stickerTools = createStickerTools({ library: stickers, stagingDir: join(stickerDir, 'incoming'), target: sending.target, ask: reading.ask });
   const presence = createWechatPresence();
   const attached = new Map<Agent, (() => void)[]>();
@@ -73,11 +75,7 @@ export function createWechatModule(deps: { ctx: Context; home(identity: SpeakerI
       reassembleOnChange(deps.ctx, attach),
     ] : [],
   ];
-  const home = createWechatHome({ ...deps, home: async identity => { const agent = await deps.home(identity); attach(agent); return agent; }, images: async (identity, context, reference) => {
-    if (!reference?.image && !context.some(message => message.image || message.reference?.image)) return [];
-    if (!deps.incomingDir) throw new Error('Group image directory is unavailable');
-    return admitContextImages(deps.ctx, deps.incomingDir, identity, context, reference);
-  } });
+  const home = createWechatHome({ ...deps, home: async identity => { const agent = await deps.home(identity); attach(agent); return agent; }, images });
   async function handle(req: IncomingMessage): Promise<JsonResult> {
     const given = req.headers['x-dsh-world-token'];
     if (!knownHost(req.headers.host, deps.allowedHosts) || req.headers['sec-fetch-site'] === 'cross-site' || typeof given !== 'string') return { status: 403, body: { error: 'forbidden' } };

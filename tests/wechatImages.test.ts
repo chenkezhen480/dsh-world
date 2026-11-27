@@ -124,7 +124,7 @@ test('the current protocol accepts an image-only private request and rejects ano
   ctx.provide('attachments', { imageLimits: { maxImageBytes: 1024 }, saveImages: async () => [{ attachmentId: AttachmentId(digest), mediaType: 'image/png', bytes: png.length, width: 1, height: 1 }] } as never);
   const agent = (await ctx.agents.create({ sessionId: SessionId('private-api'), agentOptions: { provider: 'test', model: 'test' } })).agent;
   const file = join(root, 'wechat.json');
-  const module = createWechatModule({ ctx, file, home: async () => agent, origin: () => 'http://127.0.0.1:1', allowedHosts: [], incomingDir: incoming });
+  const module = createWechatModule({ ctx, file, timeZone: 'Asia/Shanghai', home: async () => agent, origin: () => 'http://127.0.0.1:1', allowedHosts: [], incomingDir: incoming });
   module.start(); cleanup.push(() => module.stop());
   const server = createServer((req, res) => { void module.route.handler(req, res); });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -140,4 +140,7 @@ test('the current protocol accepts an image-only private request and rejects ano
   assert.equal((await response.json()).text, '看到了');
   assert.equal(requests.length, 1);
   assert.ok(requests[0].messages.some(message => message.content.some(block => block.type === 'image')));
+  const context = requests[0].messages.find(message => message.source?.kind === 'dsh-world-channel-context')!;
+  const contextText = context.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n');
+  assert.equal(contextText.match(/2026-10-25T08:00:00\+08:00/g)?.length, 2, 'both the media entry and the image source use world time');
 });
