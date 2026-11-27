@@ -135,6 +135,25 @@ test('a later compaction replays the earlier paragraph for merging instead of th
   const context = handle.agent.session.deriveMessages().filter(message => message.role !== 'system');
   assert.equal(context.length, 1); assert.match(JSON.stringify(context[0].content), /摘要2/);
 });
+test('a short span that is mostly the last summary is skipped instead of being summarized again, while a normal span still compacts', async t => {
+  const summaries: GenerateOptions[] = [];
+  const { ctx } = await hostFixture(t, async function* (request) {
+    if (request.purpose === 'compaction') { summaries.push(request); yield* textResponse('摘要'.repeat(1500)); return; }
+    yield* textResponse('reply');
+  });
+  await ctx.plugin(TokenMeter).await();
+  await ctx.plugin(ToolFreeCompaction, { auto: false, timeZone: 'UTC', headroomTokens: 0, maxTokens: 4096 }).await();
+  const handle = await ctx.agents.create({ sessionId: SessionId('min-region'), meta: { agentPreset: 'companion' }, agentOptions: { provider: 'test', model: 'test' } });
+  handle.agent.followup(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'user facts ' + 'context '.repeat(800) }] })); await handle.agent.whenIdle();
+  assert.ok(await ctx.compaction.compactNow(handle.agent, new AbortController().signal), 'a first compaction of a short conversation still runs');
+  assert.equal(summaries.length, 1);
+  handle.agent.followup(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: '好' }] })); await handle.agent.whenIdle();
+  assert.equal(await ctx.compaction.compactNow(handle.agent, new AbortController().signal), null, 'nothing but the previous summary on the surface: no summarization call');
+  assert.equal(summaries.length, 1);
+  handle.agent.followup(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'more context '.repeat(2000) }] })); await handle.agent.whenIdle();
+  assert.ok(await ctx.compaction.compactNow(handle.agent, new AbortController().signal), 'a span of normal size is compacted as before');
+  assert.equal(summaries.length, 2);
+});
 test('the tools she used in the compacted span are named once after the summary, each once, without arguments or results', () => {
   let n = 0;
   const call = (name: string, args: object) => ({ type: 'tool-call' as const, id: ToolCallId(`c${++n}`), name, arguments: JSON.stringify(args) });
