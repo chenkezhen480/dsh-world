@@ -509,7 +509,8 @@ test('every evening at 23:00 she looks back on the day: its records, her diary, 
   s.timers.advance(11 * 3_600_000); await s.idle();
   assert.equal(s.requests.length, 1, 'the look back, and nothing after it although her alarm is hours away');
   const text = textOf(s.requests[0]!);
-  assert.match(text, /【我的时间】2026-10-23 快过完了，回头看看今天吧。今天的聊天记录在 [^ ]*conversations[\\/]2026-10-23\.jsonl/);
+  assert.match(text, /【我的时间】2026-10-23 快过完了，回头看看今天吧。今天的聊天用 memory_find 按时间翻（不带 query，kinds 写 conversation，from、to 写今天）/);
+  assert.ok(!/conversations[\\/]2026-10-23\.jsonl/.test(text), 'the exported file keeps UTC times, so she is not sent there');
   assert.ok(!text.includes('今天做过的事在'), 'no activity file today, so it is not mentioned');
   // The diary first, then whether she has changed: what happened goes to the diary, never into her 「我」.
   assert.match(text, /先写日记，再看自己：\n1\. 日记：[\s\S]*写进今天的日记[\s\S]*\n2\. 我：[^\n]*今天发生的事留在日记里[^\n]*重写整篇/);

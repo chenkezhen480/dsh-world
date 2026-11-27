@@ -91,7 +91,7 @@ export function consoleSources(deps: SnapshotDeps): ConsoleSources & { invalidat
       promptMerge: deps.promptMerge?.() ?? null,
       compactionPreset: deps.compactionPreset?.() ?? null,
       health: [...(life?.faults ?? []), ...deps.faults()],
-      memory: { index: deps.longTerm?.status() ?? null, turns: turns.length, windowTurns: window, coldHours: deps.coldHours?.() ?? null, archiveScope, selectedArchiveScope, restartRequired: archiveScope !== selectedArchiveScope, approxTokens: estimateTokens(renderHistory(turns, config.timeZone, deps.names(), archiveScope === 'home')), oldest: turns.at(-1)?.messages[0]?.occurredAt, ...archive.stats() },
+      memory: { index: deps.longTerm?.status() ?? null, turns: turns.length, windowTurns: window, coldHours: deps.coldHours?.() ?? null, archiveScope, selectedArchiveScope, restartRequired: archiveScope !== selectedArchiveScope, approxTokens: estimateTokens(renderHistory(turns, config.timeZone, deps.names(), { homeOnly: archiveScope === 'home' })), oldest: turns.at(-1)?.messages[0]?.occurredAt, ...archive.stats() },
       wechat: deps.wechat?.() ?? null,
       compactions: lifeStore?.compactions().slice(-5).reverse() ?? [],
       diaryDates: diary.dates(), activityDays: lifeStore?.activityDays() ?? [],

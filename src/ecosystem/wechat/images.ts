@@ -5,13 +5,12 @@ import type { Context } from '@deepseek-ai/cordis';
 import type { AttachmentStore, SaveImageAttachment } from '@deepseek-ai/dsh-attachment';
 import type { ContentBlock } from '@deepseek-ai/dsh-llm';
 import { keepImages, shownImage } from '../../images.ts';
-import { channelContext, channelMedia, channelReference, type ChannelContextMessage, type ChannelImage, type ChannelReference } from '../shared/context.ts';
+import { channelContext, channelMedia, channelReference, messageTime, type ChannelContextMessage, type ChannelImage, type ChannelReference } from '../shared/context.ts';
 import { conversationKey, type SpeakerIdentity } from '../shared/identity.ts';
-import { formatWechatTime } from './messages.ts';
 
 export async function admitContextImages(ctx: Context, incomingDir: string, identity: SpeakerIdentity, context: ChannelContextMessage[], suppliedReference?: ChannelReference, timeZone?: string): Promise<ContentBlock[]> {
   const messages = identity.conversationType === 'private' ? channelMedia(context, identity) : channelContext(context, identity);
-  const images: { image: ChannelImage; source: Record<string, unknown> }[] = messages.filter(message => message.image).map(message => ({ image: message.image!, source: { id: message.id, identity: message.identity, occurredAt: formatWechatTime(message.occurredAt, timeZone) } }));
+  const images: { image: ChannelImage; source: Record<string, unknown> }[] = messages.filter(message => message.image).map(message => ({ image: message.image!, source: { id: message.id, identity: message.identity, occurredAt: messageTime(message.occurredAt, timeZone) } }));
   const reference = channelReference(suppliedReference, identity);
   const references = [...messages.flatMap(message => message.reference ? [message.reference] : []), ...(reference ? [reference] : [])];
   for (const quoted of references) if (quoted.image) images.push({ image: quoted.image, source: { quoted: true, id: quoted.id, speakerId: quoted.speakerId, speakerName: quoted.speakerName, type: quoted.type } });

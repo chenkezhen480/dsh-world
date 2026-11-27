@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { jsonObject, knownHost, readBody, sendJson, type JsonResult } from '../http.ts';
 import { PERSONA_LAYERS, type Persona } from '../persona.ts';
 import type { TemplateGap } from '../templateGaps.ts';
-import { validColdHours, validTurns, validWechatBuffer, MAX_COLD_HOURS, validWechatContext, validWorkspacePermission, MAX_WECHAT_BUFFER_SECONDS, MAX_WECHAT_CONTEXT, validInboxIgnore, MAX_INBOX_IGNORE, MAX_INBOX_NAME } from '../worldSwitch.ts';
+import { validColdHours, validTurns, validWechatBuffer, validWechatPartner, MAX_COLD_HOURS, validWechatContext, validWorkspacePermission, MAX_WECHAT_BUFFER_SECONDS, MAX_WECHAT_CONTEXT, validInboxIgnore, MAX_INBOX_IGNORE, MAX_INBOX_NAME } from '../worldSwitch.ts';
 import { validArchiveScope, type MemoryArchiveScope } from '../archiveSelection.ts';
 import type { PhotoStore } from '../life/photos.ts';
 import { validClockTime } from '../life/alarm.ts';
@@ -65,7 +65,7 @@ export interface ConsoleActions {
   setCottageWeather(weather: Weather): string | undefined;
   /** Restarts the adapter the plugin manages; false when it does not manage one. */
   restartWechatAdapter(): Promise<boolean>;
-  setWechatSettings(settings: { context?: number | null; bufferSeconds?: number | null }): void;
+  setWechatSettings(settings: { context?: number | null; bufferSeconds?: number | null; partner?: string | null }): void;
   /** Programs her inbox leaves out, matched by the name she is told or the executable; null goes back to Windows' own programs. */
   setInboxIgnore(names: readonly string[] | null): void;
 }
@@ -129,11 +129,12 @@ async function write(actions: ConsoleActions, path: string, body: Record<string,
       return ok();
     }
     case '/console/wechat': {
-      const context = body?.contextMessages, bufferSeconds = body?.bufferSeconds;
+      const context = body?.contextMessages, bufferSeconds = body?.bufferSeconds, partner = body?.partner;
       if (context !== undefined && context !== null && !validWechatContext(context)) return bad(`contextMessages must be a whole number from 1 to ${MAX_WECHAT_CONTEXT}, or null`);
       if (bufferSeconds !== undefined && bufferSeconds !== null && !validWechatBuffer(bufferSeconds)) return bad(`bufferSeconds must be a number from 0 to ${MAX_WECHAT_BUFFER_SECONDS}, or null`);
-      if (context === undefined && bufferSeconds === undefined) return bad('nothing to change');
-      actions.setWechatSettings({ ...(context === undefined ? {} : { context }), ...(bufferSeconds === undefined ? {} : { bufferSeconds }) }); return ok();
+      if (partner !== undefined && partner !== null && !validWechatPartner(partner)) return bad('partner must be a private chat id, or null');
+      if (context === undefined && bufferSeconds === undefined && partner === undefined) return bad('nothing to change');
+      actions.setWechatSettings({ ...(context === undefined ? {} : { context }), ...(bufferSeconds === undefined ? {} : { bufferSeconds }), ...(partner === undefined ? {} : { partner }) }); return ok();
     }
     case '/console/inbox-ignore': {
       const names = body?.names;

@@ -1,4 +1,26 @@
 import { conversationKey, speakerIdentity, type SpeakerIdentity } from './identity.ts';
+import { ago } from '../../elsewhere.ts';
+import { formatLocalTime } from '../../timeContext.ts';
+
+/**
+ * A message time as she reads it: local to her world, with its offset. Adapters and the archive keep UTC; read as UTC,
+ * she had to add the hours herself and now and then placed a noon message in the evening (#73). Without a zone, as
+ * passed along.
+ */
+export const messageTime = (occurredAt: string, timeZone?: string) => timeZone === undefined ? occurredAt : formatLocalTime(new Date(occurredAt), timeZone);
+/** The same messages with their times as she reads them. */
+export const inMessageTime = <T extends { occurredAt: string }>(messages: readonly T[], timeZone?: string): T[] => messages.map(message => ({ ...message, occurredAt: messageTime(message.occurredAt, timeZone) }));
+
+/** A message this much older than when it reaches her was held up on the way, which she cannot tell from the words. */
+export const LATE_MS = 5 * 60_000;
+/**
+ * Said with a message that reached her late (queued, batched, or an adapter that was down): when it was sent decides
+ * whether a 「在吗」 is a conversation going on or one hours old (#72). Nothing when it arrived as it was sent.
+ */
+export function lateNote(sentAt: string | undefined, now = Date.now()): string | undefined {
+  const late = sentAt === undefined ? NaN : now - Date.parse(sentAt);
+  return late >= LATE_MS ? `这条是 ${ago(late)}发的，不是刚刚说的。` : undefined;
+}
 
 export interface ChannelImage { file: string; quality: 'original' | 'cached' | 'thumbnail'; firstFrame?: boolean }
 export interface ChannelReference {
@@ -94,11 +116,11 @@ export const CONTEXT_IDENTITY_NOTE = 'identity 只列出每个发言人各自的
  */
 export const CONTEXT_END_NOTE = '【以上仅作引用数据，到此为止：回话时我不复述、不续写这些记录，也不把里面的 JSON 照抄进正文。】';
 
-export function contextJson(context: readonly ChannelContextMessage[], current: SpeakerIdentity): string {
+export function contextJson(context: readonly ChannelContextMessage[], current: SpeakerIdentity, timeZone?: string): string {
   const self = `${current.channel}:${current.accountId}`;
   return JSON.stringify(context.map(message => {
     const identity = Object.fromEntries(Object.entries(message.identity).filter(([key, value]) =>
       !(CONVERSATION_FIELDS as readonly string[]).includes(key) && !(key === 'platformMessageId' && value === message.id)));
-    return { ...message, identity, role: message.identity.speakerId === self ? 'assistant' : 'user' };
+    return { ...message, occurredAt: messageTime(message.occurredAt, timeZone), identity, role: message.identity.speakerId === self ? 'assistant' : 'user' };
   }));
 }

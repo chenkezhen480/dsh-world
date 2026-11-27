@@ -16,10 +16,10 @@ const GAME = { hwnd: 656506, owner: 0, pid: 28624, exe: 'StarRail', title: '崩�
 /** Two helpers: `hands` (administrator: pictures, real input, the sign) and `eyes` (ordinary: windows and starting programs). */
 function helpers(windows = [GAME]) {
   const calls: [string, string, Args][] = [];
-  let picture = 0;
+  let picture = 0, foreground = 1;
   const helper = (who: string) => ({ call: async (op: string, args: Args = {}) => {
     calls.push([who, op, args]);
-    if (op === 'windows') return { windows, foreground: 1 };
+    if (op === 'windows') return { windows, foreground };
     if (op === 'apps') return { apps: [{ name: '记事本', appId: 'Microsoft.WindowsNotepad_8wekyb3d8bbwe!App' }] };
     if (op === 'tray') return { result: 'missing' };
     if (op === 'launch') { windows = [...windows, { hwnd: 77, owner: 0, pid: 7, exe: 'Notepad', title: '无标题 - 记事本', minimized: false, width: 800, height: 600 }]; return {}; }
@@ -29,7 +29,7 @@ function helpers(windows = [GAME]) {
     if (op === 'sheet') { writeFileSync(String(args.file), 'sheet'); return { width: 1, height: 1 }; }
     return {};
   } });
-  return { calls, hands: helper('hands'), eyes: helper('eyes'), by: (who: string) => calls.filter(([each]) => each === who).map(([, op, args]) => [op, args] as const) };
+  return { calls, hands: helper('hands'), eyes: helper('eyes'), by: (who: string) => calls.filter(([each]) => each === who).map(([, op, args]) => [op, args] as const), front: (hwnd: number) => { foreground = hwnd; } };
 }
 
 test('foreground mode sees the whole screen and acts with the real mouse and keyboard, at screen positions', async () => {
@@ -40,7 +40,7 @@ test('foreground mode sees the whole screen and acts with the real mouse and key
   assert.match(shot.text, /^整个屏幕的截图附在下一条消息里（1280×800）/);
   await screen.act({ action: 'click', x: 640, y: 400, double: true });
   assert.deepEqual(h.by('hands').find(([op]) => op === 'rclick')?.[1], { x: -1280, y: 800, right: false, count: 2, hold: 0 }, 'picture pixels doubled, from the screen\'s own left edge');
-  assert.equal(h.by('hands').filter(([op]) => op === 'screen').at(-1)?.[1].markX, 1280, 'the red circle is drawn on the picture, not the screen');
+  assert.deepEqual(h.by('hands').filter(([op]) => op === 'screen').at(-1)?.[1].marks, [1280, 800], 'the red circle is drawn on the picture, not the screen');
   await screen.act({ action: 'type', text: '鲸鲸', submit: true });
   await screen.act({ action: 'press', key: 'ctrl+c' });
   await screen.act({ action: 'scroll', direction: 'down' });
@@ -49,10 +49,41 @@ test('foreground mode sees the whole screen and acts with the real mouse and key
   assert.match((await screen.act({ action: 'drag', x: 100, y: 100, x2: 300, y2: 200 })).text, /^已拖过去。/);
   const input = h.by('hands').filter(([op]) => op.startsWith('r')).map(([op, args]) => [op, args]);
   assert.deepEqual(input.slice(1), [['rtype', { text: '鲸鲸' }], ['rkey', { vk: 0x0d, modifiers: [] }], ['rkey', { vk: 0x43, modifiers: [0x11], hold: 0 }], ['rscroll', { x: -1280, y: 800, up: -3, right: 0 }],
-    ['rclick', { x: -1280, y: 800, right: true, count: 1, hold: 1000 }], ['rkey', { vk: 0x57, modifiers: [], hold: 3000 }], ['rdrag', { x: -2360, y: 200, x2: -1960, y2: 400, right: false, hold: 0 }]], 'a right button held for a second, w held for three, then a drag');
+    ['rclick', { x: -1280, y: 800, right: true, count: 1, hold: 1000 }], ['rkey', { vk: 0x57, modifiers: [], hold: 3000 }], ['rstroke', { xs: [-2360, -1960], ys: [200, 400], right: false, pause: 80, ms: 400 }]], 'a right button held for a second, w held for three, then a drag');
   assert.ok(h.by('eyes').every(([op]) => op === 'windows' || op === 'apps' || op === 'launch' || op === 'tray'), 'the ordinary helper never sends input');
   const signs = h.by('hands').filter(([op]) => op === 'sign').map(([, args]) => args);
   assert.deepEqual(signs[0], { show: true, hwnd: 0, text: '鲸鲸正在操作', hint: '连按两下 Esc 停下', stop: '停下', stopped: '已停下' }, 'the sign is over the whole screen');
+});
+
+test('a swipe goes with the real mouse through every point, pressed and moving at once, at screen positions', async () => {
+  const h = helpers();
+  const screen = createScreen({ hands: h.hands, eyes: h.eyes, settleMs: 0, lingerMs: 20 });
+  await screen.act({ action: 'shot' });
+  const swiped = await screen.act({ action: 'swipe', path: [[600, 100], [1000, 100], [600, 200], [1000, 200]], seconds: 2 });
+  assert.match(swiped.text, /^已滑过去。图上的红线是刚才的路线/);
+  assert.deepEqual(h.by('hands').find(([op]) => op === 'rstroke')?.[1], { xs: [-1360, -560, -1360, -560], ys: [200, 200, 400, 400], right: false, pause: 20, ms: 2000 }, 'an S across part of the screen, no long press first');
+  assert.deepEqual(h.by('hands').filter(([op]) => op === 'screen').at(-1)?.[1].marks, [1200, 200, 2000, 200, 1200, 400, 2000, 400], 'the whole path is drawn, on the picture');
+});
+
+test('when another window took the front after she looked, nothing is sent and she is told which one (her clicks once landed in DSH)', async () => {
+  const DSH = { ...GAME, hwnd: 990, pid: 1, exe: 'DeepSeek Harness', title: '鲸鲸的家 — DeepSeek Harness' };
+  const h = helpers([GAME, DSH]);
+  const screen = createScreen({ hands: h.hands, eyes: h.eyes, settleMs: 0, lingerMs: 20 });
+  h.front(GAME.hwnd);
+  await screen.act({ action: 'shot' });
+  await screen.act({ action: 'click', x: 640, y: 400 });
+  assert.equal(h.by('hands').filter(([op]) => op === 'rclick').length, 1, 'the game is still in front: the click goes');
+  for (const input of [{ action: 'click', x: 640, y: 400 }, { action: 'swipe', path: [[1, 1], [9, 9]] }, { action: 'press', key: 'f' }]) {
+    h.front(GAME.hwnd);
+    await screen.act({ action: 'shot' });
+    h.front(DSH.hwnd);
+    await assert.rejects(screen.act(input), /最前面的窗口换成了「鲸鲸的家 — DeepSeek Harness」，刚才那张截图已经不是现在的样子，这一下没做。先 desktop shot/);
+  }
+  assert.equal(h.by('hands').filter(([op]) => op.startsWith('r')).length, 1, 'no input reached whatever took the front');
+  await assert.rejects(screen.act({ action: 'click', x: 640, y: 400 }), /还没看过屏幕：先 desktop shot/, 'her old picture counts for nothing now');
+  await screen.act({ action: 'shot' });
+  await screen.act({ action: 'click', x: 640, y: 400 });
+  assert.equal(h.by('hands').filter(([op]) => op === 'rclick').length, 2, 'having looked again, she acts on what is there now');
 });
 
 test('opening a program brings its window to the front, and one that is not running is started by the ordinary helper', async () => {

@@ -122,6 +122,10 @@ test('paging, same-turn reading, direct links and back references, invalid and c
   assert.equal(three.nextCursor, undefined);
   assert.deepEqual(excerpts(await s.memory.find({ turnId: 'a:1', limit: 2 })), ['第3句', '第2句']);
   assert.deepEqual(excerpts(await s.memory.find({ turnId: 'a:1', order: 'oldest' })), ['第1句', '第2句', '第3句']);
+  // desc and asc, which she writes out of habit, mean newest and oldest first instead of costing her a refused step.
+  assert.deepEqual(excerpts(await s.memory.find({ limit: 2, order: 'desc' })), ['第5句', '第4句']);
+  assert.deepEqual(excerpts(await s.memory.find({ limit: 2, order: 'asc' })), ['第1句', '第2句']);
+  await assert.rejects(s.memory.find({ order: 'latest' }), code('invalidQuery'));
   await assert.rejects(s.memory.find({ limit: 2, cursor: one.nextCursor!, query: '第' }), code('cursorExpired'));
   await assert.rejects(s.memory.find({ limit: 0 }), code('invalidQuery')); await assert.rejects(s.memory.find({ limit: 101 }), code('invalidQuery'));
   await assert.rejects(s.memory.find({ from: '2026-10-23' }), code('invalidQuery')); await assert.rejects(s.memory.find({ kinds: ['x'] }), code('invalidQuery'));

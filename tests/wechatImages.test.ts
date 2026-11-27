@@ -137,7 +137,8 @@ test('the current protocol accepts an image-only private request and rejects ano
   assert.equal((await post([{ ...previous, identity: { ...privateIdentity, speakerId: 'wechat:other' } }])).status, 400);
   const response = await post([{ ...previous, identity: privateIdentity }]);
   assert.equal(response.status, 200);
-  assert.equal((await response.json()).text, '看到了');
+  assert.equal((await response.json()).text, '', 'answered as soon as she has the picture; her answer goes out through wechat_send');
+  await agent.whenIdle();
   assert.equal(requests.length, 1);
   assert.ok(requests[0].messages.some(message => message.content.some(block => block.type === 'image')));
   const context = requests[0].messages.find(message => message.source?.kind === 'dsh-world-channel-context')!;

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as pause } from 'node:timers/promises';
 import { errorText } from '../../../faults.ts';
-import { desktopKey, dragged, holdMs, NOTCHES, pressed, VK, type DesktopInput, type Point } from './input.ts';
+import { desktopKey, DRAG_MS, DRAG_PAUSE_MS, dragged, holdMs, MAX_SWIPE_POINTS, NOTCHES, pressed, SWIPE_PAUSE_MS, swipeMs, VK, type DesktopInput, type Point } from './input.ts';
 import type { DesktopResult } from './turns.ts';
 
 /** The screenshot's long edge; her coordinates are in this image's pixels and are mapped back to real ones. */
@@ -14,19 +14,26 @@ const ZOOM_GROW = 4;
 /** How long a program has to repaint after input before the next picture. */
 export const SETTLE_MS = 400;
 
-/** What the helper is asked to picture: a part (all of it when `w` is 0), fitted to `edge`, with her last input marked. */
-export interface Framing { file: string; edge: number; grow: number; x: number; y: number; w: number; h: number; markX: number; markY: number }
+/**
+ * What the helper is asked to picture: a part (all of it when `w` is 0), fitted to `edge`, with her last input marked:
+ * `marks` is x, y pairs on the pictured area, one for a click, the whole path for a drag or a swipe, none otherwise.
+ */
+export interface Framing { file: string; edge: number; grow: number; x: number; y: number; w: number; h: number; marks: number[] }
 /** How a mode sends input. Positions are real pixels: the window's client area in the background, the screen in front. */
 export interface Input {
   click(at: Point, how: { right: boolean; count: number; hold: number }): Promise<unknown>;
-  drag(from: Point, to: Point, how: { right: boolean; hold: number }): Promise<unknown>;
+  /** Pressed at the first point, `pause` there, through the rest in `ms`, let go at the last: a drag or a swipe. */
+  stroke(points: Point[], how: { right: boolean; pause: number; ms: number }): Promise<unknown>;
   type(text: string): Promise<unknown>;
   /** Without `hold`, a plain stroke. */
   key(key: { vk: number; modifiers: number[] }, hold?: number): Promise<unknown>;
   scroll(at: Point, up: number, right: number): Promise<unknown>;
 }
-/** The last picture she was given: how many real pixels one of its pixels is, its size, where it starts, and its print. */
-interface View { scale: number; width: number; height: number; left: number; top: number; print: string }
+/**
+ * The last picture she was given: how many real pixels one of its pixels is, its size, where it starts, its print, and
+ * the window that was in front when it was taken (where that can change under her).
+ */
+interface View { scale: number; width: number; height: number; left: number; top: number; print: string; front?: number }
 type Action = (input: DesktopInput) => Promise<DesktopResult>;
 
 /**
@@ -46,16 +53,22 @@ export function createActions(deps: {
   unseen: string;
   /** Said when a held press or a drag left the picture exactly as it was, in a mode where that may mean it was never felt. */
   unmoved?: string;
+  /**
+   * The window in front now, where input goes to whatever is in front (the whole screen). One other than when she last
+   * looked means her picture is stale: the partner typing in another window took the front, and her clicks then landed
+   * there while she took them for not working.
+   */
+  front?(): Promise<{ hwnd: number; title?: string }>;
   /** Names the temporary picture files. */
   kind: string;
   settleMs: number;
 }) {
   let view: View | undefined, shots = 0;
 
-  async function take(region?: { x: number; y: number; w: number; h: number }, mark?: Point) {
+  async function take(region?: { x: number; y: number; w: number; h: number }, marks: Point[] = []) {
     const file = join(tmpdir(), `dsh-world-${deps.kind}-${process.pid}-${++shots}.png`);
     try {
-      const { shot, also = '' } = await deps.picture({ file, edge: IMAGE_EDGE, grow: region ? ZOOM_GROW : 1, ...(region ?? { x: 0, y: 0, w: 0, h: 0 }), markX: mark?.x ?? -1, markY: mark?.y ?? -1 });
+      const { shot, also = '' } = await deps.picture({ file, edge: IMAGE_EDGE, grow: region ? ZOOM_GROW : 1, ...(region ?? { x: 0, y: 0, w: 0, h: 0 }), marks: marks.flatMap(mark => [mark.x, mark.y]) });
       return { data: readFileSync(file), width: Number(shot.width), height: Number(shot.height), clientWidth: Number(shot.clientWidth), left: Number(shot.left ?? 0), top: Number(shot.top ?? 0), print: String(shot.print ?? ''), also };
     } finally { rmSync(file, { force: true }); }
   }
@@ -69,44 +82,72 @@ export function createActions(deps: {
     return { local, real: { x: local.x + view.left, y: local.y + view.top } };
   }
   /** `before`: the print of the picture a held press or a drag started from, to tell her when nothing at all changed. */
-  async function shot(said = '', mark?: Point, before?: string): Promise<DesktopResult> {
-    const taken = await take(undefined, mark);
-    view = { scale: taken.clientWidth / taken.width, width: taken.width, height: taken.height, left: taken.left, top: taken.top, print: taken.print };
+  async function shot(said = '', marks: Point[] = [], before?: string): Promise<DesktopResult> {
+    const taken = await take(undefined, marks);
+    const front = deps.front ? (await deps.front()).hwnd : undefined;
+    view = { scale: taken.clientWidth / taken.width, width: taken.width, height: taken.height, left: taken.left, top: taken.top, print: taken.print, ...(front === undefined ? {} : { front }) };
     if (deps.unmoved && before && taken.print === before) said += deps.unmoved;
-    if (mark) said += '图上的红圈是刚才点到的地方，没点中就看偏了多少，改了再点。';
+    if (marks.length === 1) said += '图上的红圈是刚才点到的地方，没点中就看偏了多少，改了再点。';
+    if (marks.length > 1) said += '图上的红线是刚才的路线：圆圈是按下的地方，十字是松开的地方；起点没按在要拖的东西上，就看偏了多少，改了再来。';
     return { text: `${said}${deps.subject()}的截图附在下一条消息里（${taken.width}×${taken.height}）。按图上的像素用 desktop click 带 x、y；字太小就 desktop zoom。${taken.also}`, image: { data: taken.data, mediaType: 'image/png' } };
   }
   /** After acting she sees the result; `held` is a press held down or dragged. */
-  async function after(done: string, mark?: Point, held = false): Promise<DesktopResult> {
+  async function after(done: string, marks: Point[] = [], held = false): Promise<DesktopResult> {
     const before = held ? view?.print : undefined;
     await pause(deps.settleMs);
-    return shot(done, mark, before);
+    return shot(done, marks, before);
   }
+  /** Checked just before her input is sent, once it is known to be well formed: what she saw must still be in front. */
+  async function stillInFront(): Promise<void> {
+    if (!deps.front || view?.front === undefined) return;
+    const now = await deps.front();
+    if (now.hwnd === view.front) return;
+    view = undefined;
+    throw new Error(`最前面的窗口换成了「${now.title || '别的窗口'}」，刚才那张截图已经不是现在的样子，这一下没做。先 desktop shot 看看现在的样子；可能是伙伴在用电脑，要接着操作原来的程序就 desktop open 它，会把伙伴正在用的窗口挤到后面。`);
+  }
+  /** [x, y] points on her picture, as she gives them for a swipe. */
+  function path(points: unknown): { real: Point; local: Point }[] {
+    if (!Array.isArray(points) || points.length < 2 || points.length > MAX_SWIPE_POINTS || !points.every(point => Array.isArray(point) && point.length === 2)) {
+      throw new Error(`path 是一串 [x, y]（截图上的像素），从按下的地方经过每个点到松开的地方，2 到 ${MAX_SWIPE_POINTS} 个点`);
+    }
+    return points.map(([x, y]) => at(x, y));
+  }
+  const length = (points: number[][]) => points.slice(1).reduce((sum, [x, y], i) => sum + Math.hypot(x! - points[i]![0]!, y! - points[i]![1]!), 0);
 
   const run = {
     shot: () => shot(),
     click: async input => {
       const { real, local } = at(input.x, input.y), hold = holdMs(input.hold);
+      await stillInFront();
       await deps.input.click(real, { right: input.right === true, count: input.double ? 2 : 1, hold });
-      return after(pressed('点击', input.hold), local, hold > 0);
+      return after(pressed('点击', input.hold), [local], hold > 0);
     },
     drag: async input => {
-      const from = at(input.x, input.y), to = at(input.x2, input.y2);
-      await deps.input.drag(from.real, to.real, { right: input.right === true, hold: holdMs(input.hold) });
-      return after(dragged(input.hold), to.local, true);
+      const from = at(input.x, input.y), to = at(input.x2, input.y2), hold = holdMs(input.hold);
+      await stillInFront();
+      await deps.input.stroke([from.real, to.real], { right: input.right === true, pause: hold || DRAG_PAUSE_MS, ms: DRAG_MS });
+      return after(dragged(input.hold), [from.local, to.local], true);
+    },
+    swipe: async input => {
+      const points = path(input.path), ms = swipeMs(input.seconds, length(input.path!));
+      await stillInFront();
+      await deps.input.stroke(points.map(point => point.real), { right: input.right === true, pause: SWIPE_PAUSE_MS, ms });
+      return after('已滑过去。', points.map(point => point.local), true);
     },
     type: async input => {
       if (typeof input.text !== 'string' || !input.text) throw new Error('text 不能是空的');
       const point = input.x !== undefined || input.y !== undefined ? at(input.x, input.y) : undefined;
+      await stillInFront();
       if (point) await deps.input.click(point.real, { right: false, count: 1, hold: 0 });
       await deps.input.type(input.text);
       if (input.submit) await deps.input.key({ vk: VK.return!, modifiers: [] });
-      return after(input.submit ? '已输入并回车。' : '已输入。', point?.local);
+      return after(input.submit ? '已输入并回车。' : '已输入。', point ? [point.local] : []);
     },
     press: async input => {
       const key = desktopKey(String(input.key ?? '')), hold = holdMs(input.hold);
+      await stillInFront();
       await deps.input.key(key, hold);
-      return after(pressed(`按 ${input.key}`, input.hold), undefined, hold > 0);
+      return after(pressed(`按 ${input.key}`, input.hold), [], hold > 0);
     },
     scroll: async input => {
       const step = { up: [NOTCHES, 0], down: [-NOTCHES, 0], left: [0, -NOTCHES], right: [0, NOTCHES] }[String(input.direction)];
@@ -114,6 +155,7 @@ export function createActions(deps: {
       deps.ready?.();
       if (!view) throw new Error(deps.unseen);
       const point = input.x === undefined && input.y === undefined ? at(view.width / 2, view.height / 2) : at(input.x, input.y);
+      await stillInFront();
       await deps.input.scroll(point.real, step[0]!, step[1]!);
       return after('已滚动。');
     },

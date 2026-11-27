@@ -18,6 +18,7 @@ import { consoleSources } from './console/snapshot.ts';
 import { compactionFor, createHomeApply } from './console/homeApply.ts';
 import { createPromptMerge } from './console/promptMerge.ts';
 import { errorText, Faults } from './faults.ts';
+import { formatLocalTime } from './timeContext.ts';
 import { compactionPresetOverride, hasAgentPresets, repairCopiedPresets, restoreCompactionPreset, swapCompactionOnce, type ConfigEditor } from './compactionSwap.ts';
 import { hostLife } from './life/host.ts';
 import { createLifeStore, durableWrite } from './life/lifeStore.ts';
@@ -170,6 +171,11 @@ export function apply(ctx: Context, config: Config): void {
   const store = createArchiveStore({ ...config, root: dshHome });
   const power = createWorldSwitch(worldDir, config.archiveScope ?? 'workspace', config.fallbackWakeTime, config as LegacyModuleConfig);
   const memoryConfig = { ...config, archiveScope: power.archiveScope() };
+  /** Her partner's own accounts elsewhere: the QQ owner from the config, and the WeChat chat chosen in the console. */
+  const partnerAccounts = (): ReadonlySet<string> => new Set([
+    ...config.qqNative?.ownerQQ ? [`qq:${config.qqNative.ownerQQ}`] : [],
+    ...power.wechatPartner() ? [`wechat:${power.wechatPartner()}`] : [],
+  ]);
   const faults = new Faults();
   let photoStore: PhotoStore | undefined;
   const photos = () => {
@@ -222,7 +228,7 @@ export function apply(ctx: Context, config: Config): void {
     if (memory || disposed) return;
     try {
       const prompt = { file: worldPromptFile, persona: personaFile, conversationsDir: join(worldDir, 'conversations'), names: names(), memoryTools: true, wikiDir, ...(config.life ? { life: options } : {}) };
-      memory = createWorldRuntime(ctx, { ...memoryConfig, selfFile }, store, { prompt, names, isHome: id => isHome(id), archiveSession, inWorkspace, memory: memoryService, elsewhere }, power.memoryTurns, power.coldHours);
+      memory = createWorldRuntime(ctx, { ...memoryConfig, selfFile }, store, { prompt, names, isHome: id => isHome(id), archiveSession, inWorkspace, memory: memoryService, elsewhere, partnerAccounts }, power.memoryTurns, power.coldHours);
       await memory.start({ fresh }); faults.clear('memory');
     } catch (error) { memory = undefined; faults.set('memory', `记忆线没能启动：${errorText(error)}`); ctx.logger.error(error); }
   }
@@ -305,6 +311,11 @@ export function apply(ctx: Context, config: Config): void {
     });
     let bridge: Bridge | undefined;
     let wechat: WechatModule | undefined;
+    /** A message WeChat could not hand to her: the adapter then holds that chat for a person to check, so health says why. */
+    const wechatFailure = () => {
+      const failure = wechat?.status().lastFailure;
+      return failure ? [`微信：${formatLocalTime(new Date(failure.at), config.timeZone).slice(0, 16).replace('T', ' ')} 有一条消息没能交给她（${failure.error}），适配器会停下这个聊天等核对`] : [];
+    };
     let qqNative: QqNativeModule | undefined;
     let computer: ComputerModule | undefined;
     /** Her own browser follows the life line and its console switch; a failure to start is a fault, never a broken plugin. */
@@ -403,6 +414,7 @@ export function apply(ctx: Context, config: Config): void {
         qqChannels = groupSessions;
         qqNative = createQqNativeModule({
           ctx: lifeCtx,
+          timeZone: config.timeZone,
           inWorld: inWorldSession,
           roomDir: options.roomDir,
           isHome: id => current.isHome(id),
@@ -497,10 +509,10 @@ export function apply(ctx: Context, config: Config): void {
     if (config.bridge) lifeCtx.effect(() => webServer.register(compactRoute(prefix, () => bridge, () => !power.running() || !life ? '请先启动世界生活线' : homeApply.request(), config.allowedHosts)), 'dsh-world compact route');
 
     // Her album lives in her room, so the console shows it whether or not the life line is running.
-    const sources = consoleSources({ ctx: lifeCtx, config: memoryConfig, archive: store, longTerm: memoryService, names, ...(lifeStore ? { lifeStore } : {}), life: () => life, homeApply: homeApply.snapshot, promptMerge: promptMerge.snapshot, compactAfterReview: power.compactAfterReview, schedule: () => ({ review: power.reviewTime(), wake: power.wakeTime(), defaults: { review: DEFAULT_REVIEW_TIME, wake: config.fallbackWakeTime }, life: Boolean(config.life) }), photos, diaryDir: options.diaryDir, running: power.running, dailyBudget: power.dailyBudget, memoryTurns: power.memoryTurns, coldHours: power.coldHours, selectedArchiveScope: power.selectedArchiveScope, workspacePermissions: permissions.snapshot, wechat: () => wechat ? { ...wechat.status(), adapter: adapter?.status() ?? null } : undefined, archiveSession, native: () => qqNative?.status() ?? null,
+    const sources = consoleSources({ ctx: lifeCtx, config: memoryConfig, archive: store, longTerm: memoryService, names, ...(lifeStore ? { lifeStore } : {}), life: () => life, homeApply: homeApply.snapshot, promptMerge: promptMerge.snapshot, compactAfterReview: power.compactAfterReview, schedule: () => ({ review: power.reviewTime(), wake: power.wakeTime(), defaults: { review: DEFAULT_REVIEW_TIME, wake: config.fallbackWakeTime }, life: Boolean(config.life) }), photos, diaryDir: options.diaryDir, running: power.running, dailyBudget: power.dailyBudget, memoryTurns: power.memoryTurns, coldHours: power.coldHours, selectedArchiveScope: power.selectedArchiveScope, workspacePermissions: permissions.snapshot, wechat: () => wechat ? { ...wechat.status(), adapter: adapter?.status() ?? null, partner: power.wechatPartner() ?? null } : undefined, archiveSession, native: () => qqNative?.status() ?? null,
       compactionPreset: () => configEditor ? compactionPresetOverride(configEditor, config.agentPreset, profileDir()) : null,
       update: () => updates?.status(upgradeTools(profile())),
-      modules: () => ({ ...computerRows(moduleLimits()), wechat: { available: config.wechat, enabled: power.wechatEnabled(), running: wechat !== undefined }, qq: { available: Boolean(config.qqNative?.enabled), enabled: power.qqEnabled(), running: qqNative !== undefined, ...(qqSdk.needsRestart() ? { restartRequired: true } : {}) }, cottage: { available: room().current, enabled: power.cottageEnabled(), running: cottage !== undefined }, foreground: { available: computer?.desktopOn() === true, enabled: computer?.foregroundOn() === true, running: computer?.foregroundOn() === true } }), room: () => ({ ...room(), ...(cottage ? { life: cottage.view() } : {}) }), computer: () => computer?.status(), faults: () => [...faults.list(), ...(adapter?.status().error ? [`微信适配器：${adapter.status().error}`] : []), ...(memory?.faults() ?? []), ...(bridge?.faults() ?? []), ...memoryHealth()] });
+      modules: () => ({ ...computerRows(moduleLimits()), wechat: { available: config.wechat, enabled: power.wechatEnabled(), running: wechat !== undefined }, qq: { available: Boolean(config.qqNative?.enabled), enabled: power.qqEnabled(), running: qqNative !== undefined, ...(qqSdk.needsRestart() ? { restartRequired: true } : {}) }, cottage: { available: room().current, enabled: power.cottageEnabled(), running: cottage !== undefined }, foreground: { available: computer?.desktopOn() === true, enabled: computer?.foregroundOn() === true, running: computer?.foregroundOn() === true } }), room: () => ({ ...room(), ...(cottage ? { life: cottage.view() } : {}) }), computer: () => computer?.status(), faults: () => [...faults.list(), ...(adapter?.status().error ? [`微信适配器：${adapter.status().error}`] : []), ...wechatFailure(), ...(memory?.faults() ?? []), ...(bridge?.faults() ?? []), ...memoryHealth()] });
     const actions: ConsoleActions = {
       start: () => changeWorld(async () => {
         if (disposed || power.running()) return;

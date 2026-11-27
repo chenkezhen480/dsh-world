@@ -78,8 +78,18 @@ class BufferTest(unittest.TestCase):
                     adapter.watch(config, SimpleNamespace(get_messages=clock.rows), store, lambda *_: None, ask=lambda _file, message: asked.append(message) or dict(text='ok'), report=lambda *_: None, poll=poll)
                 self.assertEqual([message['text'] for message in asked], ['在吗\n我想问你\n周末去哪'])
                 self.assertEqual(asked[0]['identity']['platformMessageId'], 'm.db:3')
+                self.assertEqual(asked[0]['sentAt'], '1970-01-01T00:01:43+00:00', 'when its last line was sent, for a note if it reaches her late')
                 store.checkPending()
             finally: store.close()
+
+
+    def test_a_private_sticker_joins_its_senders_batch_and_counts_as_a_picture(self):
+        def media(local_id, kind): return dict(text(local_id, ''), type=kind)
+        # Sent with words around it, a sticker is part of what they said, not a request of its own.
+        self.assertEqual(self.buffer([(0, text(1, '看这个')), (1, media(2, '动画表情')), (2, text(3, '哈哈'))])[0], [1, 2, 3])
+        self.assertEqual(self.buffer([(0, media(1, '动画表情')), (1, text(2, '可爱吧'))])[0], [1, 2])
+        self.assertEqual(self.buffer([(0, media(1, '动画表情')), (1, media(2, '图片')), (2, media(3, '动画表情'))])[0], [1, 2], 'two pictures a request, stickers included')
+        self.assertEqual(self.buffer([(0, text(1, '在吗')), (1, media(2, '动画表情'))], chat='family@chatroom')[0], [1], 'a group only waits for words')
 
 
 if __name__ == '__main__':

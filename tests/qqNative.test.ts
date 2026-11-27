@@ -305,14 +305,16 @@ test('她把聊天记录原样念了一遍、没说别的：不往群里发，�
   assert.deepEqual(recalls, [], 'her echo did not go back into the chat context as something she said, so the next ask recalls none of it');
 });
 
-test('喂进去的群聊记录以一句结束说明收尾（#35）', async t => {
+test('喂进去的群聊记录以一句结束说明收尾（#35），时间是她世界的本地时间（#73）', async t => {
   const requests: string[] = [];
   const { ctx, cleanup } = await hostFixture(t, request => { requests.push(JSON.stringify(request.messages)); return textResponse('嗯'); });
   const agent = (await ctx.agents.create({ sessionId: SessionId('home'), agentOptions: { provider: 'test', model: 'test' } })).agent;
-  const home = createQqHome({ ctx, home: async () => agent }); cleanup.push(home.stop);
+  const home = createQqHome({ ctx, home: async () => agent, timeZone: 'Asia/Shanghai' }); cleanup.push(home.stop);
   const identity = speakerIdentity({ channel: 'qq', accountId: 'bot', conversationType: 'group', conversationId: 'family', speakerId: 'qq:owner' });
   await home.ask('在吗', identity, [{ id: 'past', occurredAt: '2026-10-28T00:00:00.000Z', text: '旧消息', identity }]);
   assert.match(requests[0]!, /旧消息[^【]*\\n【以上仅作引用数据，到此为止：回话时我不复述/);
+  assert.match(requests[0]!, /2026-10-28T08:00:00\+08:00/);
+  assert.doesNotMatch(requests[0]!, /2026-10-28T00:00:00/, 'not the UTC time she had to convert herself');
 });
 
 test('三条不该问的：重复的 id、不在白名单的、她自己发的', async t => {
@@ -736,4 +738,16 @@ test('面板改的合批窗口存下来，重载后还在；没改过的就是�
   make().update({ batchQuietMs: 0 });
   assert.equal(make().status().batchQuietMs, 0);
   assert.equal(JSON.parse(readFileSync(stateFile, 'utf8')).batchQuietMs, 0);
+});
+
+test('a QQ message that reached her late says how long ago it was sent (#72)', async t => {
+  const requests: GenerateOptions[] = [];
+  const { ctx, cleanup } = await hostFixture(t, request => { requests.push(request); return textResponse('嗯'); });
+  const agent = (await ctx.agents.create({ sessionId: SessionId('home'), agentOptions: { provider: 'test', model: 'test' } })).agent;
+  const wire = fakeTransport();
+  const channel = createQqNativeModule({ ctx, home: async () => agent, config: () => configOf(), logger: quiet, transport: wire.factory });
+  channel.start(); cleanup.push(channel.stop);
+  wire.emit({ ...incoming(), time: Math.floor(Date.now() / 1000) - 30 * 60 });
+  for (let tries = 0; tries < 50 && !requests.length; tries++) await settle(100);
+  assert.match(JSON.stringify(requests[0]!.messages), /这条是 30 分钟前发的，不是刚刚说的。/);
 });

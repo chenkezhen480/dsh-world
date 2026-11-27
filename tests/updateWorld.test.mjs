@@ -70,6 +70,8 @@ test('updater backs up the profile and world data and preserves authored files a
   assert.deepEqual(await readFile(savedArchive), await readFile(f.options.archive));
   assert.match(await readFile(join(f.oldPackage, 'lib', 'index.js'), 'utf8'), /0\.6\.0/);
   assert.equal((await readdir(join(f.root, 'profiles'))).some(name => name.endsWith('.lock')), false);
+  // What the updater said stays with the backup, for when the window it ran in is gone.
+  assert.match(await readFile(join(result.backup, 'update.log'), 'utf8'), /Backing up[\s\S]*Backed up the profile[\s\S]*Updated dsh-world to 0\.6\.0/);
 });
 
 test('node_modules from an older pnpm is reinstalled with DSH\'s pnpm before the add, which would otherwise refuse it', async t => {
@@ -195,6 +197,7 @@ test('a failed install restores the whole old profile and retains the failed pro
   const [backup] = await readdir(join(f.root, 'backups'));
   const failed = join(f.root, 'backups', backup, 'failed-profile');
   assert.equal(JSON.parse(await readFile(join(failed, 'node_modules', 'dsh-world', 'package.json'), 'utf8')).version, '0.6.0');
+  assert.match(await readFile(join(f.root, 'backups', backup, 'update.log'), 'utf8'), /Update failed: installation interrupted[\s\S]*Old profile restored/);
 });
 
 test('unexpected changes to other profile configuration fail validation and restore the old profile', async t => {
@@ -325,4 +328,43 @@ test('profile backup and restore preserve internal dependency directory links wi
   assert.ok((await lstat(link)).isSymbolicLink());
   const [backup] = await readdir(join(f.root, 'backups'));
   assert.ok((await lstat(join(f.root, 'backups', backup, 'profile', 'node_modules', 'linked-dependency'))).isSymbolicLink());
+});
+
+test('a relative directory link is backed up as a junction to where it led, so the backup and a restore from it still open', async t => {
+  const f = await fixture(t);
+  // Like plugins linked from <DSH_HOME>/plugins: written relative, from the profile's node_modules.
+  const plugin = join(f.root, 'plugins', 'companion-connector');
+  await mkdir(plugin, { recursive: true });
+  await writeFile(join(plugin, 'index.js'), 'the linked plugin');
+  const link = join(f.profile, 'node_modules', 'companion-connector');
+  try { await symlink(join('..', '..', '..', 'plugins', 'companion-connector'), link, 'dir'); }
+  catch (error) { if (error.code === 'EPERM') return t.skip('this account cannot create symbolic links'); throw error; }
+  const { updateWorld } = await import('../scripts/update-world.mjs');
+  await assert.rejects(updateWorld(f.options, {
+    processes: async () => [], log() {},
+    run: async (file, args, settings) => {
+      const result = await f.runner(file, args, settings);
+      if (args[0] === f.options.pnpm) throw new Error('installation interrupted');
+      return result;
+    },
+  }), /installation interrupted.*Old profile restored/is);
+  assert.equal(await readFile(join(link, 'index.js'), 'utf8'), 'the linked plugin', 'the restored profile opens it');
+  if (process.platform === 'win32') {
+    // Copied as written, it pointed elsewhere from the backup folder and became a file link DSH could not open (EPERM).
+    const [backup] = await readdir(join(f.root, 'backups'));
+    const saved = join(f.root, 'backups', backup, 'profile', 'node_modules', 'companion-connector');
+    assert.equal(await realpath(saved), await realpath(plugin));
+    assert.equal(await readFile(join(saved, 'index.js'), 'utf8'), 'the linked plugin');
+  }
+});
+
+test('a link that was already broken before the update does not stop it', async t => {
+  const f = await fixture(t);
+  const gone = join(f.root, 'plugins', 'removed-plugin');
+  await mkdir(gone, { recursive: true });
+  await symlink(gone, join(f.profile, 'node_modules', 'removed-plugin'), process.platform === 'win32' ? 'junction' : 'dir');
+  await rm(gone, { recursive: true });
+  const { updateWorld } = await import('../scripts/update-world.mjs');
+  const result = await updateWorld(f.options, { run: f.runner, processes: async () => [], log() {} });
+  assert.equal(result.version, '0.6.0');
 });

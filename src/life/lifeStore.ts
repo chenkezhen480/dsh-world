@@ -59,9 +59,13 @@ export function createLifeStore(worldDir: string, timeZone: string) {
     write: (state: LifeState) => durableWrite(stateFile, JSON.stringify(state, null, 2)),
     appendWake: (record: WakeRecord) => append(join(lifeDir, 'wakes.jsonl'), record),
     appendCompaction: (record: CompactionRecord) => append(join(worldDir, 'compactions.jsonl'), record),
-    /** Never throws: a failed write is reported to the caller and marks the next record. The gap flag is in-memory and marks the next successful write, which may land in a later day's file. */
+    /**
+     * Never throws: a failed write is reported to the caller and marks the next record. The gap flag is in-memory and marks the next successful write, which may land in a later day's file.
+     * She reads this file at her evening review, so the time is written local with its offset: a UTC `Z` there read as the wrong hour.
+     */
     appendActivity(record: ActivityRecord): boolean {
-      try { mkdirSync(activityDir, { recursive: true }); append(join(activityDir, `${localDay(record.time)}.jsonl`), activityGap ? { ...record, gapBefore: true } : record); activityGap = false; return true; }
+      const local = { ...record, time: formatLocalTime(new Date(record.time), timeZone) };
+      try { mkdirSync(activityDir, { recursive: true }); append(join(activityDir, `${localDay(record.time)}.jsonl`), activityGap ? { ...local, gapBefore: true } : local); activityGap = false; return true; }
       catch { activityGap = true; return false; }
     },
     wakes: () => readJsonl<WakeRecord>(join(lifeDir, 'wakes.jsonl')),

@@ -214,7 +214,7 @@ export interface QqTransportOptions {
 /** One message to send, kept as it was so a retry sends exactly the same. */
 interface Outgoing { kind: 'group' | 'private'; target: string; parts: string | QqPart[] }
 /** What one conversation said while its words were gathering. */
-interface Gathered { text: string; identity: SpeakerIdentity; who: string; images: QqImageSegment[]; messageId: string; quoted?: true }
+interface Gathered { text: string; identity: SpeakerIdentity; who: string; images: QqImageSegment[]; messageId: string; quoted?: true; sentAt?: string }
 
 /**
  * QQ as another way into the same home, without a bridge process in between.
@@ -225,6 +225,8 @@ interface Gathered { text: string; identity: SpeakerIdentity; who: string; image
  */
 export function createQqNativeModule(deps: {
   ctx: Context;
+  /** Her world's zone, for the times she reads in a group's earlier messages. */
+  timeZone?: string;
   home(identity: SpeakerIdentity): Promise<Agent>;
   inWorld?: InWorld;
   /** Whether the session is her home now: what she says there on her own goes to the owner too. */
@@ -238,7 +240,7 @@ export function createQqNativeModule(deps: {
   /** 传输层；不给就用真身（snowluma.js 那条线）。测试靠它把合成事件灌进来。 */
   transport?(options: QqTransportOptions): QqTransport;
 }) {
-  const home = createQqHome({ ctx: deps.ctx, home: deps.home, inWorld: deps.inWorld });
+  const home = createQqHome({ ctx: deps.ctx, home: deps.home, inWorld: deps.inWorld, timeZone: deps.timeZone });
   const seen = recentIds(SEEN_LIMIT);
   // 她说出去的消息 id。有人引用她的话，引用的就是这个 id。
   const sentIds = recentIds(SEEN_LIMIT);
@@ -432,7 +434,7 @@ export function createQqNativeModule(deps: {
     }
     const images = (message.segments ?? []).filter(segment => segment?.type === 'image')
       .slice(0, MAX_KEPT_IMAGES + 1).map(segment => ({ file: segment.data?.file, url: segment.data?.url }));
-    batches.add(key, { text, identity, who: speakerName, images, messageId });
+    batches.add(key, { text, identity, who: speakerName, images, messageId, ...(message.time ? { sentAt: new Date(message.time * 1000).toISOString() } : {}) });
   }
 
   /**
@@ -495,7 +497,7 @@ export function createQqNativeModule(deps: {
       const images = gathered.flatMap(item => item.images.map(image => ({ ...image, identity: item.identity })));
       const reply = await home.ask(text, identity, contexts.get(key) ?? [], images.length
         ? () => admitQqImages(deps.ctx, images, client?.getImage?.bind(client))
-        : undefined, gathered.some(item => item.quoted));
+        : undefined, gathered.some(item => item.quoted), gathered.at(-1)!.sentAt);
       const words = stripHostNoise(reply.text);
       // 提醒过一次还是没有能发的话：不发，但要留下痕迹，分得清「她没说出话」和「路丢了」（#34）；
       // 只剩复述的聊天记录、工具标签这些（#35）也一样。

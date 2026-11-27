@@ -16,7 +16,7 @@ import { hostFixture, mountCompaction, textResponse } from './hostFixture.ts';
 import { createWorldRuntime } from '../src/index.ts';
 import * as worldPlugin from '../src/index.ts';
 import { moduleLimits } from '../src/ecosystem/computer/index.ts';
-import { DEFAULT_INBOX_IGNORE } from '../src/worldSwitch.ts';
+import { DEFAULT_INBOX_IGNORE, DEFAULT_MEMORY_TURNS } from '../src/worldSwitch.ts';
 import { createArchiveStore } from '../src/store.ts';
 import { record } from './fixtures.ts';
 import TokenMeter from '@deepseek-ai/dsh-token-meter';
@@ -423,7 +423,7 @@ test('overflow remains eligible for host recovery and reports an explicit capaci
   assert.equal(errors.length, 1);
   assert.match(String((errors[0] as { error: Error }).error), /容量不足/);
 });
-test('automatic tool-free compaction is followed by the latest 200 turns before the next conversation request', async t => {
+test('automatic tool-free compaction is followed by the latest turns of the default window before the next conversation request', async t => {
   const requests: GenerateOptions[] = []; const summaries: GenerateOptions[] = [];
   const { ctx, root, cleanup, errors } = await hostFixture(t, async function* (request) {
     if (isAgentLoopRequest(request)) { requests.push(request); yield* textResponse('conversation response'); }
@@ -448,7 +448,7 @@ test('automatic tool-free compaction is followed by the latest 200 turns before 
   }
   const memory = requests[1].messages.find(m => m.source?.kind === 'dsh-world-history')!;
   const turns = memory.content.filter(b => b.type === 'text')[0].text.split('\n').slice(1).map(line => JSON.parse(line));
-  assert.equal(turns.length, 200);
+  assert.equal(turns.length, DEFAULT_MEMORY_TURNS);
   assert.ok(turns.some(turn => turn.session === 'auto-com' && turn.messages.some((message: { content: string }) => message.content === 'first')));
   assert.ok(!turns.some(turn => turn.messages.some((message: { content: string }) => message.content === 'seed-message-0')));
   assert.equal(requests[1].messages.filter(m => m.source?.kind === 'dsh-world-history').length, 1);

@@ -124,7 +124,7 @@ public static class Desk {
    * The client area as the window itself draws it, covered or not; a part of it when w > 0. The picture is shrunk to
    * fit `edge` and enlarged at most `grow` times, so a small part can be looked at closely.
    */
-  public static DeskShot Shot(long hwnd, string file, int edge, double grow, int x, int y, int w, int h, int markX, int markY) {
+  public static DeskShot Shot(long hwnd, string file, int edge, double grow, int x, int y, int w, int h, int[] marks) {
     Aware();
     var window = Live(hwnd);
     RECT c;
@@ -141,16 +141,16 @@ public static class Desk {
           throw new Exception(Elevated(pid) ? "ELEVATED: the window belongs to a program running as administrator" : "PrintWindow failed");
         }
       }
-      return Render(full, file, edge, grow, x, y, w, h, markX, markY, 0, 0);
+      return Render(full, file, edge, grow, x, y, w, h, marks, 0, 0);
     }
   }
   /** The whole screen (every monitor), as foreground mode sees it; positions on it are screen positions from left, top. */
-  public static DeskShot Screen(string file, int edge, double grow, int x, int y, int w, int h, int markX, int markY) {
+  public static DeskShot Screen(string file, int edge, double grow, int x, int y, int w, int h, int[] marks) {
     Aware();
     int left = GetSystemMetrics(76), top = GetSystemMetrics(77), width = GetSystemMetrics(78), height = GetSystemMetrics(79);
     using (var full = new Bitmap(width, height, PixelFormat.Format32bppArgb)) {
       using (var g = Graphics.FromImage(full)) g.CopyFromScreen(left, top, 0, 0, full.Size);
-      return Render(full, file, edge, grow, x, y, w, h, markX, markY, left, top);
+      return Render(full, file, edge, grow, x, y, w, h, marks, left, top);
     }
   }
   /** A process the helper cannot read the token of runs above it: as administrator, or protected. */
@@ -160,8 +160,11 @@ public static class Desk {
     try { IntPtr token; if (!OpenProcessToken(process, 0x8, out token)) return true; CloseHandle(token); return false; }
     finally { CloseHandle(process); }
   }
-  /** A part of `full` (all of it when w is 0), fitted to `edge` and enlarged at most `grow` times, with the last click marked. */
-  static DeskShot Render(Bitmap full, string file, int edge, double grow, int x, int y, int w, int h, int markX, int markY, int left, int top) {
+  /**
+   * A part of `full` (all of it when w is 0), fitted to `edge` and enlarged at most `grow` times, with her last input
+   * marked: `marks` is x, y pairs, one for a click, the whole path for a drag or a swipe.
+   */
+  static DeskShot Render(Bitmap full, string file, int edge, double grow, int x, int y, int w, int h, int[] marks, int left, int top) {
     var whole = new Rectangle(0, 0, full.Width, full.Height);
     var part = w > 0 ? Rectangle.Intersect(new Rectangle(x, y, w, h), whole) : whole;
     if (part.Width <= 0 || part.Height <= 0) throw new Exception("the region is outside the picture");
@@ -174,15 +177,20 @@ public static class Desk {
       }
       // Printed before the mark: a picture taken after a click always carries one, and "nothing moved" is about the window.
       var print = Print(picture);
-      // Where the last click landed, so a miss of a few pixels is seen and corrected rather than repeated.
-      if (markX >= 0 && markY >= 0) {
-        float cx = (float)((markX - part.X) * k), cy = (float)((markY - part.Y) * k);
+      // Where the last input landed, so a miss of a few pixels is seen and corrected rather than repeated. A click is a
+      // circle with a cross; a path is a line from a circle where it was pressed to a cross where it was let go, since a
+      // drag that starts beside what it should carry fails the same as one that ends in the wrong place.
+      if (marks != null && marks.Length >= 2) {
+        var points = new PointF[marks.Length / 2];
+        for (int i = 0; i < points.Length; i++) points[i] = new PointF((float)((marks[2 * i] - part.X) * k), (float)((marks[2 * i + 1] - part.Y) * k));
         using (var g = Graphics.FromImage(picture))
         using (var pen = new Pen(Color.Red, 3)) {
           g.SmoothingMode = SmoothingMode.AntiAlias;
-          g.DrawEllipse(pen, cx - 14, cy - 14, 28, 28);
-          g.DrawLine(pen, cx - 22, cy, cx - 6, cy); g.DrawLine(pen, cx + 6, cy, cx + 22, cy);
-          g.DrawLine(pen, cx, cy - 22, cx, cy - 6); g.DrawLine(pen, cx, cy + 6, cx, cy + 22);
+          if (points.Length > 1) g.DrawLines(pen, points);
+          float sx = points[0].X, sy = points[0].Y, ex = points[points.Length - 1].X, ey = points[points.Length - 1].Y;
+          g.DrawEllipse(pen, sx - 14, sy - 14, 28, 28);
+          g.DrawLine(pen, ex - 22, ey, ex - 6, ey); g.DrawLine(pen, ex + 6, ey, ex + 22, ey);
+          g.DrawLine(pen, ex, ey - 22, ex, ey - 6); g.DrawLine(pen, ex, ey + 6, ex, ey + 22);
         }
       }
       // A recording keeps hundreds of frames, which as PNG would run to hundreds of megabytes.
@@ -287,25 +295,44 @@ public static class Desk {
     for (int i = 0; i < count; i++) { PostMessage(target, i == 1 ? twice : down, button, at); PostMessage(target, up, IntPtr.Zero, at); }
   }
 
-  /** Steps a drag takes between its two ends: enough that programs see the pointer travel, not jump. */
-  const int DragSteps = 20;
+  /** How far apart in time the moves of a stroke are: often enough that programs see the pointer travel, not jump. */
+  const int StrokeStepMs = 20;
+  /** The point `share` of the way along the path through xs, ys, measured by length so the pointer moves at one speed. */
+  static void Along(int[] xs, int[] ys, double share, out int x, out int y) {
+    double total = 0;
+    for (int i = 1; i < xs.Length; i++) total += Math.Sqrt(Math.Pow(xs[i] - xs[i - 1], 2) + Math.Pow(ys[i] - ys[i - 1], 2));
+    double left = share * total;
+    for (int i = 1; i < xs.Length; i++) {
+      double length = Math.Sqrt(Math.Pow(xs[i] - xs[i - 1], 2) + Math.Pow(ys[i] - ys[i - 1], 2));
+      if (left <= length || i == xs.Length - 1) {
+        double t = length > 0 ? Math.Min(1, left / length) : 1;
+        x = (int)Math.Round(xs[i - 1] + (xs[i] - xs[i - 1]) * t); y = (int)Math.Round(ys[i - 1] + (ys[i] - ys[i - 1]) * t);
+        return;
+      }
+      left -= length;
+    }
+    x = xs[0]; y = ys[0];
+  }
   /**
-   * Presses at one point, holds there as long as asked (a long press that starts the drag), moves to the other and lets
-   * go; the button stays down throughout, as each move says. Both ends are in the window's own pixels.
+   * Presses at the first point, waits `pause` there (a long press, for a drag that needs one), travels the path in
+   * `ms` and lets go at the last point; the button stays down throughout, as each move says. A drag is the path of its
+   * two ends. Points are in the window's own pixels.
    */
-  public static void Drag(long hwnd, int x, int y, int x2, int y2, bool right, int hold) {
+  public static void Stroke(long hwnd, int[] xs, int[] ys, bool right, int pause, int ms) {
     Aware();
-    var point = new POINT { X = x, Y = y };
-    var target = Under(Live(hwnd), ref point);
-    int dx = x2 - x, dy = y2 - y;
+    var start = new POINT { X = xs[0], Y = ys[0] };
+    var target = Under(Live(hwnd), ref start);
+    // The window under the first point takes the whole stroke, in its own pixels.
+    int ox = start.X - xs[0], oy = start.Y - ys[0];
     uint down = right ? 0x204u : 0x201u, up = right ? 0x205u : 0x202u;
     var button = new IntPtr(right ? 2 : 1);
-    PostMessage(target, 0x200, IntPtr.Zero, Pack(point.X, point.Y));
+    PostMessage(target, 0x200, IntPtr.Zero, Pack(start.X, start.Y));
     HoldingDown(ThreadOf(target), new[] { ButtonKey(right) }, delegate {
-      PostMessage(target, down, button, Pack(point.X, point.Y));
-      Thread.Sleep(hold > 0 ? hold : 80);
-      for (int i = 1; i <= DragSteps; i++) { PostMessage(target, 0x200, button, Pack(point.X + dx * i / DragSteps, point.Y + dy * i / DragSteps)); Thread.Sleep(20); }
-      PostMessage(target, up, IntPtr.Zero, Pack(point.X + dx, point.Y + dy));
+      PostMessage(target, down, button, Pack(start.X, start.Y));
+      Thread.Sleep(pause);
+      int steps = Math.Max(1, ms / StrokeStepMs);
+      for (int i = 1; i <= steps; i++) { int x, y; Along(xs, ys, (double)i / steps, out x, out y); PostMessage(target, 0x200, button, Pack(x + ox, y + oy)); Thread.Sleep(StrokeStepMs); }
+      PostMessage(target, up, IntPtr.Zero, Pack(xs[xs.Length - 1] + ox, ys[ys.Length - 1] + oy));
     });
   }
 
@@ -405,13 +432,14 @@ public static class Desk {
     if (hold > 0) { MouseButton(right ? 0x0008u : 0x0002u); Thread.Sleep(hold); MouseButton(right ? 0x0010u : 0x0004u); return; }
     for (int i = 0; i < Math.Max(1, count); i++) { MouseButton(right ? 0x0008u : 0x0002u); Thread.Sleep(40); MouseButton(right ? 0x0010u : 0x0004u); Thread.Sleep(60); }
   }
-  /** The same drag with the partner's real pointer; both ends are screen pixels. */
-  public static void RealDrag(int x, int y, int x2, int y2, bool right, int hold) {
+  /** The same stroke with the partner's real pointer; points are screen pixels. */
+  public static void RealStroke(int[] xs, int[] ys, bool right, int pause, int ms) {
     Aware();
-    MouseAt(x, y); Thread.Sleep(60);
+    MouseAt(xs[0], ys[0]); Thread.Sleep(60);
     MouseButton(right ? 0x0008u : 0x0002u);
-    Thread.Sleep(hold > 0 ? hold : 80);
-    for (int i = 1; i <= DragSteps; i++) { MouseAt(x + (x2 - x) * i / DragSteps, y + (y2 - y) * i / DragSteps); Thread.Sleep(20); }
+    Thread.Sleep(pause);
+    int steps = Math.Max(1, ms / StrokeStepMs);
+    for (int i = 1; i <= steps; i++) { int x, y; Along(xs, ys, (double)i / steps, out x, out y); MouseAt(x, y); Thread.Sleep(StrokeStepMs); }
     Thread.Sleep(40);
     MouseButton(right ? 0x0010u : 0x0004u);
   }
@@ -857,7 +885,7 @@ function Run($op, $a) {
     'windows' { return @{ windows = @([Desk]::Windows()); foreground = [Desk]::Foreground() } }
     'apps' { return @{ apps = @(Get-StartApps | ForEach-Object { @{ name = $_.Name; appId = $_.AppID } }) } }
     'launch' { Start-Process "shell:AppsFolder\$($a.appId)"; return @{} }
-    'shot' { return [Desk]::Shot([long]$a.hwnd, [string]$a.file, [int]$a.edge, [double]$a.grow, [int]$a.x, [int]$a.y, [int]$a.w, [int]$a.h, [int]$a.markX, [int]$a.markY) }
+    'shot' { return [Desk]::Shot([long]$a.hwnd, [string]$a.file, [int]$a.edge, [double]$a.grow, [int]$a.x, [int]$a.y, [int]$a.w, [int]$a.h, [int[]]@($a.marks | Where-Object { $null -ne $_ })) }
     'click' { [Desk]::Click([long]$a.hwnd, [int]$a.x, [int]$a.y, [bool]$a.right, [int]$a.count, [int]$a.hold); return @{} }
     'scroll' { [Desk]::Scroll([long]$a.hwnd, [int]$a.x, [int]$a.y, [int]$a.up, [int]$a.right); return @{} }
     'type' { [Desk]::Type([long]$a.hwnd, [string]$a.text); return @{} }
@@ -866,9 +894,9 @@ function Run($op, $a) {
     'refocus' { return @{ refocused = [Desk]::Refocus([long]$a.hwnd) } }
     'tray' { return @{ result = [Desk]::Tray([string]$a.name); cursor = [Desk]::Cursor() } }
     'cursor' { return @{ cursor = [Desk]::Cursor() } }
-    'screen' { return [Desk]::Screen([string]$a.file, [int]$a.edge, [double]$a.grow, [int]$a.x, [int]$a.y, [int]$a.w, [int]$a.h, [int]$a.markX, [int]$a.markY) }
-    'drag' { [Desk]::Drag([long]$a.hwnd, [int]$a.x, [int]$a.y, [int]$a.x2, [int]$a.y2, [bool]$a.right, [int]$a.hold); return @{} }
-    'rdrag' { [Desk]::RealDrag([int]$a.x, [int]$a.y, [int]$a.x2, [int]$a.y2, [bool]$a.right, [int]$a.hold); return @{} }
+    'screen' { return [Desk]::Screen([string]$a.file, [int]$a.edge, [double]$a.grow, [int]$a.x, [int]$a.y, [int]$a.w, [int]$a.h, [int[]]@($a.marks | Where-Object { $null -ne $_ })) }
+    'stroke' { [Desk]::Stroke([long]$a.hwnd, [int[]]@($a.xs), [int[]]@($a.ys), [bool]$a.right, [int]$a.pause, [int]$a.ms); return @{} }
+    'rstroke' { [Desk]::RealStroke([int[]]@($a.xs), [int[]]@($a.ys), [bool]$a.right, [int]$a.pause, [int]$a.ms); return @{} }
     'rclick' { [Desk]::RealClick([int]$a.x, [int]$a.y, [bool]$a.right, [int]$a.count, [int]$a.hold); return @{} }
     'rtype' { [Desk]::RealType([string]$a.text); return @{} }
     'rkey' { [Desk]::RealKey([int]$a.vk, [int[]]@($a.modifiers | Where-Object { $null -ne $_ }), [int]$a.hold); return @{} }

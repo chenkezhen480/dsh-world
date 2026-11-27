@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import test from 'node:test';
 import { toastScript, windowsToast } from '../src/life/notify.ts';
@@ -53,7 +54,7 @@ test('without a configured identity the script finds the desktop in the Start me
   assert.match(decoded[3]!, /^开始菜单里找不到 DSH 桌面版的通知身份/);
   assert.match(script, /\$apps = @\(Get-StartApps\)/);
   assert.match(script, /\$_\.Name -like '\*DeepSeek Harness\*'/);
-  assert.match(script, /if \("\$\(\$notifier\.Setting\)" -ne 'Enabled'\) \{ throw/, 'a switched-off identity is a failure, not a silent success');
+  assert.match(script, /if \(\$setting -ne 0\) \{ .*throw/, 'a switched-off identity is a failure, not a silent success');
   assert.match(script, /\[Console\]::Out\.Write\(\$appId\)/);
 });
 test('a configured identity is still checked against the Start menu; a reused one skips the lookup', () => {
@@ -79,4 +80,15 @@ test('windowsToast reuses the identity it found and looks again after a failure'
   await toast('t', 'b');
   assert.deepEqual(scripts.map(script => script.includes('Get-StartApps')), [true, false, false, true]);
   assert.equal(decodeXml(scripts[1]!)[0], 'com.deepseek.dsh');
+});
+
+test('the switched-off check reads the setting as a number and names who switched it off (#72)', { skip: process.platform !== 'win32' }, () => {
+  // Only the check itself runs here, against a stand-in notifier: a real one would show a toast.
+  const check = toastScript('x', 't', 'b', false).split('\n').filter(line => line.startsWith('$setting') || line.startsWith('if ($setting'));
+  assert.equal(check.length, 2);
+  const run = (setting: number) => spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+    `[Console]::OutputEncoding = [Text.Encoding]::UTF8; $appId = 'x'; $notifier = [pscustomobject]@{ Setting = ${setting} }; try { ${check.join('; ')}; 'shown' } catch { $_.Exception.Message }`], { encoding: 'utf8' }).stdout.trim();
+  assert.equal(run(0), 'shown', 'switched on: no refusal');
+  assert.equal(run(1), 'Windows 关闭了 x 的通知（这个程序的通知被关了）');
+  assert.equal(run(3), 'Windows 关闭了 x 的通知（组策略关了通知）');
 });

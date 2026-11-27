@@ -1,6 +1,6 @@
 // src/ecosystem/computer/procedures/format.ts
 import { PAGE_KEYS } from '../browser/page.ts';
-import { desktopKey, holdMs, type Point } from '../desktop/input.ts';
+import { desktopKey, holdMs, MAX_SWIPE_POINTS, swipeMs, type Point } from '../desktop/input.ts';
 
 /** Finds an element by what a person sees: its role and name, text it shows, or a CSS selector; `nth` picks among several. */
 export interface Anchor { role?: string; name?: string; text?: string; css?: string; nth?: number }
@@ -30,6 +30,7 @@ export type DesktopStep =
   | { open: string }
   | { click: Point & { double?: boolean; right?: boolean; hold?: number }; outward?: boolean }
   | { drag: Point & { x2: number; y2: number; right?: boolean; hold?: number }; outward?: boolean }
+  | { swipe: { path: number[][]; seconds?: number }; outward?: boolean }
   | { type: { text: string } & Partial<Point>; outward?: boolean }
   | { press: string; hold?: number; outward?: boolean }
   | { scroll: { direction: Direction } & Partial<Point> }
@@ -157,7 +158,7 @@ function step(value: unknown, path: string, known: ReadonlySet<string>, taken: S
     }
   }
 }
-const DESKTOP_ACTIONS = ['open', 'click', 'drag', 'type', 'press', 'scroll', 'wait'] as const;
+const DESKTOP_ACTIONS = ['open', 'click', 'drag', 'swipe', 'type', 'press', 'scroll', 'wait'] as const;
 const DIRECTIONS: Direction[] = ['up', 'down', 'left', 'right'];
 function coordinate(value: unknown, path: string): number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 4000 ? value : fail(path, '应该是截图上的像素（0 到 4000 的数）');
@@ -178,7 +179,7 @@ function desktopStep(value: unknown, path: string, known: ReadonlySet<string>): 
   const actions = DESKTOP_ACTIONS.filter(action => action in input);
   if (actions.length !== 1) return fail(path, `每一步只能有一个动作（${DESKTOP_ACTIONS.join('、')}）`);
   const action = actions[0]!;
-  const canGoOut = action === 'click' || action === 'drag' || action === 'type' || action === 'press';
+  const canGoOut = action === 'click' || action === 'drag' || action === 'swipe' || action === 'type' || action === 'press';
   for (const key of Object.keys(input)) if (key !== action && !(canGoOut && key === 'outward') && !(action === 'press' && key === 'hold')) fail(path, `${action} 这一步不认识 ${key}`);
   const outward = flag(input.outward, `${path}.outward`), extra = outward === undefined ? {} : { outward };
   switch (action) {
@@ -194,6 +195,14 @@ function desktopStep(value: unknown, path: string, known: ReadonlySet<string>): 
       only(body, ['x', 'y', 'x2', 'y2', 'right', 'hold'], `${path}.drag`);
       const right = flag(body.right, `${path}.drag.right`);
       return { drag: { x: coordinate(body.x, `${path}.drag.x`), y: coordinate(body.y, `${path}.drag.y`), x2: coordinate(body.x2, `${path}.drag.x2`), y2: coordinate(body.y2, `${path}.drag.y2`), ...(right ? { right } : {}), ...held(body.hold, `${path}.drag.hold`) }, ...extra };
+    }
+    case 'swipe': {
+      const body = record(input.swipe, `${path}.swipe`);
+      only(body, ['path', 'seconds'], `${path}.swipe`);
+      const points = body.path;
+      if (!Array.isArray(points) || points.length < 2 || points.length > MAX_SWIPE_POINTS || !points.every(point => Array.isArray(point) && point.length === 2)) fail(`${path}.swipe.path`, `应该是 2 到 ${MAX_SWIPE_POINTS} 个 [x, y]`);
+      if (body.seconds !== undefined) { try { swipeMs(body.seconds as number, 0); } catch (error) { fail(`${path}.swipe.seconds`, error instanceof Error ? error.message : String(error)); } }
+      return { swipe: { path: (points as unknown[][]).map((point, i) => [coordinate(point[0], `${path}.swipe.path[${i}][0]`), coordinate(point[1], `${path}.swipe.path[${i}][1]`)]), ...(body.seconds === undefined ? {} : { seconds: body.seconds as number }) }, ...extra };
     }
     case 'type': {
       const body = record(input.type, `${path}.type`);

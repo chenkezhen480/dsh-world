@@ -1,7 +1,7 @@
 """One durable metadata row per account/group; no message body, wake or model call."""
 from datetime import datetime, timezone
 import json
-from messages import messageKey, messageOrder, recentEntries
+from messages import hasSender, messageKey, messageOrder, recentEntries
 from snapshot import SnapshotBusy
 
 
@@ -20,8 +20,7 @@ class GroupPresence:
                                'FROM groupPresence WHERE accountId=? AND chatId=? LIMIT 1', (account, chat)).fetchone()
 
     def observe(self, account, chat, row, speaker, *, unread=True):
-        if row['type'] == '系统消息': return
-        if not row.get('sender_username'): raise ValueError('群动态缺少真实发言人')
+        if row['type'] == '系统消息' or not hasSender(row): return
         order = messageOrder(row)
         previous = self._get(account, chat)
         if previous and order[0] < previous[1]: return
@@ -77,7 +76,7 @@ class GroupPresence:
 
 def speakerName(database, config, row):
     sender = row.get('sender_username')
-    if not sender: raise ValueError('群动态缺少真实发言人')
+    if not sender: return ''
     return config.get('people', {}).get(sender) or database.get_nickname(sender) or sender
 
 
@@ -87,7 +86,7 @@ def seedPresence(database, store, config, chat):
     if not chat['id'].endswith('@chatroom') or (previous and previous[4]): return
     cursor = store.cursor(chat['id'])
     if cursor is None: return
-    found = recentEntries(database, chat['id'], lambda row: row if int(row['sort_seq']) <= cursor and row['type'] != '系统消息' else None,
+    found = recentEntries(database, chat['id'], lambda row: row if int(row['sort_seq']) <= cursor and row['type'] != '系统消息' and hasSender(row) else None,
                           config.get('pageSize', 50), 1)
     if found:
         latest = next(reversed(found.values()))
@@ -103,7 +102,7 @@ def unreadAfter(database, config, chat, after, until):
         for row in rows:
             order = messageOrder(row)
             if after < order <= until and row['type'] != '系统消息':
-                if not row.get('sender_username'): raise ValueError('群动态缺少真实发言人')
+                if not hasSender(row): continue
                 if row['sender_username'] != config['selfId']: found.add(order)
         if len(rows) < size or any(int(row['sort_seq']) < after[0] for row in rows): return len(found)
         offset += len(rows)

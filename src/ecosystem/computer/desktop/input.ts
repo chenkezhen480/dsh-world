@@ -5,7 +5,12 @@ export interface DesktopInput {
   action: string; app?: string; x?: number; y?: number; x2?: number; y2?: number; text?: string; submit?: boolean; key?: string; direction?: string; double?: boolean; right?: boolean;
   /** For `click`, `drag` and `press`: seconds to keep the button or the key down (a long press, or walking in a game). */
   hold?: number;
-  /** For `record`: how long, and how far apart the frames are. For `review`: a stretch of the recording, or one moment of it. */
+  /** For `swipe`: [x, y] points on her screenshot, from where it is pressed, through each in turn, to where it is let go. */
+  path?: number[][];
+  /**
+   * For `record`: how long, and how far apart the frames are. For `review`: a stretch of the recording, or one moment of
+   * it. For `swipe`: how long the whole stroke takes.
+   */
   seconds?: number; every?: number; from?: number; to?: number; at?: number; pause?: boolean;
 }
 
@@ -38,6 +43,21 @@ export function holdMs(hold: number | undefined): number {
   if (hold === undefined) return 0;
   if (!(hold > 0 && hold <= MAX_HOLD_SECONDS)) throw new Error(`hold 是按住的秒数，大于 0、最多 ${MAX_HOLD_SECONDS}`);
   return Math.round(hold * 1000);
+}
+/** A drag waits this long after the press unless held longer, then travels in this long: what programs that take drags saw. */
+export const DRAG_PAUSE_MS = 80, DRAG_MS = 400;
+/** A swipe moves at once: one step after the press, not a long press that some programs take for picking a thing up. */
+export const SWIPE_PAUSE_MS = 20;
+/** The most points one swipe passes through: enough for an S across a board. */
+export const MAX_SWIPE_POINTS = 20;
+/**
+ * How long a swipe of `length` picture pixels takes: `seconds` when she says, else about a pixel a millisecond, so a short
+ * flick is quick and an S across the screen is still seen point by point.
+ */
+export function swipeMs(seconds: number | undefined, length: number): number {
+  if (seconds === undefined) return Math.min(3000, Math.max(200, Math.round(length)));
+  if (!(seconds > 0 && seconds <= MAX_HOLD_SECONDS)) throw new Error(`seconds 是整个滑动用的秒数，大于 0、最多 ${MAX_HOLD_SECONDS}`);
+  return Math.round(seconds * 1000);
 }
 /** What she is told after a drag: how long it was held first. */
 export const dragged = (hold: number | undefined) => hold === undefined ? '已拖过去。' : `已按住 ${hold} 秒再拖过去。`;

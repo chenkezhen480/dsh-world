@@ -179,7 +179,7 @@ interface MemoryState { reload: boolean; cold: boolean; position: RequestPositio
  * block of the newest turns at its start, after each successful compaction and when it speaks again after being cold,
  * never in between, so it stays inside the provider-cached prefix. `home` archives the current home; `workspace` uses host membership. The memory block still
  * goes to every world session in her workspace (`inWorkspace`), independently of the archive scope.
- * `memoryTurns` is read each time a block is built (default 200).
+ * `memoryTurns` is read each time a block is built (default 100).
  *
  * A session silent for `coldHours` (read at each turn start, default 24) is cold (#36): its provider cache has most
  * likely expired (DeepSeek clears an unused one "usually within a few hours to a few days", best effort), so its next
@@ -210,8 +210,9 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
   const memory = new WeakMap<Session, MemoryState>();
   const service = world?.memory;
   const sessionNews = world?.elsewhere ? createSessionNews({ store, isHome: id => !!world.isHome(id), partner: () => world.names?.().partner ?? world.prompt.names.partner }) : undefined;
+  const inGroup = (session: Session) => store.channelType(session.id) === 'group';
   const tools = service ? createWorldToolRegistry({
-    tools: (inside, agent) => memoryTools(service, inside, sourceId => sessionNews?.looked(agent.session, sourceId.slice('chat:'.length)), () => ctx.get('attachments') as AttachmentStore | undefined),
+    tools: (inside, agent) => memoryTools(service, inside, sourceId => sessionNews?.looked(agent.session, sourceId.slice('chat:'.length)), () => ctx.get('attachments') as AttachmentStore | undefined, () => inGroup(agent.session)),
     inWorld: agent => !stopped && included(agent.session), faults, logger: ctx.logger,
   }) : undefined;
   /** The world's memory tools follow world membership, whatever the life line does. */
@@ -297,7 +298,6 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
     if (event?.type !== 'user/message' || event.data.content.some(block => block.type === 'text' && block.text === MOOD_GONE)) return undefined;
     return createUserMessage({ content: [{ type: 'text', text: MOOD_GONE }], source: { kind: moodSource, form: 'snapshot', worldId: config.worldId } });
   }
-  const inGroup = (session: Session) => store.channelType(session.id) === 'group';
   /**
    * News from elsewhere is an event, told once: at a turn's start it comes before the new message (what gathered
    * before it arrived), later in the turn at the step's end, ahead of the time.
@@ -348,7 +348,7 @@ export function createWorldRuntime(ctx: Context, config: WorldConfig, store: Arc
     // The two reads are independent, and the first step waits for both.
     const [turns, catalog] = await Promise.all([history.loadRecentTurns(memoryTurns(), archivedByScope), wikiCatalog()]);
     const present = new Set(session.deriveMessages().map(message => message.id));
-    const rendered = renderHistory(excludePresentMessages(turns, present), config.timeZone, names(), config.archiveScope === 'home');
+    const rendered = renderHistory(excludePresentMessages(turns, present), config.timeZone, names(), { homeOnly: config.archiveScope === 'home', partnerAccounts: world?.partnerAccounts?.(), lookBack: Boolean(service) });
     const body = [catalog, rendered].filter(Boolean).join('\n\n');
     const text = body && inGroup(session) ? `${body}\n\n${GROUP_PRIVACY}` : body;
     // A session entering this workspace can still carry an inherited recall from another world.

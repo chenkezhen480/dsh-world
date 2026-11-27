@@ -40,8 +40,8 @@ test('an open window is pictured; her pixels are mapped to the window and she se
   assert.deepEqual(s.calls.find(([op]) => op === 'click')![1], { hwnd: WECHAT.hwnd, x: 250, y: 500, right: false, count: 1, hold: 0 });
   assert.match(clicked.text, /^已点击。图上的红圈是刚才点到的地方，没点中就看偏了多少，改了再点。微信 的截图附在下一条消息里/);
   const marked = s.calls.filter(([op]) => op === 'shot').at(-1)![1];
-  assert.deepEqual([marked.markX, marked.markY], [250, 500], 'the click is drawn where it landed, in window pixels');
-  assert.equal(s.calls.find(([op]) => op === 'shot')![1].markX, -1, 'a plain picture has no mark');
+  assert.deepEqual(marked.marks, [250, 500], 'the click is drawn where it landed, in window pixels');
+  assert.deepEqual(s.calls.find(([op]) => op === 'shot')![1].marks, [], 'a plain picture has no mark');
   assert.ok(clicked.image, 'a fresh picture after every action');
   await s.desktop.act({ action: 'click', x: 1, y: 1, double: true, right: true });
   assert.deepEqual(s.calls.filter(([op]) => op === 'click')[1]![1], { hwnd: WECHAT.hwnd, x: 1, y: 1, right: true, count: 2, hold: 0 });
@@ -56,11 +56,27 @@ test('an open window is pictured; her pixels are mapped to the window and she se
   await assert.rejects(s.desktop.act({ action: 'click', x: 1, y: 1, hold: 30 }), /hold 是按住的秒数，大于 0、最多 10/);
   await assert.rejects(s.desktop.act({ action: 'press', key: 'w', hold: 0 }), /hold 是按住的秒数/);
   assert.equal(s.calls.filter(([op]) => op === 'click').length, clicks, 'nothing pressed for a hold out of range');
-  // A drag: pressed at one end (held first if asked), let go at the other, both mapped like a click; the mark is where it ended.
+  // A drag: pressed at one end (held first if asked), let go at the other, both mapped like a click; both ends are
+  // marked, since a drag that starts beside what it should carry fails like one that ends in the wrong place.
   const drag = await s.desktop.act({ action: 'drag', x: 200, y: 400, x2: 600, y2: 400, hold: 1 });
-  assert.deepEqual(s.calls.find(([op]) => op === 'drag')![1], { hwnd: WECHAT.hwnd, x: 250, y: 500, x2: 750, y2: 500, right: false, hold: 1000 });
-  assert.match(drag.text, /^已按住 1 秒再拖过去。/);
-  assert.deepEqual([s.calls.filter(([op]) => op === 'shot').at(-1)![1].markX, s.calls.filter(([op]) => op === 'shot').at(-1)![1].markY], [750, 500]);
+  assert.deepEqual(s.calls.find(([op]) => op === 'stroke')![1], { hwnd: WECHAT.hwnd, xs: [250, 750], ys: [500, 500], right: false, pause: 1000, ms: 400 });
+  assert.match(drag.text, /^已按住 1 秒再拖过去。图上的红线是刚才的路线：圆圈是按下的地方，十字是松开的地方/);
+  assert.deepEqual(s.calls.filter(([op]) => op === 'shot').at(-1)![1].marks, [250, 500, 750, 500]);
+  await s.desktop.act({ action: 'drag', x: 200, y: 400, x2: 600, y2: 400 });
+  assert.equal(s.calls.filter(([op]) => op === 'stroke').at(-1)![1].pause, 80, 'without hold, the short wait a drag always had');
+  assert.equal(s.calls.filter(([op]) => op === 'stroke').at(-1)![1].ms, 400, 'a drag still travels in the time it always did');
+  // A swipe: pressed and moving at once, through every point in turn; the whole path is marked.
+  const swipe = await s.desktop.act({ action: 'swipe', path: [[100, 100], [700, 100], [100, 300], [700, 300]] });
+  assert.deepEqual(s.calls.filter(([op]) => op === 'stroke').at(-1)![1], { hwnd: WECHAT.hwnd, xs: [125, 875, 125, 875], ys: [125, 125, 375, 375], right: false, pause: 20, ms: 1832 }, 'about a pixel of her picture a millisecond');
+  assert.match(swipe.text, /^已滑过去。图上的红线是刚才的路线/);
+  assert.deepEqual(s.calls.filter(([op]) => op === 'shot').at(-1)![1].marks, [125, 125, 875, 125, 125, 375, 875, 375]);
+  await s.desktop.act({ action: 'swipe', path: [[100, 100], [110, 100]], seconds: 1.5 });
+  assert.equal(s.calls.filter(([op]) => op === 'stroke').at(-1)![1].ms, 1500, 'seconds says how long the whole swipe takes');
+  const strokes = s.calls.filter(([op]) => op === 'stroke').length;
+  await assert.rejects(s.desktop.act({ action: 'swipe', path: [[100, 100]] }), /path 是一串 \[x, y\]/);
+  await assert.rejects(s.desktop.act({ action: 'swipe', path: [[100, 100], [5000, 100]] }), /x、y 要在截图里面/);
+  await assert.rejects(s.desktop.act({ action: 'swipe', path: [[1, 1], [2, 2]], seconds: 30 }), /seconds 是整个滑动用的秒数/);
+  assert.equal(s.calls.filter(([op]) => op === 'stroke').length, strokes, 'nothing is sent for a path she cannot have meant');
   await assert.rejects(s.desktop.act({ action: 'drag', x: 200, y: 400 }), /要给 x、y/, 'a drag needs where it ends');
   assert.equal(s.ops().includes('refocus'), false, 'nothing took the focus, so nothing is given back');
 });
@@ -187,10 +203,10 @@ test('a program open under another name is found through its Start menu entry or
 test('a held press or a drag that changed nothing at all is told with what to do; a plain click is not', async () => {
   const s = setup(undefined, { shot: args => { writeFileSync(String(args.file), 'png'); return { width: 1280, height: 1024, clientWidth: 1600, clientHeight: 1280, print: 'ab'.repeat(256) }; } });
   await s.desktop.act({ action: 'open', app: '微信' });
-  assert.match((await s.desktop.act({ action: 'drag', x: 10, y: 10, x2: 300, y2: 10 })).text, /^已拖过去。截图和动手之前一模一样。后台模式下，有的程序（很多游戏）读的是真实的鼠标键盘，看不到按住和拖动；该动的没动，就请伙伴切到前台模式。/);
+  assert.match((await s.desktop.act({ action: 'drag', x: 10, y: 10, x2: 300, y2: 10 })).text, /^已拖过去。截图和动手之前一模一样。后台模式下，有的程序（很多游戏）读的是真实的鼠标键盘，看不到按住、拖动和滑动；该动的没动，就请伙伴切到前台模式。/);
   assert.match((await s.desktop.act({ action: 'press', key: 'w', hold: 1 })).text, /^已按 w，按住 1 秒。截图和动手之前一模一样/);
   assert.doesNotMatch((await s.desktop.act({ action: 'click', x: 10, y: 10 })).text, /一模一样/);
-  const moving = setup(undefined, { shot: args => { writeFileSync(String(args.file), 'png'); return { width: 1280, height: 1024, clientWidth: 1600, clientHeight: 1280, print: String(args.markX).padStart(512, '0') }; } });
+  const moving = setup(undefined, { shot: args => { writeFileSync(String(args.file), 'png'); return { width: 1280, height: 1024, clientWidth: 1600, clientHeight: 1280, print: JSON.stringify(args.marks).padStart(512, '0') }; } });
   await moving.desktop.act({ action: 'open', app: '微信' });
   assert.doesNotMatch((await moving.desktop.act({ action: 'drag', x: 10, y: 10, x2: 300, y2: 10 })).text, /一模一样/);
 });

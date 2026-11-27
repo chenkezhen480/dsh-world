@@ -4,9 +4,9 @@ import { durableWrite } from './life/lifeStore.ts';
 import { validArchiveScope, type MemoryArchiveScope } from './archiveSelection.ts';
 import { DEFAULT_REVIEW_TIME, validClockTime } from './life/alarm.ts';
 
-interface WorldSettings { running: boolean; dailyBudget?: number; memoryTurns?: number; coldHours?: number; archiveScope?: MemoryArchiveScope; workspacePermission?: string; wechatContext?: number; wechatBufferSeconds?: number; wechatEnabled?: boolean; cottageEnabled?: boolean; qqEnabled?: boolean; computerEnabled?: boolean; desktopEnabled?: boolean; compactAfterReview?: boolean; compactionSwapped?: boolean; consoleSwitchesOnly?: boolean; reviewTime?: string; wakeTime?: string; inboxIgnore?: string[] }
+interface WorldSettings { running: boolean; dailyBudget?: number; memoryTurns?: number; coldHours?: number; archiveScope?: MemoryArchiveScope; workspacePermission?: string; wechatContext?: number; wechatBufferSeconds?: number; wechatPartner?: string; wechatEnabled?: boolean; cottageEnabled?: boolean; qqEnabled?: boolean; computerEnabled?: boolean; desktopEnabled?: boolean; compactAfterReview?: boolean; compactionSwapped?: boolean; consoleSwitchesOnly?: boolean; reviewTime?: string; wakeTime?: string; inboxIgnore?: string[] }
 /** How many of the newest turns the memory block carries when nothing else is set. */
-export const DEFAULT_MEMORY_TURNS = 200;
+export const DEFAULT_MEMORY_TURNS = 100;
 /** Hours a session stays silent before its next turn re-reads her memory block and prompt (#36); see `runtime.ts`. */
 export const DEFAULT_COLD_HOURS = 24, MAX_COLD_HOURS = 720;
 /** WeChat group messages read before a mention, and seconds a private image waits for its companions. */
@@ -41,6 +41,7 @@ export function createWorldSwitch(worldDir: string, configuredScope: MemoryArchi
     ...(validWorkspacePermission(stored?.workspacePermission) ? { workspacePermission: stored.workspacePermission } : {}),
     ...(validWechatContext(stored?.wechatContext) ? { wechatContext: stored.wechatContext } : {}),
     ...(validWechatBuffer(stored?.wechatBufferSeconds) ? { wechatBufferSeconds: stored.wechatBufferSeconds } : {}),
+    ...(validWechatPartner(stored?.wechatPartner) ? { wechatPartner: stored.wechatPartner } : {}),
     ...(typeof stored?.wechatEnabled === 'boolean' ? { wechatEnabled: stored.wechatEnabled } : {}),
     ...(typeof stored?.qqEnabled === 'boolean' ? { qqEnabled: stored.qqEnabled } : {}),
     ...(typeof stored?.computerEnabled === 'boolean' ? { computerEnabled: stored.computerEnabled } : {}),
@@ -144,11 +145,14 @@ export function createWorldSwitch(worldDir: string, configuredScope: MemoryArchi
     /** Read by the WeChat adapter on its next poll; a batch already waiting keeps the value it started with. */
     wechatContext: () => settings.wechatContext ?? DEFAULT_WECHAT_CONTEXT,
     wechatBufferSeconds: () => settings.wechatBufferSeconds ?? DEFAULT_WECHAT_BUFFER_SECONDS,
-    setWechat(next: { context?: number | null; bufferSeconds?: number | null }): void {
-      const { wechatContext: oldContext, wechatBufferSeconds: oldBuffer, ...rest } = settings;
+    /** The private chat that is her partner's own WeChat; unset, nobody on WeChat is taken for them. */
+    wechatPartner: () => settings.wechatPartner,
+    setWechat(next: { context?: number | null; bufferSeconds?: number | null; partner?: string | null }): void {
+      const { wechatContext: oldContext, wechatBufferSeconds: oldBuffer, wechatPartner: oldPartner, ...rest } = settings;
       const context = next.context === undefined ? oldContext : next.context ?? undefined;
       const buffer = next.bufferSeconds === undefined ? oldBuffer : next.bufferSeconds ?? undefined;
-      save({ ...rest, ...(context === undefined || context === DEFAULT_WECHAT_CONTEXT ? {} : { wechatContext: context }), ...(buffer === undefined || buffer === DEFAULT_WECHAT_BUFFER_SECONDS ? {} : { wechatBufferSeconds: buffer }) });
+      const partner = next.partner === undefined ? oldPartner : next.partner ?? undefined;
+      save({ ...rest, ...(context === undefined || context === DEFAULT_WECHAT_CONTEXT ? {} : { wechatContext: context }), ...(buffer === undefined || buffer === DEFAULT_WECHAT_BUFFER_SECONDS ? {} : { wechatBufferSeconds: buffer }), ...(partner === undefined ? {} : { wechatPartner: partner }) });
     },
     /** Read at every look, so a change applies from the next one. */
     inboxIgnore: () => settings.inboxIgnore ?? [...DEFAULT_INBOX_IGNORE],
@@ -167,6 +171,8 @@ export const validWorkspacePermission = (value: unknown): value is string => typ
 
 export const validWechatContext = (value: unknown): value is number => typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= MAX_WECHAT_CONTEXT;
 export const validWechatBuffer = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= MAX_WECHAT_BUFFER_SECONDS;
+/** A private chat's id as the adapter reports it (`wxid_…` or a custom WeChat id); a group's ends in @chatroom and is never a person. */
+export const validWechatPartner = (value: unknown): value is string => typeof value === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(value);
 export const validInboxIgnore = (value: unknown): value is string[] =>
   Array.isArray(value) && value.length <= MAX_INBOX_IGNORE && value.every(name => typeof name === 'string' && name.trim().length <= MAX_INBOX_NAME);
 /** Trimmed, blanks dropped, and each name once: the inbox matches without regard to case. */

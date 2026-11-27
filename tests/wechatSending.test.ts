@@ -177,7 +177,7 @@ test('a desktop turn reads an unmentioned group, sends to that chatId and checks
       read = true;
       assert.equal(work.read.chatId, 'family@chatroom');
       await post({ readResult: { id: work.read.id, accountId: registration.accountId, chatId: work.read.chatId,
-        messages: [{ id: 'm.db:12', occurredAt: '2026-10-27T10:00:00.125Z', text: '今晚吃面', identity: { channel: 'wechat', accountId: registration.accountId, speakerId: 'wechat:dad', conversationType: 'group', conversationId: work.read.chatId } }] } });
+        messages: [{ id: 'm.db:12', occurredAt: '2026-10-27T10:00:00Z', text: '今晚吃面', identity: { channel: 'wechat', accountId: registration.accountId, speakerId: 'wechat:dad', conversationType: 'group', conversationId: work.read.chatId } }] } });
     }
     if (work.job) {
       assert.equal(work.job.chatId, 'family@chatroom'); assert.equal(work.job.messages[0].text, '我也想吃面'); sent = true;
@@ -187,7 +187,7 @@ test('a desktop turn reads an unmentioned group, sends to that chatId and checks
   }
   assert.ok(finished && read && sent); await idle;
   assert.equal(requests.length, 4); assert.equal(errors.length, 0, errors.map(value => String((value as { error?: unknown }).error)).join('\n'));
-  assert.equal(historyOccurredAt, '2026-10-27T18:00:00.125+08:00');
+  assert.equal(historyOccurredAt, '2026-10-27T18:00:00+08:00');
   assert.equal(module.status().pending, 0);
 });
 

@@ -25,7 +25,7 @@
 这一轮我还没说接下来做什么。还想接着做事，就用 plan_next 说好做到几点；要歇着，就不用管，明早 {{fallbackWakeTime}} 会叫我。
 
 ## 每日回顾
-{{date}} 快过完了，回头看看今天吧。{{#conversations}}今天的聊天记录在 {{conversations}}{{/conversations}}{{^conversations}}今天家里没有聊天记录{{/conversations}}{{#activity}}，今天做过的事在 {{activity}}{{/activity}}，日记在 {{diaryDir}}。
+{{date}} 快过完了，回头看看今天吧。{{#conversations}}今天的聊天用 memory_find 按时间翻（不带 query，kinds 写 conversation，from、to 写今天）{{/conversations}}{{^conversations}}今天家里没有聊天记录{{/conversations}}{{#activity}}，今天做过的事在 {{activity}}{{/activity}}，日记在 {{diaryDir}}。
 先写日记，再看自己：
 1. 日记：挑今天想记住的片段，用第一人称写进今天的日记。写下当时注意到了什么、心里怎么想。禁止把日记写成工作总结、进度汇报或任务清单。今天已经写过的，就补上漏掉的片段。以前的日记不改。哪天记错了、现在想法不一样了，就写在今天的日记里。
 2. 我：看看有没有值得长期保留的变化，或自述里有没有需要删改的重复、过时内容。需要改时，先读完整的 {{selfFile}}，太长就分段读完。把新变化写进对应位置，替换旧说法，精简重复的句子。今天发生的事留在日记里，别把聊天对象的口吻写成自己的。如果自述已经太长、散乱或被截断，就重写整篇，把仍然重要的内容留在一份更短的自述里。没有长期变化、也没有需要整理的内容时，就不改。{{#snapshot}}改之前的那份已经留在 {{snapshot}}。{{/snapshot}}
